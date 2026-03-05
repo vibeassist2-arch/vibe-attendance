@@ -1,0 +1,1138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>VIBE Attendance</title>
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@300;400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet"/>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0b0f1a;--surface:#131929;--card:#1a2236;--border:#243050;
+  --accent:#4f8ef7;--accent2:#38d9a9;--danger:#ff5f6d;--warn:#ffd166;
+  --policy:#a78bfa;--rsa:#fb923c;--gpa:#34d399;
+  --text:#e8eaf6;--muted:#7a8bad;
+  --font:'Sora',sans-serif;--mono:'JetBrains Mono',monospace;
+}
+body{font-family:var(--font);background:var(--bg);color:var(--text);min-height:100vh;
+  background-image:radial-gradient(ellipse at 20% 50%,#1a2a5e22 0%,transparent 60%),
+                   radial-gradient(ellipse at 80% 20%,#0d3b2e22 0%,transparent 50%);}
+.hidden{display:none!important}
+/* PAGE */
+.page{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:1rem}
+.card{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:2.5rem;width:100%;max-width:420px;box-shadow:0 8px 40px #00000055;animation:slideUp .4s ease}
+@keyframes slideUp{from{opacity:0;transform:translateY(24px)}to{opacity:1;transform:translateY(0)}}
+h1{font-size:1.7rem;font-weight:700;margin-bottom:.25rem}
+h2{font-size:1.3rem;font-weight:600;margin-bottom:1.2rem}
+.subtitle{color:var(--muted);font-size:.85rem;margin-bottom:2rem}
+.logo{font-size:2rem;margin-bottom:.5rem}
+label{display:block;font-size:.8rem;color:var(--muted);margin-bottom:.4rem;font-weight:600;letter-spacing:.05em;text-transform:uppercase}
+input,select{width:100%;padding:.75rem 1rem;background:var(--surface);border:1.5px solid var(--border);border-radius:10px;color:var(--text);font-family:var(--font);font-size:.95rem;margin-bottom:1.2rem;outline:none;transition:border-color .2s}
+input:focus,select:focus{border-color:var(--accent)}
+select option{background:var(--surface);color:var(--text)}
+.btn{width:100%;padding:.85rem;border:none;border-radius:10px;font-family:var(--font);font-size:.95rem;font-weight:600;cursor:pointer;transition:opacity .2s,transform .1s;margin-top:.3rem}
+.btn:active{transform:scale(.98)}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.btn-primary{background:var(--accent);color:#fff}
+.btn-success{background:var(--accent2);color:#0b1a14}
+.btn-danger{background:var(--danger);color:#fff}
+.btn-ghost{background:var(--border);color:var(--text)}
+.btn-sm{width:auto;padding:.45rem .9rem;font-size:.82rem}
+.btn-policy{background:var(--policy);color:#fff}
+.btn-rsa{background:var(--rsa);color:#fff}
+.btn-gpa{background:var(--gpa);color:#0b1a14}
+.alert{padding:.8rem 1rem;border-radius:10px;font-size:.87rem;margin-bottom:1.2rem;line-height:1.5}
+.alert-error{background:#ff5f6d22;border:1px solid #ff5f6d66;color:#ff9aa2}
+.alert-success{background:#38d9a922;border:1px solid #38d9a966;color:#70efcd}
+.alert-warn{background:#ffd16622;border:1px solid #ffd16666;color:#ffe08a}
+/* DASH */
+.dash{min-height:100vh;display:flex;flex-direction:column}
+.vibe-header{background:#fff;border-bottom:3px solid #e5e7eb;padding:1rem 1.5rem;display:flex;align-items:center;justify-content:space-between;gap:1rem}
+.vibe-logo-text{font-family:var(--font);font-weight:900;font-size:2rem;letter-spacing:-.02em;line-height:1}
+.vibe-tagline{font-size:.55rem;font-weight:700;letter-spacing:.12em;color:#64748b;text-transform:uppercase;margin-top:2px}
+.topbar{background:var(--card);border-bottom:1px solid var(--border);padding:1rem 1.5rem;display:flex;align-items:center;justify-content:space-between;gap:1rem}
+.topbar-brand{font-weight:700;font-size:1.1rem}
+.topbar-right{display:flex;align-items:center;gap:.75rem}
+.badge{background:var(--accent);color:#fff;font-size:.7rem;padding:.2rem .55rem;border-radius:20px;font-weight:600}
+.badge-green{background:var(--accent2);color:#0b1a14}
+.content{padding:1.5rem;flex:1;max-width:960px;width:100%;margin:0 auto}
+.section-title{font-size:.75rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:1rem;margin-top:1.5rem}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:.8rem}
+.grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:.8rem}
+.stat-box{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:1rem}
+.stat-box .num{font-size:1.8rem;font-weight:700;font-family:var(--mono);color:var(--accent)}
+.stat-box .lbl{font-size:.78rem;color:var(--muted);margin-top:.2rem}
+.stat-box.policy .num{color:var(--policy)}
+.stat-box.rsa .num{color:var(--rsa)}
+.stat-box.gpa .num{color:var(--gpa)}
+/* HOME STAT CARDS */
+.home-card{background:#fff;border-radius:14px;border:2px solid #e5e7eb;padding:1.4rem 1.5rem;box-shadow:0 2px 12px #0000000a}
+.home-card .big-num{font-size:2.4rem;font-weight:900;font-family:var(--mono)}
+.home-card .card-label{font-size:.82rem;font-weight:700;color:#374151;margin-top:.25rem;text-transform:uppercase;letter-spacing:.06em}
+.name-pill{display:inline-block;font-size:.7rem;padding:.15rem .5rem;border-radius:20px;font-weight:600;margin:.15rem .1rem}
+.home-nav-btn{padding:.6rem 1.3rem;border-radius:10px;border:none;font-family:var(--font);font-size:.88rem;font-weight:700;cursor:pointer;transition:all .18s}
+/* RECORD CARD */
+.record-card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:1rem 1.2rem;margin-bottom:.6rem;display:flex;align-items:center;justify-content:space-between;gap:1rem;font-size:.88rem}
+.record-card .rec-time{font-family:var(--mono);color:var(--accent);font-size:.82rem}
+.record-card .rec-loc{color:var(--muted);font-size:.78rem;margin-top:.15rem}
+.status-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.dot-in{background:var(--accent2);box-shadow:0 0 6px var(--accent2)}
+.dot-out{background:var(--danger);box-shadow:0 0 6px var(--danger)}
+/* USER ROW */
+.user-row{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:.9rem 1.2rem;margin-bottom:.5rem;display:flex;align-items:center;justify-content:space-between;gap:.5rem}
+.user-row .uname{font-weight:600;font-size:.9rem}
+.user-row .urole{font-size:.75rem;color:var(--muted)}
+.empty{text-align:center;color:var(--muted);padding:2rem;font-size:.9rem}
+/* TABS */
+.tabs{display:flex;gap:.5rem;margin-bottom:1.5rem;flex-wrap:wrap}
+.tab{padding:.5rem 1rem;border-radius:8px;background:transparent;border:1.5px solid var(--border);color:var(--muted);font-family:var(--font);font-size:.85rem;cursor:pointer;transition:all .2s}
+.tab.active{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+/* MODAL */
+.modal-overlay{position:fixed;inset:0;background:#00000099;backdrop-filter:blur(6px);display:flex;align-items:center;justify-content:center;z-index:100;padding:1rem;animation:fadeIn .25s ease}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+.modal{background:var(--card);border:1px solid var(--border);border-radius:20px;padding:2rem;width:100%;max-width:480px;box-shadow:0 24px 80px #00000088;animation:slideUp .3s ease;max-height:90vh;overflow-y:auto;position:relative}
+.modal h2{margin-bottom:.5rem;font-size:1.25rem}
+.modal .sub{color:var(--muted);font-size:.85rem;margin-bottom:1.5rem}
+.q-label{font-size:.82rem;font-weight:700;margin-bottom:.6rem;padding:.35rem .75rem;border-radius:6px;display:inline-block;letter-spacing:.03em}
+.q-policy{background:#a78bfa22;color:var(--policy);border:1px solid #a78bfa44}
+.q-rsa{background:#fb923c22;color:var(--rsa);border:1px solid #fb923c44}
+.q-gpa{background:#34d39922;color:var(--gpa);border:1px solid #34d39944}
+/* TABLE */
+.month-table{width:100%;border-collapse:collapse;font-size:.83rem}
+.month-table th{text-align:left;padding:.6rem .9rem;background:var(--surface);color:var(--muted);font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;border-bottom:1px solid var(--border)}
+.month-table td{padding:.65rem .9rem;border-bottom:1px solid #1e2a3f;vertical-align:middle}
+.month-table tr:last-child td{border-bottom:none}
+.month-table tr:hover td{background:#1e2a3f55}
+.pill{display:inline-block;padding:.2rem .55rem;border-radius:20px;font-size:.72rem;font-weight:700;font-family:var(--mono)}
+.pill-yes{background:#38d9a922;color:var(--gpa);border:1px solid #38d9a944}
+.pill-no{background:#ff5f6d22;color:var(--danger);border:1px solid #ff5f6d44}
+.pill-pend{background:#ffd16622;color:var(--warn);border:1px solid #ffd16644}
+/* DOWNLOAD CARD */
+.dl-card{border:1px solid var(--border);border-radius:14px;padding:1.2rem 1.4rem;background:var(--card);display:flex;align-items:center;justify-content:space-between;gap:1rem;margin-bottom:.7rem}
+.dl-card .dl-name{font-weight:700;font-size:.95rem}
+.dl-card .dl-count{font-size:.78rem;color:var(--muted);margin-top:.15rem}
+.month-bar{display:flex;gap:.75rem;align-items:center;margin-bottom:1.2rem;flex-wrap:wrap}
+.month-bar select{margin-bottom:0;width:auto;min-width:160px}
+.month-bar label{margin:0;text-transform:none;font-size:.85rem}
+/* SPINNER */
+.spinner{display:inline-block;width:16px;height:16px;border:2px solid #ffffff44;border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle;margin-right:.5rem}
+@keyframes spin{to{transform:rotate(360deg)}}
+/* X BTN */
+.x-btn{position:absolute;top:1.1rem;right:1.2rem;background:var(--border);border:none;color:var(--muted);border-radius:50%;width:30px;height:30px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:1rem;transition:background .15s,color .15s}
+.x-btn:hover{background:var(--danger);color:#fff}
+/* ATTEND TABLE */
+.attend-th{text-align:left;padding:.75rem 1rem;background:#1e2d4a;color:#e8eaf6;font-weight:700;font-size:.8rem;letter-spacing:.04em;border-bottom:2px solid var(--accent);white-space:nowrap}
+.attend-td{padding:.7rem 1rem;border-bottom:1px solid #1e2a3f;vertical-align:middle}
+@media(max-width:600px){.grid2,.grid3{grid-template-columns:1fr}.home-cards{grid-template-columns:1fr!important}}
+</style>
+</head>
+<body>
+
+<div id="app"></div>
+
+<script>
+// ── DATA ──────────────────────────────────────────────────────────────────────
+const KEY = "vibeAttendanceData";
+let SCRIPT_URL = localStorage.getItem("vibeScriptUrl") || "https://script.google.com/macros/s/AKfycbyQDZxE9Gq10hGZ0fo2xyvtH1tiblt9B1_ZWgqi69SC9vOUYrSsGhSEML9YycrJ07a9/exec";
+
+// ── GOOGLE SHEETS SYNC ────────────────────────────────────────
+async function gsFetch(params) {
+  if (!SCRIPT_URL) return null;
+  try {
+    const res = await fetch(SCRIPT_URL + "?" + new URLSearchParams(params), {
+      method: "GET",
+      redirect: "follow",
+    });
+    const text = await res.text();
+    return JSON.parse(text);
+  } catch(e) { console.error("GS GET error", e); return null; }
+}
+async function gsPost(body) {
+  if (!SCRIPT_URL) return null;
+  try {
+    const res = await fetch(SCRIPT_URL, {
+      method: "POST",
+      redirect: "follow",
+      headers: { "Content-Type": "text/plain" },
+      body: JSON.stringify(body)
+    });
+    const text = await res.text();
+    return JSON.parse(text);
+  } catch(e) { console.error("GS POST error", e); return null; }
+}
+// ── AUTO-ABSENCE MARKER ──────────────────────────────────────────────────────
+function markAbsences() {
+  const today = new Date();
+  const todayStr = today.toISOString().slice(0,10);
+  const dayOfWeek = today.getDay(); // 0=Sun, 6=Sat
+  if (dayOfWeek === 0) return; // skip Sunday only
+
+  if (!DB.absences) DB.absences = [];
+  const regularUsers = DB.users.filter(u => u.role !== "admin");
+
+  regularUsers.forEach(u => {
+    // Checked in today?
+    const checkedIn = DB.attendance.find(r =>
+      r.username === u.username && r.type === "in" &&
+      new Date(r.timestamp).toISOString().slice(0,10) === todayStr
+    );
+    if (checkedIn) {
+      // ✅ Remove any absent record for today if user has since checked in
+      DB.absences = DB.absences.filter(a => !(a.username === u.username && a.date === todayStr));
+    } else {
+      // Not checked in — add absent record if not already there
+      if (!DB.absences.find(a => a.username === u.username && a.date === todayStr)) {
+        DB.absences.push({ id: Date.now() + Math.random(), username: u.username, date: todayStr, auto: true });
+      }
+    }
+  });
+  save(DB);
+}
+
+// Run absence check every minute
+setInterval(markAbsences, 60000);
+
+// Auto-sync from Google Sheets every 5 minutes (keeps all devices in sync)
+let autoSyncInterval = null;
+function startAutoSync() {
+  if (autoSyncInterval) clearInterval(autoSyncInterval);
+  autoSyncInterval = setInterval(async () => {
+    if (SESSION && SCRIPT_URL) {
+      await loadFromSheet();
+      // Re-render if on a dashboard
+      if (SESSION.role === "admin") renderAdmin();
+      else renderUser();
+    }
+  }, 5 * 60 * 1000); // every 5 minutes
+}
+
+async function syncToSheet() {
+  if (!SCRIPT_URL) return;
+  const result = await gsPost({ action:"fullSync", data: DB });
+  return result;
+}
+async function loadFromSheet() {
+  if (!SCRIPT_URL) return false;
+  try {
+    const result = await gsFetch({ action:"getAll" });
+    if (!result || !result.ok) return false;
+
+    // Merge sheet users — always keep local users as fallback
+    const sheetUsers = (result.users||[]).map(u => ({
+      username: String(u.username||"").trim(),
+      password: String(u.password||"").trim(),
+      designation: u.designation||"",
+      location: u.location||"",
+      role: u.role||"user"
+    })).filter(u => u.username);
+
+    if (sheetUsers.length) {
+      // Merge: sheet wins for existing, keep local-only users too
+      const merged = [...sheetUsers];
+      DB.users.forEach(lu => {
+        if (!merged.find(su => su.username === lu.username)) merged.push(lu);
+      });
+      DB.users = merged;
+    }
+
+    // Attendance from sheet
+    const sheetAttend = (result.attendance||[]).map(r => {
+      const lat = parseFloat(r.lat), lng = parseFloat(r.lng);
+      // Validate: real GPS coords are lat -90..90, lng -180..180; reject bogus values like 1900
+      const validLoc = (r.lat && r.lng && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180)
+        ? {lat, lng} : null;
+      return { id: r.id, username: r.username, type: r.type,
+        timestamp: parseInt(r.timestamp)||0, location: validLoc };
+    }).filter(r => r.username && r.timestamp);
+    if (sheetAttend.length) DB.attendance = sheetAttend;
+
+    // Surveys from sheet
+    const sheetSurveys = (result.surveys||[]).map(s => {
+      // Normalize date — strip time if Google Sheets returns full ISO string
+      let d = s.date || "";
+      if (d.includes("T")) d = d.slice(0,10);
+      else if (d.length > 10) d = d.slice(0,10);
+      return {
+        id: s.id, username: s.username, date: d,
+        timestamp: parseInt(s.timestamp)||0,
+        policy: s.policy||0, rsa: s.rsa||0, gpa: s.gpa||0
+      };
+    }).filter(s => s.username);
+    if (sheetSurveys.length) DB.surveys = sheetSurveys;
+
+    save(DB);
+    return true;
+  } catch(e) {
+    console.error("loadFromSheet error:", e);
+    return false;
+  }
+}
+function loadData(){try{const r=localStorage.getItem(KEY);if(!r)return def();return JSON.parse(r)}catch{return def()}}
+function def(){return{users:[{username:"admin",password:"admin123",role:"admin"},{username:"vijay",password:"1234",designation:"Staff",location:"",role:"user"}],attendance:[],surveys:[],absences:[]}}
+function save(d){try{localStorage.setItem(KEY,JSON.stringify(d))}catch(e){}}
+let DB = loadData();
+let SESSION = null;
+
+// ── HELPERS ───────────────────────────────────────────────────────────────────
+function getLocation(){
+  return new Promise((res,rej)=>{
+    if(!navigator.geolocation){rej("Geolocation not supported.");return}
+    navigator.geolocation.getCurrentPosition(
+      p=>{
+        const lat=p.coords.latitude, lng=p.coords.longitude;
+        // Reject obviously invalid GPS (e.g. 1900, 0,0 default)
+        if(lat < -90 || lat > 90 || lng < -180 || lng > 180){rej("Invalid location received. Try again.");return}
+        res({lat, lng});
+      },
+      e=>{if(e.code===1)rej("Location denied. Please allow location.");
+          else if(e.code===2)rej("Location unavailable.");
+          else rej("Location timed out.");},
+      {timeout:10000, enableHighAccuracy:true}
+    );
+  });
+}
+function exportCSV(rows,filename){
+  if(!rows||!rows.length){alert("No data.");return}
+  const keys=Object.keys(rows[0]);
+  const body=rows.map(r=>keys.map(k=>{const v=r[k]==null?"":String(r[k]);return v.includes(",")||v.includes('"')?`"${v.replace(/"/g,'""')}"`:`${v}`}).join(",")).join("\n");
+  const blob=new Blob([keys.join(",")+"\n"+body],{type:"text/csv"});
+  const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=filename;a.click();
+}
+function h(tag,attrs,children){
+  const el=document.createElement(tag);
+  if(attrs)Object.entries(attrs).forEach(([k,v])=>{
+    if(k==="style"&&typeof v==="object"){Object.assign(el.style,v)}
+    else if(k.startsWith("on")&&typeof v==="function"){el.addEventListener(k.slice(2).toLowerCase(),v)}
+    else if(k==="className"){el.className=v}
+    else if(k==="htmlFor"){el.htmlFor=v}
+    else{el.setAttribute(k,v)}
+  });
+  if(children){(Array.isArray(children)?children:[children]).forEach(c=>{
+    if(c==null||c===false||c===undefined)return;
+    el.appendChild(typeof c==="string"||typeof c==="number"?document.createTextNode(String(c)):c);
+  })}
+  return el;
+}
+function el(tag,cls,children,style){return h(tag,{className:cls,...(style?{style}:{})},children)}
+function render(node){const app=document.getElementById("app");app.innerHTML="";app.appendChild(node)}
+
+// ── ROUTER ────────────────────────────────────────────────────────────────────
+function route(){
+  if(!SESSION){
+    if(autoSyncInterval){clearInterval(autoSyncInterval);autoSyncInterval=null;}
+    renderLogin();return;
+  }
+  startAutoSync();
+  if(SESSION.role==="admin"){renderAdmin();return}
+  renderUser();
+}
+
+// ── SYNC STATUS HELPER ───────────────────────────────────────────────────────
+function showSyncStatus(parent, msg, type) {
+  let el2 = parent.querySelector(".sync-status");
+  if (!el2) { el2 = document.createElement("div"); el2.className = "sync-status alert"; parent.appendChild(el2); }
+  el2.className = "sync-status alert alert-" + type;
+  el2.textContent = msg;
+  if (type === "success") setTimeout(() => { el2.textContent = ""; el2.className = "sync-status"; }, 4000);
+}
+
+// ── LOGIN ─────────────────────────────────────────────────────────────────────
+function renderLogin(){
+  const wrap=el("div","page");
+  const card=el("div","card");
+  const logo=h("div",{style:{marginBottom:"1rem"}});
+  logo.innerHTML=`
+    <div style="font-family:'Sora',sans-serif;font-weight:900;font-size:3rem;letter-spacing:-.02em;line-height:1">
+      <span style="color:#e63329">V</span><span style="color:#f5a623">I</span><span style="color:#2563eb">B</span><span style="color:#16a34a">E</span>
+    </div>
+    <div style="font-size:.85rem;font-weight:700;letter-spacing:.18em;color:#94a3b8;text-transform:uppercase;margin-top:.2rem;text-align:center">Attendance</div>
+  `;
+  const title=h("div",{});
+  const sub=el("div","subtitle","Sign in to mark your attendance");
+  const errBox=el("div","alert alert-error hidden","");
+  const lbU=h("label",{},"Username");
+  const inU=h("input",{type:"text",placeholder:"Enter username",autocomplete:"username"});
+  const lbP=h("label",{},"Password");
+  const pwWrap=h("div",{style:{position:"relative",marginBottom:"1.2rem"}});
+  const inP=h("input",{type:"password",placeholder:"Enter password",autocomplete:"current-password"});
+  inP.style.marginBottom="0";inP.style.paddingRight="3rem";
+  const eyeBtn=h("button",{type:"button",style:{position:"absolute",right:".75rem",top:"50%",transform:"translateY(-50%)",background:"none",border:"none",cursor:"pointer",color:"var(--muted)",fontSize:"1.1rem",padding:"0",lineHeight:"1"}},"👁");
+  let pwVisible=false;
+  eyeBtn.addEventListener("click",()=>{pwVisible=!pwVisible;inP.type=pwVisible?"text":"password";eyeBtn.textContent=pwVisible?"🙈":"👁"});
+  pwWrap.appendChild(inP);pwWrap.appendChild(eyeBtn);
+  const locWarn=el("div","alert alert-warn hidden","📍 Please click Allow when location permission appears.");
+  const btn=h("button",{className:"btn btn-primary"},"Sign In");
+
+  function doLogin(){
+    const u=inU.value.trim(),p=inP.value.trim();
+    errBox.classList.add("hidden");
+    if(!u||!p){errBox.textContent="Please enter username and password.";errBox.classList.remove("hidden");return}
+
+    // First: validate against local DB (fast), then sync from sheet and re-validate
+    const localFound=DB.users.find(x=>x.username===u&&x.password===p);
+    if(!localFound){
+      // Try syncing from sheet first, then re-check (handles new users added via sheet)
+      btn.disabled=true;btn.textContent="Verifying…";
+      loadFromSheet().then(()=>{
+        const found2=DB.users.find(x=>x.username===u&&x.password===p);
+        if(!found2){errBox.textContent="Incorrect username or password.";errBox.classList.remove("hidden");btn.disabled=false;btn.textContent="Sign In";return}
+        proceedLogin(found2,u,p);
+      }).catch(()=>{errBox.textContent="Incorrect username or password.";errBox.classList.remove("hidden");btn.disabled=false;btn.textContent="Sign In";});
+      return;
+    }
+    proceedLogin(localFound,u,p);
+  }
+
+  function proceedLogin(found,u,p){
+    if(found.role==="admin"){
+      // Admin: sync from sheet silently then route
+      btn.disabled=true;btn.textContent="Syncing data…";
+      loadFromSheet().finally(()=>{SESSION={username:found.username,role:"admin"};route();});
+      return;
+    }
+    btn.disabled=true;btn.textContent="Syncing data…";locWarn.classList.remove("hidden");
+    // Sync from sheet first, then get location
+    loadFromSheet().finally(()=>{
+      btn.textContent="Getting location…";
+      getLocation().then(loc=>{SESSION={username:found.username,role:"user",location:loc};route();})
+        .catch(msg=>{errBox.textContent=msg;errBox.classList.remove("hidden");btn.disabled=false;btn.textContent="Sign In";locWarn.classList.add("hidden");});
+    });
+  }
+  btn.addEventListener("click",doLogin);
+  [inU,inP].forEach(i=>i.addEventListener("keydown",e=>{if(e.key==="Enter")doLogin()}));
+  [logo,title,sub,errBox,lbU,inU,lbP,pwWrap,btn,locWarn].forEach(x=>card.appendChild(x));
+  wrap.appendChild(card);render(wrap);
+}
+
+// ── CHECKOUT SURVEY ───────────────────────────────────────────────────────────
+function showSurvey(onSubmit){
+  const overlay=el("div","modal-overlay");
+  const modal=el("div","modal");
+  const xBtn=h("button",{className:"x-btn"},"✕");
+  xBtn.addEventListener("click",()=>{overlay.remove()});
+
+  const title=h("h2",{},"Checking out, "+SESSION.username+"!");
+  const sub=el("div","sub","Enter today's counts before checking out");
+
+  function field(lbl,cls,placeholder){
+    const wrap=h("div",{style:{marginBottom:"1.2rem"}});
+    const ql=el("div","q-label "+cls,lbl);
+    const inp=h("input",{type:"number",min:"0",placeholder});
+    inp.style.marginBottom="0";
+    wrap.appendChild(ql);wrap.appendChild(inp);
+    return{wrap,inp};
+  }
+  const {wrap:w1,inp:i1}=field("📜 Today's Policy Count","q-policy","e.g. 5");
+  const {wrap:w2,inp:i2}=field("🔐 Today's RSA Count","q-rsa","e.g. 3");
+  const {wrap:w3,inp:i3}=field("🎓 Today's GPA Count","q-gpa","e.g. 2");
+
+  const submitBtn=h("button",{className:"btn btn-primary",disabled:true,style:{marginTop:".5rem"}},"Please fill all 3 fields");
+
+  function checkFill(){
+    const ok=i1.value!==""&&i2.value!==""&&i3.value!=="";
+    submitBtn.disabled=!ok;
+    submitBtn.textContent=ok?"✓ Submit & Check Out":"Please fill all 3 fields";
+  }
+  [i1,i2,i3].forEach(i=>i.addEventListener("input",checkFill));
+
+  submitBtn.addEventListener("click",()=>{
+    onSubmit({policy:i1.value,rsa:i2.value,gpa:i3.value});
+    overlay.remove();
+  });
+
+  [xBtn,title,sub,w1,w2,w3,submitBtn].forEach(x=>modal.appendChild(x));
+  overlay.appendChild(modal);document.body.appendChild(overlay);
+}
+
+// ── USER DASH ─────────────────────────────────────────────────────────────────
+function renderUser(){
+  const myRecs=()=>DB.attendance.filter(r=>r.username===SESSION.username).sort((a,b)=>b.timestamp-a.timestamp);
+  const todayStr=new Date().toDateString();
+  const todayRecs=()=>myRecs().filter(r=>new Date(r.timestamp).toDateString()===todayStr);
+  const isIn=()=>{const t=todayRecs();return t.length>0&&t[0].type==="in"};
+
+  const dash=el("div","dash");
+
+  // Topbar
+  const tb=el("div","topbar");
+  tb.appendChild(el("div","topbar-brand","📋 AttendanceVibe"));
+  const tbR=el("div","topbar-right");
+  tbR.appendChild(document.createTextNode(SESSION.username+" "));
+  tbR.appendChild(el("span","badge badge-green","User"));
+  const soBtn=h("button",{className:"btn btn-ghost btn-sm",style:{marginLeft:".5rem"}},"Sign Out");
+  soBtn.addEventListener("click",()=>{SESSION=null;route()});
+  const refBtn=h("button",{className:"btn btn-ghost btn-sm"},"🔄 Refresh");
+  refBtn.addEventListener("click",async()=>{
+    refBtn.disabled=true;refBtn.textContent="⏳ Syncing…";
+    await loadFromSheet();
+    refBtn.textContent="✅ Done";
+    setTimeout(()=>{refBtn.textContent="🔄 Refresh";refBtn.disabled=false;},2000);
+    refresh();
+  });
+  tbR.appendChild(refBtn);
+  tbR.appendChild(soBtn);
+  tb.appendChild(tbR);dash.appendChild(tb);
+
+  const content=el("div","content");
+  dash.appendChild(content);
+
+  let curTab="today";
+  const now=new Date();
+  const curMonthKey=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}`;
+  let selMonth=curMonthKey;
+
+  function refresh(){
+    content.innerHTML="";
+
+    // Stats
+    const allRecs=myRecs();
+    const totalDays=[...new Set(allRecs.filter(r=>r.type==="in").map(r=>new Date(r.timestamp).toDateString()))].length;
+    const nowS=new Date();
+    const curMKS=`${nowS.getFullYear()}-${String(nowS.getMonth()+1).padStart(2,"0")}`;
+    const mySurveys=(DB.surveys||[]).filter(s=>s.username===SESSION.username);
+    const monthSurveysU=mySurveys.filter(s=>s.date&&s.date.startsWith(curMKS));
+    const monthPolicyU=monthSurveysU.reduce((s,r)=>s+(parseInt(r.policy)||0),0);
+    const monthRsaU=monthSurveysU.reduce((s,r)=>s+(parseInt(r.rsa)||0),0);
+    const monthGpaU=monthSurveysU.reduce((s,r)=>s+(parseInt(r.gpa)||0),0);
+    // total absent = days in current month with no check-in
+    const absentDays=(DB.absences||[]).filter(a=>a.username===SESSION.username&&a.date&&a.date.startsWith(curMKS)).length;
+    const monthLblU=nowS.toLocaleString("default",{month:"long",year:"numeric"});
+
+    // Row 1: Total Present / Total Absent
+    const grid=el("div","grid2",null,{marginBottom:".8rem"});
+    const b1=el("div","stat-box");b1.innerHTML=`<div class="num" style="color:var(--accent2)">${totalDays}</div><div class="lbl">Total Present</div>`;
+    const b2=el("div","stat-box");b2.innerHTML=`<div class="num" style="color:var(--danger)">${absentDays}</div><div class="lbl">Absent (${monthLblU})</div>`;
+    grid.appendChild(b1);grid.appendChild(b2);content.appendChild(grid);
+
+    // Row 2: Month Policy / RSA / GPA
+    const grid2=el("div","grid3",null,{marginBottom:"1.5rem"});
+    const bp=el("div","stat-box policy");bp.innerHTML=`<div class="num">${monthPolicyU}</div><div class="lbl">📜 ${monthLblU} Policy</div>`;
+    const br=el("div","stat-box rsa");br.innerHTML=`<div class="num">${monthRsaU}</div><div class="lbl">🔐 ${monthLblU} RSA</div>`;
+    const bg=el("div","stat-box gpa");bg.innerHTML=`<div class="num">${monthGpaU}</div><div class="lbl">🎓 ${monthLblU} GPA</div>`;
+    grid2.appendChild(bp);grid2.appendChild(br);grid2.appendChild(bg);content.appendChild(grid2);
+
+    // Tabs
+    const tabs=el("div","tabs");
+    ["today","monthly"].forEach(t=>{
+      const btn=h("button",{className:"tab"+(curTab===t?" active":"")},t==="today"?"📅 Today":"📊 Monthly Data");
+      btn.addEventListener("click",()=>{curTab=t;refresh()});
+      tabs.appendChild(btn);
+    });
+    content.appendChild(tabs);
+
+    if(curTab==="today"){
+      // Check in/out button
+      const checkedIn=isIn();
+      const mainBtn=h("button",{className:"btn "+(checkedIn?"btn-danger":"btn-success")},checkedIn?"⏹ Check Out":"▶ Check In");
+      mainBtn.addEventListener("click",()=>{
+        if(checkedIn){
+          showSurvey(answers=>{
+            const sur={id:Date.now(),username:SESSION.username,timestamp:Date.now(),date:new Date().toISOString().slice(0,10),...answers};
+            DB.surveys.push(sur);
+            gsPost({action:"addSurvey",data:sur});
+            save(DB);
+            getLocation().then(loc=>{
+              const rec_out={id:Date.now(),username:SESSION.username,type:"out",timestamp:Date.now(),location:loc};
+              DB.attendance.push(rec_out);save(DB);
+              gsPost({action:"addAttendance",data:rec_out});
+              refresh();
+            }).catch(()=>{
+              const rec_outn={id:Date.now(),username:SESSION.username,type:"out",timestamp:Date.now(),location:null};
+              DB.attendance.push(rec_outn);save(DB);
+              gsPost({action:"addAttendance",data:rec_outn});
+              refresh();
+            });
+          });
+        } else {
+          mainBtn.disabled=true;mainBtn.innerHTML='<span class="spinner"></span>Getting location…';
+          getLocation().then(loc=>{
+            const rec_in={id:Date.now(),username:SESSION.username,type:"in",timestamp:Date.now(),location:loc};
+            DB.attendance.push(rec_in);save(DB);
+            gsPost({action:"addAttendance",data:rec_in});
+            refresh();
+          }).catch(msg=>{mainBtn.disabled=false;mainBtn.textContent="▶ Check In";alert(msg)});
+        }
+      });
+      content.appendChild(mainBtn);
+
+      const st=el("div","section-title","Today's Activity",{marginTop:"2rem"});
+      content.appendChild(st);
+      const tr=todayRecs();
+      if(!tr.length){content.appendChild(el("div","empty","No records today. Check in to get started!"))}
+      else tr.forEach(r=>{
+        const rc=el("div","record-card");
+        const dot=el("span","status-dot "+(r.type==="in"?"dot-in":"dot-out"));
+        const info=h("div",{style:{flex:1}});
+        info.appendChild(document.createTextNode(r.type==="in"?"Checked In":"Checked Out"));
+        const loc=el("div","rec-loc",r.location?`📍 ${r.location.lat.toFixed(4)}, ${r.location.lng.toFixed(4)}`:"No location");
+        info.appendChild(loc);
+        const time=el("div","rec-time",new Date(r.timestamp).toLocaleTimeString());
+        rc.appendChild(dot);rc.appendChild(info);rc.appendChild(time);
+        content.appendChild(rc);
+      });
+    } else {
+      // Monthly
+      const allM=[...new Set(myRecs().map(r=>{const d=new Date(r.timestamp);return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`}))].sort().reverse();
+      if(!allM.includes(curMonthKey))allM.unshift(curMonthKey);
+
+      const bar=el("div","month-bar");
+      const lbl=h("label",{},"Month:");lbl.style.margin="0";
+      const sel=h("select",{});
+      allM.forEach(m=>{const o=h("option",{value:m},new Date(m+"-01").toLocaleString("default",{month:"long",year:"numeric"}));if(m===selMonth)o.selected=true;sel.appendChild(o)});
+      sel.addEventListener("change",()=>{selMonth=sel.value;refresh()});
+      bar.appendChild(lbl);bar.appendChild(sel);content.appendChild(bar);
+
+      const mRecs=myRecs().filter(r=>{const d=new Date(r.timestamp);return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`===selMonth});
+      const mSurveys=(DB.surveys||[]).filter(s=>s.username===SESSION.username&&s.date&&s.date.startsWith(selMonth));
+
+      const g3=el("div","grid3",null,{marginBottom:"1.2rem"});
+      const policySum=mSurveys.reduce((s,r)=>s+(parseInt(r.policy)||0),0);
+      const rsaSum=mSurveys.reduce((s,r)=>s+(parseInt(r.rsa)||0),0);
+      const gpaSum=mSurveys.reduce((s,r)=>s+(parseInt(r.gpa)||0),0);
+      [["policy","📜 Policy",policySum],["rsa","🔐 RSA",rsaSum],["gpa","🎓 GPA",gpaSum]].forEach(([cls,lbl,v])=>{
+        const b=el("div","stat-box "+cls);b.innerHTML=`<div class="num">${v}</div><div class="lbl">${lbl} Total</div>`;g3.appendChild(b);
+      });
+      content.appendChild(g3);
+
+      // Day map
+      const dayMap={};
+      mRecs.forEach(r=>{const k=new Date(r.timestamp).toDateString();if(!dayMap[k])dayMap[k]={date:new Date(r.timestamp),in:null,out:null,loc:null};
+        if(r.type==="in"&&(!dayMap[k].in||r.timestamp<dayMap[k].in)){dayMap[k].in=r.timestamp;dayMap[k].loc=r.location}
+        if(r.type==="out"&&(!dayMap[k].out||r.timestamp>dayMap[k].out))dayMap[k].out=r.timestamp;
+      });
+      const days=Object.values(dayMap).sort((a,b)=>b.date-a.date);
+
+      const st1=el("div","section-title",`Attendance — ${new Date(selMonth+"-01").toLocaleString("default",{month:"long",year:"numeric"})}`);
+      content.appendChild(st1);
+
+      if(!days.length){content.appendChild(el("div","empty","No attendance for this month."))}
+      else{
+        const tw=h("div",{style:{overflowX:"auto",background:"var(--card)",borderRadius:"12px",border:"1px solid var(--border)"}});
+        const tbl=el("table","month-table");
+        tbl.innerHTML=`<thead><tr><th>Date</th><th>Check In</th><th>Check Out</th><th>Hours</th></tr></thead>`;
+        const tb2=document.createElement("tbody");
+        days.forEach(d=>{
+          const tr2=document.createElement("tr");
+          const mins=d.in&&d.out?Math.round((d.out-d.in)/60000):null;
+          const hrs=mins?`${Math.floor(mins/60)}h ${mins%60}m`:"—";
+          tr2.innerHTML=`<td style="font-family:var(--mono);font-size:.8rem">${d.date.toLocaleDateString("en-GB",{weekday:"short",day:"2-digit",month:"short"})}</td>
+            <td style="color:var(--accent2);font-family:var(--mono);font-size:.82rem">${d.in?new Date(d.in).toLocaleTimeString([],({"hour":"2-digit","minute":"2-digit"})):"—"}</td>
+            <td style="color:var(--danger);font-family:var(--mono);font-size:.82rem">${d.out?new Date(d.out).toLocaleTimeString([],({"hour":"2-digit","minute":"2-digit"})):"—"}</td>
+            <td style="font-family:var(--mono);font-size:.82rem;color:var(--warn)">${hrs}</td>`;
+          tb2.appendChild(tr2);
+        });
+        tbl.appendChild(tb2);tw.appendChild(tbl);content.appendChild(tw);
+      }
+
+      if(mSurveys.length){
+        const st2=el("div","section-title","Survey Responses");content.appendChild(st2);
+        const tw2=h("div",{style:{overflowX:"auto",background:"var(--card)",borderRadius:"12px",border:"1px solid var(--border)"}});
+        const tbl2=el("table","month-table");
+        tbl2.innerHTML=`<thead><tr><th>Date</th><th>📜 Policy</th><th>🔐 RSA</th><th>🎓 GPA</th></tr></thead>`;
+        const tb3=document.createElement("tbody");
+        [...mSurveys].sort((a,b)=>b.timestamp-a.timestamp).forEach(s=>{
+          const tr3=document.createElement("tr");
+          tr3.innerHTML=`<td style="font-family:var(--mono);font-size:.8rem">${s.date}</td>
+            <td><span class="pill pill-pend">${s.policy||"—"}</span></td>
+            <td><span class="pill pill-yes">${s.rsa||"—"}</span></td>
+            <td><span class="pill pill-pend">${s.gpa||"—"}</span></td>`;
+          tb3.appendChild(tr3);
+        });
+        tbl2.appendChild(tb3);tw2.appendChild(tbl2);content.appendChild(tw2);
+      }
+    }
+  }
+  refresh();render(dash);
+}
+
+// ── SURVEY EDIT MODAL ────────────────────────────────────────────────────────
+function openSurveyEditModal(survey, onSave) {
+  const ov=el("div","modal-overlay");
+  const mo=el("div","modal",null,{maxWidth:"420px"});
+  const xb=h("button",{className:"x-btn"},"✕");xb.addEventListener("click",()=>ov.remove());
+  mo.appendChild(xb);
+  mo.appendChild(h("div",{style:{fontSize:"1.5rem",marginBottom:".4rem"}},"✏️"));
+  mo.appendChild(h("h2",{},"Edit Survey Entry"));
+  const sub=el("div","sub","");
+  sub.innerHTML=`User: <strong>${survey.username}</strong> &nbsp;·&nbsp; Date: <strong>${survey.date}</strong>`;
+  mo.appendChild(sub);
+
+  function numField(labelTxt, cls, val) {
+    const wrap=h("div",{style:{marginBottom:"1.2rem"}});
+    const ql=el("div","q-label "+cls,labelTxt);
+    const inp=h("input",{type:"number",min:"0",value:val});
+    inp.style.marginBottom="0";
+    wrap.appendChild(ql);wrap.appendChild(inp);
+    return {wrap,inp};
+  }
+  const {wrap:w1,inp:i1}=numField("📜 Policy Count","q-policy",survey.policy||0);
+  const {wrap:w2,inp:i2}=numField("🔐 RSA Count","q-rsa",survey.rsa||0);
+  const {wrap:w3,inp:i3}=numField("🎓 GPA Count","q-gpa",survey.gpa||0);
+
+  const saveBtn=h("button",{className:"btn btn-primary",style:{marginTop:".5rem"}},"💾 Save Changes");
+  saveBtn.addEventListener("click",()=>{
+    const idx=DB.surveys.findIndex(s=>s.id===survey.id);
+    if(idx>=0){
+      DB.surveys[idx]={...DB.surveys[idx],policy:i1.value,rsa:i2.value,gpa:i3.value};
+      save(DB);
+      syncToSheet();
+    }
+    ov.remove();
+    onSave();
+  });
+  const delBtn=h("button",{className:"btn btn-danger",style:{marginTop:".6rem"}},"🗑 Delete This Entry");
+  delBtn.addEventListener("click",()=>{
+    if(!confirm("Delete this survey entry?"))return;
+    DB.surveys=DB.surveys.filter(s=>s.id!==survey.id);
+    save(DB);syncToSheet();
+    ov.remove();onSave();
+  });
+  const cancelBtn=h("button",{className:"btn btn-ghost",style:{marginTop:".6rem"}},"Cancel");
+  cancelBtn.addEventListener("click",()=>ov.remove());
+
+  [w1,w2,w3,saveBtn,delBtn,cancelBtn].forEach(x=>mo.appendChild(x));
+  ov.appendChild(mo);document.body.appendChild(ov);
+}
+
+// ── ADMIN DASH ────────────────────────────────────────────────────────────────
+function renderAdmin(){
+  let curTab="users";
+  let dlMonth="";
+  let editingUser=null;
+  const dash=el("div","dash");
+
+  // VIBE Header
+  const hdr=el("div","vibe-header");
+  const logoWrap=h("div",{});
+  const logoText=h("div",{className:"vibe-logo-text"});
+  logoText.innerHTML='<span style="color:#e63329">V</span><span style="color:#f5a623">I</span><span style="color:#2563eb">B</span><span style="color:#16a34a">E</span>';
+  const tagline=el("div","vibe-tagline","Insurance Broking & Advisory Service");
+  logoWrap.appendChild(logoText);logoWrap.appendChild(tagline);hdr.appendChild(logoWrap);
+  const hdrR=h("div",{style:{display:"flex",alignItems:"center",gap:".75rem"}});
+  hdrR.appendChild(h("span",{style:{fontSize:".85rem",color:"#64748b"}},SESSION.username));
+  hdrR.appendChild(h("span",{style:{background:"#2563eb",color:"#fff",fontSize:".7rem",padding:".2rem .6rem",borderRadius:"20px",fontWeight:"700"}},"Admin"));
+  const soBtn=h("button",{style:{padding:".4rem .9rem",border:"1.5px solid #e5e7eb",borderRadius:"8px",background:"#fff",color:"#64748b",fontFamily:"var(--font)",fontSize:".82rem",cursor:"pointer",fontWeight:"600"}},"Sign Out");
+  soBtn.addEventListener("click",()=>{SESSION=null;route()});
+  const syncBtn=h("button",{style:{padding:".4rem .9rem",border:"1.5px solid #e5e7eb",borderRadius:"8px",background:SCRIPT_URL?"#dcfce7":"#f1f5f9",color:SCRIPT_URL?"#15803d":"#94a3b8",fontFamily:"var(--font)",fontSize:".82rem",cursor:"pointer",fontWeight:"600",transition:"all .2s"}},(SCRIPT_URL?"🟢 Sync Now":"⚙️ Setup Sheets"));
+  syncBtn.addEventListener("click",async ()=>{
+    if(!SCRIPT_URL){
+      const url=prompt("Paste your Google Apps Script Web App URL:");
+      if(!url)return;
+      SCRIPT_URL=url.trim();localStorage.setItem("vibeScriptUrl",SCRIPT_URL);
+      syncBtn.textContent="⏳ Connecting…";
+    } else {
+      syncBtn.textContent="⏳ Syncing…";syncBtn.disabled=true;
+    }
+    // Pull latest from sheet first, then push local DB
+    await loadFromSheet();
+    const ok=await syncToSheet();
+    if(ok&&ok.ok){syncBtn.textContent="✅ Synced!";syncBtn.style.background="#dcfce7";syncBtn.style.color="#15803d";}
+    else{syncBtn.textContent="❌ Failed";}
+    refresh();
+    setTimeout(()=>{syncBtn.textContent=SCRIPT_URL?"🟢 Sync Now":"⚙️ Setup Sheets";syncBtn.disabled=false;},3000);
+  });
+  hdrR.appendChild(syncBtn);
+  hdrR.appendChild(soBtn);hdr.appendChild(hdrR);dash.appendChild(hdr);
+
+  const content=el("div","content");dash.appendChild(content);
+
+  function refresh(){
+    content.innerHTML="";
+    const regularUsers=DB.users.filter(u=>u.role!=="admin");
+    const allSurveys=DB.surveys||[];
+    const allAttend=DB.attendance.sort((a,b)=>b.timestamp-a.timestamp);
+    const todayStr=new Date().toISOString().slice(0,10);
+    const todaySurveys=allSurveys.filter(s=>s.date===todayStr);
+    const todayInUsers=[...new Set(allAttend.filter(r=>r.type==="in"&&new Date(r.timestamp).toDateString()===new Date().toDateString()).map(r=>r.username))];
+    const todayAbsent=regularUsers.filter(u=>!todayInUsers.includes(u.username));
+    // Auto-mark absences for today when admin opens dashboard
+    markAbsences();
+    const totalPolicy=allSurveys.reduce((s,r)=>s+(parseInt(r.policy)||0),0);
+    const todayPolicy=todaySurveys.reduce((s,r)=>s+(parseInt(r.policy)||0),0);
+    const todayRsa=todaySurveys.reduce((s,r)=>s+(parseInt(r.rsa)||0),0);
+    const todayGpa=todaySurveys.reduce((s,r)=>s+(parseInt(r.gpa)||0),0);
+
+    // HOME STAT CARDS
+    const homeGrid=h("div",{style:{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:"1rem",margin:"1.5rem 0 .8rem",className:"home-cards"}});
+
+    // Present card
+    const c1=el("div","home-card");
+    c1.innerHTML=`<div class="big-num" style="color:#16a34a">${todayInUsers.length}</div><div class="card-label">Today Present</div>`;
+    const p1=h("div",{style:{marginTop:".6rem",display:"flex",gap:".3rem",flexWrap:"wrap"}});
+    if(todayInUsers.length){todayInUsers.forEach(u=>{const sp=h("span",{className:"name-pill",style:{background:"#dcfce7",color:"#15803d"}},u);p1.appendChild(sp)})}
+    else p1.appendChild(h("span",{style:{color:"#9ca3af",fontSize:".75rem"}},"No check-ins yet"));
+    c1.appendChild(p1);homeGrid.appendChild(c1);
+
+    // Absent card
+    const c2=el("div","home-card");
+    c2.innerHTML=`<div class="big-num" style="color:#dc2626">${todayAbsent.length}</div><div class="card-label">Today Absent</div>`;
+    const p2=h("div",{style:{marginTop:".6rem",display:"flex",gap:".3rem",flexWrap:"wrap"}});
+    if(todayAbsent.length){todayAbsent.forEach(u=>{const sp=h("span",{className:"name-pill",style:{background:"#fee2e2",color:"#b91c1c"}},u.username);p2.appendChild(sp)})}
+    else p2.appendChild(h("span",{style:{color:"#9ca3af",fontSize:".75rem"}},"All present! 🎉"));
+    c2.appendChild(p2);homeGrid.appendChild(c2);
+
+    // Policy card
+    const c3=el("div","home-card");
+    c3.innerHTML=`<div class="big-num" style="color:#7c3aed">${totalPolicy}</div><div class="card-label">Total Policy</div>`;
+    const p3=h("div",{style:{marginTop:".6rem",display:"flex",gap:".5rem",flexWrap:"wrap"}});
+    [["Today: "+todayPolicy,"#ede9fe","#6d28d9"],["RSA: "+todayRsa,"#fef3c7","#92400e"],["GPA: "+todayGpa,"#d1fae5","#065f46"]].forEach(([txt,bg,col])=>{
+      p3.appendChild(h("span",{style:{background:bg,color:col,fontSize:".72rem",padding:".2rem .55rem",borderRadius:"8px",fontWeight:"600"}},txt));
+    });
+    c3.appendChild(p3);homeGrid.appendChild(c3);
+    content.appendChild(homeGrid);
+
+    // Date strip
+    const ds=h("div",{style:{fontSize:".78rem",color:"#94a3b8",marginBottom:"1.2rem",fontWeight:"600"}},
+      `📅 ${new Date().toLocaleDateString("en-GB",{weekday:"long",day:"2-digit",month:"long",year:"numeric"})} · ${regularUsers.length} total staff`);
+    content.appendChild(ds);
+
+    // NAV TABS
+    const navRow=h("div",{style:{display:"flex",gap:".6rem",marginBottom:"1.5rem",flexWrap:"wrap"}});
+    [["users","👥 Users"],["records","📋 Attendance"],["export","📜 Policy Details"]].forEach(([key,lbl])=>{
+      const btn=h("button",{className:"home-nav-btn",style:{background:curTab===key?"#2563eb":"#fff",color:curTab===key?"#fff":"#374151",boxShadow:curTab===key?"0 4px 14px #2563eb44":"0 1px 4px #0000001a"}},lbl);
+      btn.addEventListener("click",()=>{curTab=key;refresh()});
+      navRow.appendChild(btn);
+    });
+    content.appendChild(navRow);
+
+    // ── USERS TAB ──
+    if(curTab==="users"){
+      // Create user form
+      const fc=el("div","card",null,{marginBottom:"1.5rem"});
+      fc.appendChild(h("h2",{},"Create New User"));
+      const errB=el("div","alert alert-error hidden","");
+      const sucB=el("div","alert alert-success hidden","");
+      fc.appendChild(errB);fc.appendChild(sucB);
+      const iUN=h("input",{type:"text",placeholder:"Username"});
+      const iPW=h("input",{type:"password",placeholder:"Password"});
+      const iDS=h("input",{type:"text",placeholder:"e.g. Sales Executive"});
+      const iLoc=h("input",{type:"text",placeholder:"e.g. Chennai Branch"});
+      [["Username",iUN],["Password",iPW],["Designation",iDS],["Working Location",iLoc]].forEach(([l,i])=>{fc.appendChild(h("label",{},l));fc.appendChild(i)});
+      const addBtn=h("button",{className:"btn btn-primary"},"+ Create User");
+      addBtn.addEventListener("click",()=>{
+        const u=iUN.value.trim(),p=iPW.value.trim(),d=iDS.value.trim();
+        errB.classList.add("hidden");sucB.classList.add("hidden");
+        if(!u||!p){errB.textContent="Username and password required.";errB.classList.remove("hidden");return}
+        if(DB.users.find(x=>x.username===u)){errB.textContent="Username already exists.";errB.classList.remove("hidden");return}
+        const loc2=iLoc.value.trim();DB.users.push({username:u,password:p,designation:d,location:loc2,role:"user"});save(DB);
+        sucB.textContent=`User "${u}" created.`;sucB.classList.remove("hidden");
+        iUN.value="";iPW.value="";iDS.value="";refresh();
+      });
+      fc.appendChild(addBtn);content.appendChild(fc);
+
+      content.appendChild(el("div","section-title","All Users"));
+      if(!regularUsers.length){content.appendChild(el("div","empty","No users yet."))}
+      else regularUsers.forEach(u=>{
+        const row=el("div","user-row");
+        const info=h("div",{});
+        info.appendChild(el("div","uname",u.username));
+        const roleRow=h("div",{style:{display:"flex",alignItems:"center",gap:".5rem",flexWrap:"wrap"}});
+        roleRow.appendChild(h("span",{style:{fontSize:".75rem",color:"var(--muted)"}},(u.designation||"Regular User")+(u.location?" · 📍 "+u.location:"")));
+        const pwPill=h("span",{style:{fontSize:".7rem",background:"#ffd16622",color:"var(--warn)",border:"1px solid #ffd16644",borderRadius:"6px",padding:".1rem .45rem",fontFamily:"var(--mono)",letterSpacing:".03em",cursor:"pointer"}},"🔑 ••••••");
+        let pwShown=false;
+        pwPill.addEventListener("click",()=>{pwShown=!pwShown;pwPill.textContent=pwShown?"🔑 "+u.password:"🔑 ••••••"});
+        roleRow.appendChild(pwPill);
+        info.appendChild(roleRow);
+        row.appendChild(info);
+        const btns=h("div",{style:{display:"flex",gap:".5rem"}});
+        const eBtn=h("button",{className:"btn btn-ghost btn-sm"},"✏️ Edit");
+        eBtn.addEventListener("click",()=>openEditModal(u));
+        const dBtn=h("button",{className:"btn btn-danger btn-sm"},"Delete");
+        dBtn.addEventListener("click",()=>{
+          if(!confirm(`Delete "${u.username}"?`))return;
+          DB.users=DB.users.filter(x=>x.username!==u.username);
+          DB.attendance=DB.attendance.filter(r=>r.username!==u.username);
+          save(DB);refresh();
+        });
+        btns.appendChild(eBtn);btns.appendChild(dBtn);row.appendChild(btns);content.appendChild(row);
+      });
+    }
+
+    // ── RECORDS TAB ──
+    if(curTab==="records"){
+      const now2=new Date();
+      const curMK=`${now2.getFullYear()}-${String(now2.getMonth()+1).padStart(2,"0")}`;
+      const months=[...new Set(allAttend.map(r=>{const d=new Date(r.timestamp);return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`}))].sort().reverse();
+      if(!months.includes(curMK))months.unshift(curMK);
+      if(!window._recMonth)window._recMonth=curMK;
+      if(!window._recUser)window._recUser="all";
+
+      const bar=el("div","month-bar");
+      const ml=h("label",{},"Month:");ml.style.margin="0";
+      const ms=h("select",{});months.forEach(m=>{const o=h("option",{value:m},new Date(m+"-01").toLocaleString("default",{month:"long",year:"numeric"}));if(m===window._recMonth)o.selected=true;ms.appendChild(o)});
+      ms.addEventListener("change",()=>{window._recMonth=ms.value;refresh()});
+      const ul=h("label",{},"\u00a0\u00a0User:");ul.style.margin="0";
+      const us=h("select",{});
+      h("option",{value:"all"},"All Users");
+      [h("option",{value:"all"},"All Users"),...regularUsers.map(u=>h("option",{value:u.username},u.username))].forEach(o=>{if(o.value===window._recUser)o.selected=true;us.appendChild(o)});
+      us.addEventListener("change",()=>{window._recUser=us.value;refresh()});
+      [ml,ms,ul,us].forEach(x=>bar.appendChild(x));content.appendChild(bar);
+
+      const filtered=allAttend.filter(r=>{const d=new Date(r.timestamp);const m=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;return m===window._recMonth&&(window._recUser==="all"||r.username===window._recUser)});
+      const dayMap2={};
+      filtered.forEach(r=>{const k=r.username+"__"+new Date(r.timestamp).toDateString();if(!dayMap2[k])dayMap2[k]={username:r.username,date:new Date(r.timestamp),in:null,out:null,loc:null};
+        if(r.type==="in"&&(!dayMap2[k].in||r.timestamp<dayMap2[k].in)){dayMap2[k].in=r.timestamp;dayMap2[k].loc=r.location}
+        if(r.type==="out"&&(!dayMap2[k].out||r.timestamp>dayMap2[k].out))dayMap2[k].out=r.timestamp;
+      });
+      const rows=Object.values(dayMap2).sort((a,b)=>b.date-a.date);
+
+      // Summary
+      const sg=el("div","grid3",null,{marginBottom:"1.2rem"});
+      const present=rows.filter(r=>r.in).length;
+      const full=rows.filter(r=>r.in&&r.out).length;
+      const totalMin=rows.filter(r=>r.in&&r.out).reduce((s,r)=>s+Math.round((r.out-r.in)/60000),0);
+      const avg=full>0?(totalMin/full/60).toFixed(1):"—";
+      [["stat-box","📋 Days Present",present],["stat-box gpa","Full Days",full],["stat-box rsa","Avg Hours",avg]].forEach(([cls,l,v])=>{
+        const b=el("div",cls);b.innerHTML=`<div class="num">${v}</div><div class="lbl">${l}</div>`;sg.appendChild(b);
+      });
+      content.appendChild(sg);
+
+      // Absent users for selected month
+      const absentRecs=(DB.absences||[]).filter(a=>{
+        const m=a.date?a.date.slice(0,7):"";
+        return m===window._recMonth&&(window._recUser==="all"||a.username===window._recUser);
+      });
+      if(absentRecs.length){
+        const abSt=el("div","section-title","Absent Days",{marginTop:"1.2rem"});content.appendChild(abSt);
+        const abWrap=h("div",{style:{background:"var(--card)",borderRadius:"12px",border:"1px solid #ff5f6d44",overflow:"hidden",marginBottom:"1rem"}});
+        const abTbl=document.createElement("table");abTbl.style.cssText="width:100%;border-collapse:collapse;font-size:.85rem";
+        const abHead=document.createElement("thead");abHead.innerHTML='<tr><th class="attend-th">Date</th><th class="attend-th">User</th><th class="attend-th">Status</th></tr>';
+        abTbl.appendChild(abHead);
+        const abBody=document.createElement("tbody");
+        absentRecs.sort((a,b)=>b.date.localeCompare(a.date)).forEach((a,i)=>{
+          const tr2=document.createElement("tr");if(i%2)tr2.style.background="#ffffff05";
+          const uInfo=regularUsers.find(u=>u.username===a.username);
+          tr2.innerHTML=`<td class="attend-td" style="font-family:var(--mono);font-size:.8rem">${a.date}</td>
+            <td class="attend-td" style="font-weight:700;color:var(--accent)">${a.username}${uInfo?.designation?`<div style="font-size:.7rem;color:var(--muted)">${uInfo.designation}</div>`:""}</td>
+            <td class="attend-td"><span style="padding:.2rem .6rem;border-radius:20px;font-size:.75rem;font-weight:700;background:#ff5f6d22;color:var(--danger);border:1px solid #ff5f6d44">🔴 Absent</span></td>`;
+          abBody.appendChild(tr2);
+        });
+        abTbl.appendChild(abBody);abWrap.appendChild(abTbl);content.appendChild(abWrap);
+      }
+
+      if(!rows.length){content.appendChild(el("div","empty","No records for this filter."))}
+      else{
+        const tw=h("div",{style:{overflowX:"auto",background:"var(--card)",borderRadius:"12px",border:"1px solid var(--border)"}});
+        const tbl=document.createElement("table");tbl.style.width="100%";tbl.style.borderCollapse="collapse";tbl.style.fontSize=".85rem";
+        const thead=document.createElement("thead");
+        const hrow=document.createElement("tr");
+        ["Date","User","Check In","Check Out","Hours","Location"].forEach(h2=>{const th=h("th",{className:"attend-th"},h2);hrow.appendChild(th)});
+        thead.appendChild(hrow);tbl.appendChild(thead);
+        const tbody=document.createElement("tbody");
+        rows.forEach((r,i)=>{
+          const tr2=document.createElement("tr");if(i%2)tr2.style.background="#ffffff05";
+          const mins=r.in&&r.out?Math.round((r.out-r.in)/60000):null;
+          const hrs=mins?`${Math.floor(mins/60)}h ${mins%60}m`:"—";
+          const hrsVal=mins?mins/60:null;
+          const hrsColor=hrsVal>=8?"var(--gpa)":hrsVal>=4?"var(--warn)":"var(--danger)";
+          const hrsBg=hrsVal>=8?"#38d9a922":hrsVal>=4?"#ffd16622":"#ff5f6d22";
+          const hrsBorder=hrsVal>=8?"#38d9a944":hrsVal>=4?"#ffd16644":"#ff5f6d44";
+          const uInfo=regularUsers.find(u=>u.username===r.username);
+          const cells=[
+            `<td class="attend-td" style="font-family:var(--mono);font-size:.8rem;white-space:nowrap">${r.date.toLocaleDateString("en-GB",{weekday:"short",day:"2-digit",month:"short",year:"numeric"})}</td>`,
+            `<td class="attend-td" style="font-weight:700;color:var(--accent)">${r.username}${uInfo?.designation?`<div style="font-size:.7rem;color:var(--muted);font-weight:400">${uInfo.designation}</div>`:""}</td>`,
+            `<td class="attend-td" style="font-family:var(--mono);font-size:.82rem;color:var(--accent2)">${r.in?new Date(r.in).toLocaleTimeString([],({"hour":"2-digit","minute":"2-digit"})):"—"}</td>`,
+            `<td class="attend-td" style="font-family:var(--mono);font-size:.82rem;color:var(--danger)">${r.out?new Date(r.out).toLocaleTimeString([],({"hour":"2-digit","minute":"2-digit"})):"—"}</td>`,
+            `<td class="attend-td">${mins?`<span style="padding:.2rem .6rem;border-radius:20px;font-size:.75rem;font-weight:700;background:${hrsBg};color:${hrsColor};border:1px solid ${hrsBorder};font-family:var(--mono)">${hrs}</span>`:"<span style='color:var(--muted)'>—</span>"}</td>`,
+            `<td class="attend-td" style="color:var(--muted);font-size:.78rem;font-family:var(--mono)">${r.loc?`${r.loc.lat.toFixed(4)}, ${r.loc.lng.toFixed(4)}`:"—"}</td>`,
+          ];
+          tr2.innerHTML=cells.join("");tbody.appendChild(tr2);
+        });
+        tbl.appendChild(tbody);tw.appendChild(tbl);content.appendChild(tw);
+      }
+    }
+
+    // ── EXPORT / POLICY TAB ──
+    if(curTab==="export"){
+      const todayFull=new Date().toLocaleDateString("en-GB",{weekday:"long",day:"2-digit",month:"long",year:"numeric"});
+      content.appendChild(el("div","section-title","Today's Counts — "+todayFull));
+
+      const todayAttendCount=allAttend.filter(r=>new Date(r.timestamp).toDateString()===new Date().toDateString()).length;
+      // Today row
+      const cg=h("div",{style:{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:".8rem",marginBottom:".8rem"}});
+      [["policy",todayPolicy,"📜 Today Policy"],["rsa",todayRsa,"🔐 Today RSA"],["gpa",todayGpa,"🎓 Today GPA"],["",todayAttendCount,"📋 Today Attend"]].forEach(([cls,v,l])=>{
+        const b=el("div","stat-box "+(cls||""),null,{padding:".8rem"});
+        b.innerHTML=`<div class="num" style="font-size:1.5rem">${v}</div><div class="lbl">${l}</div>`;
+        cg.appendChild(b);
+      });
+      content.appendChild(cg);
+      // Month total row
+      const nowM=new Date();const curMK2=`${nowM.getFullYear()}-${String(nowM.getMonth()+1).padStart(2,"0")}`;
+      const monthSurveys=allSurveys.filter(s=>s.date&&s.date.startsWith(curMK2));
+      const monthPolicy=monthSurveys.reduce((s,r)=>s+(parseInt(r.policy)||0),0);
+      const monthRsa=monthSurveys.reduce((s,r)=>s+(parseInt(r.rsa)||0),0);
+      const monthGpa=monthSurveys.reduce((s,r)=>s+(parseInt(r.gpa)||0),0);
+      const monthAttend=[...new Set(allAttend.filter(r=>r.type==="in"&&new Date(r.timestamp).toISOString().slice(0,7)===curMK2).map(r=>r.username+new Date(r.timestamp).toDateString()))].length;
+      const monthLbl=nowM.toLocaleString("default",{month:"long",year:"numeric"});
+      const cg2=h("div",{style:{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:".8rem",marginBottom:"1rem"}});
+      [["policy",monthPolicy,"📜 "+monthLbl+" Policy"],["rsa",monthRsa,"🔐 "+monthLbl+" RSA"],["gpa",monthGpa,"🎓 "+monthLbl+" GPA"],["",monthAttend,"📋 "+monthLbl+" Attend"]].forEach(([cls,v,l])=>{
+        const b=el("div","stat-box "+(cls||""),null,{padding:".8rem",borderStyle:"dashed",opacity:".9"});
+        b.innerHTML=`<div class="num" style="font-size:1.5rem">${v}</div><div class="lbl" style="font-size:.72rem">${l}</div>`;
+        cg2.appendChild(b);
+      });
+      content.appendChild(cg2);
+
+      // All survey entries — editable
+      content.appendChild(el("div","section-title","All Survey Entries — ✏️ Click Edit to fix wrong counts"));
+      const allSurveysSorted=[...allSurveys].sort((a,b)=>b.timestamp-a.timestamp);
+      if(!allSurveysSorted.length){content.appendChild(el("div","empty","No survey entries yet."));}
+      else{
+        const tw=h("div",{style:{background:"var(--card)",borderRadius:"12px",border:"1px solid var(--border)",overflow:"hidden",marginBottom:"1.2rem"}});
+        const tbl=el("table","month-table");
+        tbl.innerHTML='<thead><tr><th>User</th><th>Date</th><th>📜 Policy</th><th>🔐 RSA</th><th>🎓 GPA</th><th>Edit</th></tr></thead>';
+        const tb2=document.createElement("tbody");
+        allSurveysSorted.slice(0,60).forEach(s=>{
+          const uInfo=regularUsers.find(u=>u.username===s.username);
+          const tr2=document.createElement("tr");
+          tr2.innerHTML=`<td style="font-weight:600">${s.username}<br><span style="font-size:.7rem;color:var(--muted)">${uInfo?.designation||""}</span></td>
+            <td style="font-family:var(--mono);font-size:.78rem">${s.date}</td>
+            <td><span class="pill pill-pend">${parseInt(s.policy)||0}</span></td>
+            <td><span class="pill pill-yes">${parseInt(s.rsa)||0}</span></td>
+            <td><span class="pill pill-pend">${parseInt(s.gpa)||0}</span></td>
+            <td></td>`;
+          const editTd=tr2.querySelector("td:last-child");
+          const eBtn=h("button",{className:"btn btn-ghost btn-sm"},"✏️ Edit");
+          eBtn.addEventListener("click",()=>openSurveyEditModal(s,refresh));
+          editTd.appendChild(eBtn);
+          tb2.appendChild(tr2);
+        });
+        tbl.appendChild(tb2);tw.appendChild(tbl);content.appendChild(tw);
+      }
+
+
+
+      // Month total per user — uses dlMonth filter (same as download section)
+      const now2x=new Date();const curMKx=`${now2x.getFullYear()}-${String(now2x.getMonth()+1).padStart(2,"0")}`;
+      const selMx=dlMonth||curMKx;
+      const selMLabel=new Date(selMx+"-01").toLocaleString("default",{month:"long",year:"numeric"});
+      // Month picker for this table
+      const allMonthsX=[...new Set([...allSurveys.map(s=>s.date?.slice(0,7)).filter(Boolean),...allAttend.map(r=>{const d=new Date(r.timestamp);return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`})])].sort().reverse();
+      if(!allMonthsX.includes(curMKx))allMonthsX.unshift(curMKx);
+      const mPickerRow=el("div","month-bar",null,{marginTop:"1.5rem",marginBottom:".5rem"});
+      const mPickLbl=h("label",{},"Month Total:");mPickLbl.style.margin="0";
+      const mPickSel=h("select",{});
+      allMonthsX.forEach(m=>{const o=h("option",{value:m},new Date(m+"-01").toLocaleString("default",{month:"long",year:"numeric"}));if(m===selMx)o.selected=true;mPickSel.appendChild(o)});
+      mPickSel.addEventListener("change",()=>{dlMonth=mPickSel.value;refresh()});
+      mPickerRow.appendChild(mPickLbl);mPickerRow.appendChild(mPickSel);content.appendChild(mPickerRow);
+
+      content.appendChild(el("div","section-title",`Per User — ${selMLabel} Total`));
+      const tw2=h("div",{style:{background:"var(--card)",borderRadius:"12px",border:"1px solid var(--border)",overflow:"hidden",marginBottom:"1.5rem"}});
+      const tbl2=el("table","month-table");
+      tbl2.innerHTML='<thead><tr><th>User</th><th>📜 Policy</th><th>🔐 RSA</th><th>🎓 GPA</th><th>📋 Days</th></tr></thead>';
+      const tb3=document.createElement("tbody");
+      regularUsers.forEach(u=>{
+        const uS=allSurveys.filter(s=>s.username===u.username&&s.date&&s.date.startsWith(selMx));
+        const uD=[...new Set(allAttend.filter(r=>r.username===u.username&&r.type==="in"&&new Date(r.timestamp).toISOString().slice(0,7)===selMx).map(r=>new Date(r.timestamp).toDateString()))].length;
+        const tr3=document.createElement("tr");
+        tr3.innerHTML=`<td style="font-weight:600">${u.username}<br><span style="font-size:.72rem;color:var(--muted)">${u.designation||""}${u.location?" · 📍 "+u.location:""}</span></td>
+          <td><span class="pill pill-pend">${uS.reduce((s,r)=>s+(parseInt(r.policy)||0),0)}</span></td>
+          <td><span class="pill pill-yes">${uS.reduce((s,r)=>s+(parseInt(r.rsa)||0),0)}</span></td>
+          <td><span class="pill pill-pend">${uS.reduce((s,r)=>s+(parseInt(r.gpa)||0),0)}</span></td>
+          <td><span class="pill" style="background:#4f8ef722;color:var(--accent);border:1px solid #4f8ef744">${uD}</span></td>`;
+        tb3.appendChild(tr3);
+      });
+      tbl2.appendChild(tb3);tw2.appendChild(tbl2);content.appendChild(tw2);
+
+      // Download section
+      content.appendChild(el("div","section-title","Download Data"));
+      const mbar=el("div","month-bar");
+      const allMonths2=[...new Set([...allSurveys.map(s=>s.date?.slice(0,7)).filter(Boolean),...allAttend.map(r=>{const d=new Date(r.timestamp);return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`})])].sort().reverse();
+      const ml2=h("label",{},"Filter by Month:");ml2.style.margin="0";
+      const ms2=h("select",{});
+      [h("option",{value:""},"All Months"),...allMonths2.map(m=>h("option",{value:m},new Date(m+"-01").toLocaleString("default",{month:"long",year:"numeric"})))].forEach(o=>{if(o.value===dlMonth)o.selected=true;ms2.appendChild(o)});
+      ms2.addEventListener("change",()=>{dlMonth=ms2.value;refresh()});
+      mbar.appendChild(ml2);mbar.appendChild(ms2);content.appendChild(mbar);
+
+      const fS=dlMonth?allSurveys.filter(s=>s.date&&s.date.startsWith(dlMonth)):allSurveys;
+      const fA=dlMonth?allAttend.filter(r=>{const d=new Date(r.timestamp);return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`===dlMonth}):allAttend;
+      const mLbl=dlMonth?new Date(dlMonth+"-01").toLocaleString("default",{month:"long",year:"numeric"}):"All Months";
+
+      [
+        ["#a78bfa44","var(--policy)","📜 Policy Data",fS.length,"Policy",()=>exportCSV(fS.map(s=>({Username:s.username,Date:s.date,Time:new Date(s.timestamp).toLocaleTimeString(),Policy_Count:s.policy||""})),`Policy_${dlMonth||"All"}.csv`),"btn-policy"],
+        ["#fb923c44","var(--rsa)","🔐 RSA Data",fS.length,"RSA",()=>exportCSV(fS.map(s=>({Username:s.username,Date:s.date,Time:new Date(s.timestamp).toLocaleTimeString(),RSA_Count:s.rsa||""})),`RSA_${dlMonth||"All"}.csv`),"btn-rsa"],
+        ["#34d39944","var(--gpa)","🎓 GPA Data",fS.length,"GPA",()=>exportCSV(fS.map(s=>({Username:s.username,Date:s.date,Time:new Date(s.timestamp).toLocaleTimeString(),GPA_Count:s.gpa||""})),`GPA_${dlMonth||"All"}.csv`),"btn-gpa"],
+        ["var(--border)","var(--accent)","📋 Attendance",fA.length,"records",()=>exportCSV(fA.map(r=>({Username:r.username,Type:r.type==="in"?"Check In":"Check Out",Date:new Date(r.timestamp).toLocaleDateString(),Time:new Date(r.timestamp).toLocaleTimeString(),Lat:r.location?.lat||"",Lng:r.location?.lng||""})),`Attendance_${dlMonth||"All"}.csv`),"btn-primary"],
+      ].forEach(([bc,nc,name,cnt,unit,fn,btnCls])=>{
+        const dc=el("div","dl-card",null,{borderColor:bc});
+        const di=h("div",{});
+        di.appendChild(h("div",{className:"dl-name",style:{color:nc}},name));
+        di.appendChild(h("div",{className:"dl-count"},`${cnt} ${unit} — ${mLbl}`));
+        const db=h("button",{className:"btn "+btnCls+" btn-sm"},"⬇ Download CSV");
+        db.addEventListener("click",fn);
+        dc.appendChild(di);dc.appendChild(db);content.appendChild(dc);
+      });
+    }
+  }
+
+  function openEditModal(u){
+    const ov=el("div","modal-overlay");
+    const mo=el("div","modal",null,{maxWidth:"420px"});
+    const xb=h("button",{className:"x-btn"},"✕");xb.addEventListener("click",()=>ov.remove());
+    mo.appendChild(xb);
+    mo.appendChild(h("div",{style:{fontSize:"1.5rem",marginBottom:".4rem"}},"✏️"));
+    mo.appendChild(h("h2",{},"Edit User"));
+    mo.appendChild(el("div","sub",`Update profile for ${u.username}`));
+    const iU=h("input",{type:"text",value:u.username,placeholder:"Username"});
+    const iP=h("input",{type:"password",value:u.password,placeholder:"Password"});
+    const iD=h("input",{type:"text",value:u.designation||"",placeholder:"e.g. Sales Executive"});
+    const iL=h("input",{type:"text",value:u.location||"",placeholder:"e.g. Chennai Branch"});
+    [["Username",iU],["Password",iP],["Designation",iD],["Working Location",iL]].forEach(([l,i])=>{mo.appendChild(h("label",{},l));mo.appendChild(i)});
+    const sb=h("button",{className:"btn btn-primary",style:{marginTop:".5rem"}},"💾 Save Changes");
+    sb.addEventListener("click",()=>{
+      const nu=iU.value.trim(),np=iP.value.trim(),nd=iD.value.trim();
+      if(!nu||!np){alert("Username and password required.");return}
+      if(nu!==u.username&&DB.users.find(x=>x.username===nu)){alert("Username already exists.");return}
+      const idx=DB.users.findIndex(x=>x.username===u.username);
+      const nl=iL.value.trim();DB.users[idx]={...DB.users[idx],username:nu,password:np,designation:nd,location:nl};
+      if(nu!==u.username){
+        DB.attendance=DB.attendance.map(r=>r.username===u.username?{...r,username:nu}:r);
+        DB.surveys=(DB.surveys||[]).map(s=>s.username===u.username?{...s,username:nu}:s);
+      }
+      save(DB);ov.remove();refresh();
+    });
+    const cb=h("button",{className:"btn btn-ghost",style:{marginTop:".6rem"}},"Cancel");
+    cb.addEventListener("click",()=>ov.remove());
+    mo.appendChild(sb);mo.appendChild(cb);ov.appendChild(mo);document.body.appendChild(ov);
+  }
+
+  refresh();render(dash);
+}
+
+// ── START ─────────────────────────────────────────────────────────────────────
+// Mark absences on startup
+markAbsences();
+
+if (SCRIPT_URL) {
+  // Show loading screen while fetching from Google Sheets
+  const loadDiv = document.createElement("div");
+  loadDiv.style.cssText = "min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;font-family:'Sora',sans-serif;color:#e8eaf6;background:#0b0f1a;gap:1rem";
+  loadDiv.innerHTML = `
+    <div style="font-size:2.5rem">📋</div>
+    <div style="font-weight:900;font-size:1.5rem">
+      <span style="color:#e63329">V</span><span style="color:#f5a623">I</span><span style="color:#2563eb">B</span><span style="color:#16a34a">E</span>
+      <span style="color:#e8eaf6;font-size:1rem;font-weight:400;margin-left:.5rem">Attendance</span>
+    </div>
+    <div style="display:flex;gap:.4rem;align-items:center;color:#7a8bad;font-size:.85rem">
+      <span style="display:inline-block;width:14px;height:14px;border:2px solid #4f8ef766;border-top-color:#4f8ef7;border-radius:50%;animation:spin .7s linear infinite"></span>
+      Connecting to Google Sheets…
+    </div>
+    <style>@keyframes spin{to{transform:rotate(360deg)}}</style>
+  `;
+  document.getElementById("app").appendChild(loadDiv);
+
+  // Timeout fallback: if sheet takes >5s, use local data
+  const timeout = setTimeout(() => { route(); }, 5000);
+
+  loadFromSheet().then(ok => {
+    clearTimeout(timeout);
+    route();
+  }).catch(() => {
+    clearTimeout(timeout);
+    route();
+  });
+} else {
+  route();
+}
+</script>
+</body>
+</html>
