@@ -492,7 +492,9 @@ function renderUser(){
     const nowS=new Date();
     const curMKS=`${nowS.getFullYear()}-${String(nowS.getMonth()+1).padStart(2,"0")}`;
     const mySurveys=(DB.surveys||[]).filter(s=>s.username===SESSION.username);
-    const monthSurveysU=mySurveys.filter(s=>s.date&&s.date.startsWith(curMKS));
+    // Normalize date helper for user dash
+    const normD=d=>{if(!d)return"";const s=String(d);return s.includes("T")?s.slice(0,10):s.slice(0,10);}
+    const monthSurveysU=mySurveys.filter(s=>normD(s.date).startsWith(curMKS));
     const monthPolicyU=monthSurveysU.reduce((s,r)=>s+(parseInt(r.policy)||0),0);
     const monthRsaU=monthSurveysU.reduce((s,r)=>s+(parseInt(r.rsa)||0),0);
     const monthGpaU=monthSurveysU.reduce((s,r)=>s+(parseInt(r.gpa)||0),0);
@@ -759,7 +761,9 @@ function renderAdmin(){
     const allSurveys=DB.surveys||[];
     const allAttend=DB.attendance.sort((a,b)=>b.timestamp-a.timestamp);
     const todayStr=new Date().toISOString().slice(0,10);
-    const todaySurveys=allSurveys.filter(s=>s.date===todayStr);
+    // Normalize date for comparison — handles ISO strings, sheet date formats etc.
+    function normDate(d){ if(!d) return ""; const s=String(d); return s.includes("T")?s.slice(0,10):s.slice(0,10); }
+    const todaySurveys=allSurveys.filter(s=>normDate(s.date)===todayStr);
     const todayInUsers=[...new Set(allAttend.filter(r=>r.type==="in"&&new Date(r.timestamp).toDateString()===new Date().toDateString()).map(r=>r.username))];
     const todayAbsent=regularUsers.filter(u=>!todayInUsers.includes(u.username));
     // Auto-mark absences for today when admin opens dashboard
@@ -987,7 +991,7 @@ function renderAdmin(){
       content.appendChild(cg);
       // Month total row
       const nowM=new Date();const curMK2=`${nowM.getFullYear()}-${String(nowM.getMonth()+1).padStart(2,"0")}`;
-      const monthSurveys=allSurveys.filter(s=>s.date&&s.date.startsWith(curMK2));
+      const monthSurveys=allSurveys.filter(s=>normDate(s.date).startsWith(curMK2));
       const monthPolicy=monthSurveys.reduce((s,r)=>s+(parseInt(r.policy)||0),0);
       const monthRsa=monthSurveys.reduce((s,r)=>s+(parseInt(r.rsa)||0),0);
       const monthGpa=monthSurveys.reduce((s,r)=>s+(parseInt(r.gpa)||0),0);
