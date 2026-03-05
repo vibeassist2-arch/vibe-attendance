@@ -403,6 +403,7 @@ function renderUser(){
   refBtn.addEventListener("click",async()=>{
     refBtn.disabled=true;refBtn.textContent="⏳ Syncing…";
     await loadFromSheet();
+    const u2r=DB.users.find(x=>x.username===SESSION.username);if(u2r&&u2r.fullName&&u2r.fullName.trim())SESSION.fullName=u2r.fullName.trim();
     refBtn.textContent="✅ Done";
     setTimeout(()=>{refBtn.textContent="🔄 Refresh";refBtn.disabled=false;},2000);
     refresh();
@@ -630,7 +631,7 @@ function renderAdmin(){
 
   const content=el("div","content");dash.appendChild(content);
 
-  const adminPollInterval=setInterval(async()=>{await loadFromSheet();refresh();},30000);
+  const adminPollInterval=setInterval(async()=>{await loadFromSheet();const u2=DB.users.find(x=>x.username===SESSION.username);if(u2&&u2.fullName&&u2.fullName.trim())SESSION.fullName=u2.fullName.trim();refresh();},30000);
   soBtn.addEventListener("click",()=>{clearInterval(adminPollInterval);SESSION=null;route();});
 
   function refresh(){
