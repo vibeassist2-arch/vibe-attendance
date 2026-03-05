@@ -133,7 +133,7 @@ select option{background:var(--surface);color:var(--text)}
 <script>
 // ── DATA ──────────────────────────────────────────────────────────────────────
 const KEY = "vibeAttendanceData";
-let SCRIPT_URL = localStorage.getItem("vibeScriptUrl") || "https://script.google.com/macros/s/AKfycbwFx0jfIn7D_KWwsMi1q2gUofqOR_NmzPo4uatNseJKGGsfG5HSvo9jVmnWlnXbKI-3/exec";
+let SCRIPT_URL = localStorage.getItem("vibeScriptUrl") || "https://script.google.com/macros/s/AKfycbycU89pKyRiq4cdG-gnHyPnaE2zXhn9ylt7RYLHgm1OZo5d2o7N8roV9ThQ9y_0WvOU/exec";
 
 // ── GOOGLE SHEETS SYNC ────────────────────────────────────────
 async function gsFetch(params) {
@@ -238,11 +238,14 @@ async function loadFromSheet() {
     // Attendance from sheet
     const sheetAttend = (result.attendance||[]).map(r => {
       const lat = parseFloat(r.lat), lng = parseFloat(r.lng);
+      const outLat = parseFloat(r.outLat), outLng = parseFloat(r.outLng);
       // Validate: real GPS coords are lat -90..90, lng -180..180; reject bogus values like 1900
       const validLoc = (r.lat && r.lng && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180)
         ? {lat, lng} : null;
+      const validOutLoc = (r.outLat && r.outLng && outLat >= -90 && outLat <= 90 && outLng >= -180 && outLng <= 180)
+        ? {lat: outLat, lng: outLng} : null;
       return { id: r.id, username: r.username, type: r.type,
-        timestamp: parseInt(r.timestamp)||0, location: validLoc };
+        timestamp: parseInt(r.timestamp)||0, location: validLoc, outLocation: validOutLoc };
     }).filter(r => r.username && r.timestamp);
     if (sheetAttend.length) DB.attendance = sheetAttend;
 
@@ -534,12 +537,12 @@ function renderUser(){
             getLocation().then(loc=>{
               const rec_out={id:Date.now(),username:SESSION.username,type:"out",timestamp:Date.now(),location:loc};
               DB.attendance.push(rec_out);save(DB);
-              gsPost({action:"addAttendance",data:rec_out});
+              gsPost({action:"addAttendance",data:{...rec_out, lat:loc?.lat||"", lng:loc?.lng||""}});
               refresh();
             }).catch(()=>{
               const rec_outn={id:Date.now(),username:SESSION.username,type:"out",timestamp:Date.now(),location:null};
               DB.attendance.push(rec_outn);save(DB);
-              gsPost({action:"addAttendance",data:rec_outn});
+              gsPost({action:"addAttendance",data:{...rec_outn, lat:"", lng:""}});
               refresh();
             });
           });
@@ -548,7 +551,7 @@ function renderUser(){
           getLocation().then(loc=>{
             const rec_in={id:Date.now(),username:SESSION.username,type:"in",timestamp:Date.now(),location:loc};
             DB.attendance.push(rec_in);save(DB);
-            gsPost({action:"addAttendance",data:rec_in});
+            gsPost({action:"addAttendance",data:{...rec_in, lat:loc?.lat||"", lng:loc?.lng||""}});
             refresh();
           }).catch(msg=>{mainBtn.disabled=false;mainBtn.textContent="▶ Check In";alert(msg)});
         }
@@ -871,8 +874,8 @@ function renderAdmin(){
       const filtered=allAttend.filter(r=>{const d=new Date(r.timestamp);const m=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;return m===window._recMonth&&(window._recUser==="all"||r.username===window._recUser)});
       const dayMap2={};
       filtered.forEach(r=>{const k=r.username+"__"+new Date(r.timestamp).toDateString();if(!dayMap2[k])dayMap2[k]={username:r.username,date:new Date(r.timestamp),in:null,out:null,loc:null,outLoc:null};
-        if(r.type==="in"&&(!dayMap2[k].in||r.timestamp<dayMap2[k].in)){dayMap2[k].in=r.timestamp;dayMap2[k].loc=r.location}
-        if(r.type==="out"&&(!dayMap2[k].out||r.timestamp>dayMap2[k].out)){dayMap2[k].out=r.timestamp;dayMap2[k].outLoc=r.location;}
+        if(r.type==="in"&&(!dayMap2[k].in||r.timestamp<dayMap2[k].in)){dayMap2[k].in=r.timestamp;dayMap2[k].loc=r.location;}
+        if(r.type==="out"&&(!dayMap2[k].out||r.timestamp>dayMap2[k].out)){dayMap2[k].out=r.timestamp;dayMap2[k].outLoc=r.location||r.outLocation||null;}
       });
       const rows=Object.values(dayMap2).sort((a,b)=>b.date-a.date);
 
