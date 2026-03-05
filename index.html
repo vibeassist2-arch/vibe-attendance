@@ -341,7 +341,7 @@ function renderLogin(){
     btn.disabled=true;btn.textContent="Syncing data…";locWarn.classList.remove("hidden");
     loadFromSheet().finally(()=>{
       btn.textContent="Getting location…";
-      getLocation().then(loc=>{SESSION={username:found.username,role:"user",location:loc};route();})
+      getLocation().then(loc=>{SESSION={username:found.username,fullName:found.fullName||found.username,role:"user",location:loc};route();})
         .catch(msg=>{errBox.textContent=msg;errBox.classList.remove("hidden");btn.disabled=false;btn.textContent="Sign In";locWarn.classList.add("hidden");});
     });
   }
@@ -357,7 +357,7 @@ function showSurvey(onSubmit){
   const modal=el("div","modal");
   const xBtn=h("button",{className:"x-btn"},"✕");
   xBtn.addEventListener("click",()=>overlay.remove());
-  const title=h("h2",{},"Checking out, "+SESSION.username+"!");
+  const title=h("h2",{},"Checking out, "+(SESSION.fullName||SESSION.username)+"!");
   const sub=el("div","sub","Enter today's counts before checking out");
   function field(lbl,cls,placeholder){
     const wrap=h("div",{style:{marginBottom:"1.2rem"}});
@@ -393,7 +393,8 @@ function renderUser(){
   const tbR=el("div","topbar-right");
   // Show full name if available
   const meUser = DB.users.find(u => u.username === SESSION.username);
-  const displayName = (meUser && meUser.fullName) ? meUser.fullName : SESSION.username;
+  // Show fullName if set, otherwise show username styled nicely
+  const displayName = SESSION.fullName && SESSION.fullName.trim() ? SESSION.fullName.trim() : (meUser && meUser.fullName && meUser.fullName.trim() ? meUser.fullName.trim() : SESSION.username);
   tbR.appendChild(document.createTextNode(displayName+" "));
   tbR.appendChild(el("span","badge badge-green","User"));
   const soBtn=h("button",{className:"btn btn-ghost btn-sm",style:{marginLeft:".5rem"}},"Sign Out");
@@ -656,7 +657,7 @@ function renderAdmin(){
     if(todayInUsers.length){
       todayInUsers.forEach(uname=>{
         const uInfo=regularUsers.find(u=>u.username===uname);
-        const displayN=(uInfo&&uInfo.fullName)?uInfo.fullName:uname;
+        const displayN=(uInfo&&uInfo.fullName&&uInfo.fullName.trim())?uInfo.fullName.trim():(uname.charAt(0).toUpperCase()+uname.slice(1).toLowerCase());
         const sp=h("span",{className:"name-pill",style:{background:"#dcfce7",color:"#15803d"}},displayN);
         p1.appendChild(sp);
       });
@@ -668,7 +669,7 @@ function renderAdmin(){
     const p2=h("div",{style:{marginTop:".6rem",display:"flex",gap:".3rem",flexWrap:"wrap"}});
     if(todayAbsent.length){
       todayAbsent.forEach(u=>{
-        const displayN=(u.fullName)?u.fullName:u.username;
+        const displayN=(u.fullName&&u.fullName.trim())?u.fullName.trim():(u.username.charAt(0).toUpperCase()+u.username.slice(1).toLowerCase());
         const sp=h("span",{className:"name-pill",style:{background:"#fee2e2",color:"#b91c1c"}},displayN);
         p2.appendChild(sp);
       });
@@ -768,7 +769,7 @@ function renderAdmin(){
         const row=el("div","user-row");
         const info=h("div",{style:{flex:1,minWidth:0}});
         // Show full name as primary, user ID below
-        const nameEl=el("div","uname",(u.fullName||u.username));
+        const nameEl=el("div","uname",(u.fullName&&u.fullName.trim()?u.fullName.trim():(u.username.charAt(0).toUpperCase()+u.username.slice(1).toLowerCase())));
         const metaRow=h("div",{style:{display:"flex",alignItems:"center",gap:".5rem",flexWrap:"wrap",marginTop:".2rem"}});
         metaRow.appendChild(h("span",{style:{fontSize:".72rem",color:"var(--accent)",fontFamily:"var(--mono)",background:"#4f8ef722",border:"1px solid #4f8ef744",borderRadius:"6px",padding:".1rem .45rem"}},"ID: "+(u.userId||u.username)));
         if(u.designation)metaRow.appendChild(h("span",{style:{fontSize:".72rem",color:"var(--muted)"}},u.designation));
@@ -849,7 +850,7 @@ function renderAdmin(){
         absentRecs.sort((a,b)=>b.date.localeCompare(a.date)).forEach((a,i)=>{
           const tr2=document.createElement("tr");if(i%2)tr2.style.background="#ffffff05";
           const uInfo=regularUsers.find(u=>u.username===a.username);
-          const displayN=(uInfo&&uInfo.fullName)?uInfo.fullName:a.username;
+          const displayN=(uInfo&&uInfo.fullName&&uInfo.fullName.trim())?uInfo.fullName.trim():(a.username.charAt(0).toUpperCase()+a.username.slice(1).toLowerCase());
           tr2.innerHTML=`<td class="attend-td" style="font-family:var(--mono);font-size:.8rem">${a.date}</td>
             <td class="attend-td" style="font-weight:700;color:var(--accent)">${displayN}${uInfo?.designation?`<div style="font-size:.7rem;color:var(--muted)">${uInfo.designation}</div>`:""}</td>
             <td class="attend-td"><span style="padding:.2rem .6rem;border-radius:20px;font-size:.75rem;font-weight:700;background:#ff5f6d22;color:var(--danger);border:1px solid #ff5f6d44">🔴 Absent</span></td>`;
@@ -965,7 +966,7 @@ function renderAdmin(){
         const uS=allSurveys.filter(s=>s.username===u.username&&s.date&&s.date.startsWith(selMx));
         const uD=[...new Set(allAttend.filter(r=>r.username===u.username&&r.type==="in"&&localMonthStr(new Date(r.timestamp))===selMx).map(r=>new Date(r.timestamp).toDateString()))].length;
         const tr3=document.createElement("tr");
-        const displayN=(u.fullName||u.username);
+        const displayN=(u.fullName&&u.fullName.trim()?u.fullName.trim():(u.username.charAt(0).toUpperCase()+u.username.slice(1).toLowerCase()));
         tr3.innerHTML=`<td><span style="font-weight:600">${displayN}</span><br><span style="font-size:.72rem;color:var(--muted);font-family:var(--mono)">${u.username}${u.designation?" · "+u.designation:""}${u.location?" · 📍 "+u.location:""}</span></td>
           <td><span class="pill pill-pend">${uS.reduce((s,r)=>s+(parseInt(r.policy)||0),0)}</span></td>
           <td><span class="pill pill-yes">${uS.reduce((s,r)=>s+(parseInt(r.rsa)||0),0)}</span></td>
@@ -1024,7 +1025,7 @@ function renderAdmin(){
     mo.appendChild(xb);
     mo.appendChild(h("div",{style:{fontSize:"1.5rem",marginBottom:".4rem"}},"✏️"));
     mo.appendChild(h("h2",{},"Edit User"));
-    mo.appendChild(el("div","sub","Editing: "+(u.fullName||u.username)));
+    mo.appendChild(el("div","sub","Editing: "+(u.fullName&&u.fullName.trim()?u.fullName.trim():(u.username.charAt(0).toUpperCase()+u.username.slice(1).toLowerCase()))));
 
     function mf(stepNum,icon,labelTxt,inputAttrs){
       const fg=el("div","field-group");
