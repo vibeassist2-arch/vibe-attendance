@@ -542,7 +542,12 @@ function renderUser(){
       mainBtn.addEventListener("click",()=>{
         if(checkedIn){
           showSurvey(answers=>{
-            const sur={id:Date.now(),username:SESSION.username,timestamp:Date.now(),date:localDateStr(),...answers};
+            // Use the check-in timestamp's date so the survey date always matches
+            // the day the user actually worked (avoids timezone/overnight mismatch)
+            const todayCheckins=DB.attendance.filter(r=>r.username===SESSION.username&&r.type==="in"&&new Date(r.timestamp).toDateString()===new Date().toDateString());
+            const checkInTs=todayCheckins.length?Math.min(...todayCheckins.map(r=>r.timestamp)):Date.now();
+            const surveyDate=localDateStr(new Date(checkInTs));
+            const sur={id:Date.now(),username:SESSION.username,timestamp:Date.now(),date:surveyDate,...answers};
             DB.surveys.push(sur);
             gsPost({action:"addSurvey",data:sur});
             save(DB);
