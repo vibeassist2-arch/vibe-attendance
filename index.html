@@ -18,14 +18,12 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);min-height:1
   background-image:radial-gradient(ellipse at 20% 50%,#1a2a5e22 0%,transparent 60%),
                    radial-gradient(ellipse at 80% 20%,#0d3b2e22 0%,transparent 50%);}
 .hidden{display:none!important}
-/* PAGE */
 .page{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:1rem}
 .card{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:2.5rem;width:100%;max-width:420px;box-shadow:0 8px 40px #00000055;animation:slideUp .4s ease}
 @keyframes slideUp{from{opacity:0;transform:translateY(24px)}to{opacity:1;transform:translateY(0)}}
 h1{font-size:1.7rem;font-weight:700;margin-bottom:.25rem}
 h2{font-size:1.3rem;font-weight:600;margin-bottom:1.2rem}
 .subtitle{color:var(--muted);font-size:.85rem;margin-bottom:2rem}
-.logo{font-size:2rem;margin-bottom:.5rem}
 label{display:block;font-size:.8rem;color:var(--muted);margin-bottom:.4rem;font-weight:600;letter-spacing:.05em;text-transform:uppercase}
 input,select{width:100%;padding:.75rem 1rem;background:var(--surface);border:1.5px solid var(--border);border-radius:10px;color:var(--text);font-family:var(--font);font-size:.95rem;margin-bottom:1.2rem;outline:none;transition:border-color .2s}
 input:focus,select:focus{border-color:var(--accent)}
@@ -45,7 +43,6 @@ select option{background:var(--surface);color:var(--text)}
 .alert-error{background:#ff5f6d22;border:1px solid #ff5f6d66;color:#ff9aa2}
 .alert-success{background:#38d9a922;border:1px solid #38d9a966;color:#70efcd}
 .alert-warn{background:#ffd16622;border:1px solid #ffd16666;color:#ffe08a}
-/* DASH */
 .dash{min-height:100vh;display:flex;flex-direction:column}
 .vibe-header{background:#fff;border-bottom:3px solid #e5e7eb;padding:1rem 1.5rem;display:flex;align-items:center;justify-content:space-between;gap:1rem}
 .vibe-logo-text{font-family:var(--font);font-weight:900;font-size:2rem;letter-spacing:-.02em;line-height:1}
@@ -65,29 +62,24 @@ select option{background:var(--surface);color:var(--text)}
 .stat-box.policy .num{color:var(--policy)}
 .stat-box.rsa .num{color:var(--rsa)}
 .stat-box.gpa .num{color:var(--gpa)}
-/* HOME STAT CARDS */
 .home-card{background:#fff;border-radius:14px;border:2px solid #e5e7eb;padding:1.4rem 1.5rem;box-shadow:0 2px 12px #0000000a}
 .home-card .big-num{font-size:2.4rem;font-weight:900;font-family:var(--mono)}
 .home-card .card-label{font-size:.82rem;font-weight:700;color:#374151;margin-top:.25rem;text-transform:uppercase;letter-spacing:.06em}
 .name-pill{display:inline-block;font-size:.7rem;padding:.15rem .5rem;border-radius:20px;font-weight:600;margin:.15rem .1rem}
 .home-nav-btn{padding:.6rem 1.3rem;border-radius:10px;border:none;font-family:var(--font);font-size:.88rem;font-weight:700;cursor:pointer;transition:all .18s}
-/* RECORD CARD */
 .record-card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:1rem 1.2rem;margin-bottom:.6rem;display:flex;align-items:center;justify-content:space-between;gap:1rem;font-size:.88rem}
 .record-card .rec-time{font-family:var(--mono);color:var(--accent);font-size:.82rem}
 .record-card .rec-loc{color:var(--muted);font-size:.78rem;margin-top:.15rem}
 .status-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
 .dot-in{background:var(--accent2);box-shadow:0 0 6px var(--accent2)}
 .dot-out{background:var(--danger);box-shadow:0 0 6px var(--danger)}
-/* USER ROW */
 .user-row{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:.9rem 1.2rem;margin-bottom:.5rem;display:flex;align-items:center;justify-content:space-between;gap:.5rem}
 .user-row .uname{font-weight:600;font-size:.9rem}
 .user-row .urole{font-size:.75rem;color:var(--muted)}
 .empty{text-align:center;color:var(--muted);padding:2rem;font-size:.9rem}
-/* TABS */
 .tabs{display:flex;gap:.5rem;margin-bottom:1.5rem;flex-wrap:wrap}
 .tab{padding:.5rem 1rem;border-radius:8px;background:transparent;border:1.5px solid var(--border);color:var(--muted);font-family:var(--font);font-size:.85rem;cursor:pointer;transition:all .2s}
 .tab.active{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
-/* MODAL */
 .modal-overlay{position:fixed;inset:0;background:#00000099;backdrop-filter:blur(6px);display:flex;align-items:center;justify-content:center;z-index:100;padding:1rem;animation:fadeIn .25s ease}
 @keyframes fadeIn{from{opacity:0}to{opacity:1}}
 .modal{background:var(--card);border:1px solid var(--border);border-radius:20px;padding:2rem;width:100%;max-width:480px;box-shadow:0 24px 80px #00000088;animation:slideUp .3s ease;max-height:90vh;overflow-y:auto;position:relative}
@@ -97,7 +89,6 @@ select option{background:var(--surface);color:var(--text)}
 .q-policy{background:#a78bfa22;color:var(--policy);border:1px solid #a78bfa44}
 .q-rsa{background:#fb923c22;color:var(--rsa);border:1px solid #fb923c44}
 .q-gpa{background:#34d39922;color:var(--gpa);border:1px solid #34d39944}
-/* TABLE */
 .month-table{width:100%;border-collapse:collapse;font-size:.83rem}
 .month-table th{text-align:left;padding:.6rem .9rem;background:var(--surface);color:var(--muted);font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;border-bottom:1px solid var(--border)}
 .month-table td{padding:.65rem .9rem;border-bottom:1px solid #1e2a3f;vertical-align:middle}
@@ -107,22 +98,28 @@ select option{background:var(--surface);color:var(--text)}
 .pill-yes{background:#38d9a922;color:var(--gpa);border:1px solid #38d9a944}
 .pill-no{background:#ff5f6d22;color:var(--danger);border:1px solid #ff5f6d44}
 .pill-pend{background:#ffd16622;color:var(--warn);border:1px solid #ffd16644}
-/* DOWNLOAD CARD */
 .dl-card{border:1px solid var(--border);border-radius:14px;padding:1.2rem 1.4rem;background:var(--card);display:flex;align-items:center;justify-content:space-between;gap:1rem;margin-bottom:.7rem}
 .dl-card .dl-name{font-weight:700;font-size:.95rem}
 .dl-card .dl-count{font-size:.78rem;color:var(--muted);margin-top:.15rem}
 .month-bar{display:flex;gap:.75rem;align-items:center;margin-bottom:1.2rem;flex-wrap:wrap}
 .month-bar select{margin-bottom:0;width:auto;min-width:160px}
 .month-bar label{margin:0;text-transform:none;font-size:.85rem}
-/* SPINNER */
 .spinner{display:inline-block;width:16px;height:16px;border:2px solid #ffffff44;border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle;margin-right:.5rem}
 @keyframes spin{to{transform:rotate(360deg)}}
-/* X BTN */
 .x-btn{position:absolute;top:1.1rem;right:1.2rem;background:var(--border);border:none;color:var(--muted);border-radius:50%;width:30px;height:30px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:1rem;transition:background .15s,color .15s}
 .x-btn:hover{background:var(--danger);color:#fff}
-/* ATTEND TABLE */
 .attend-th{text-align:left;padding:.75rem 1rem;background:#1e2d4a;color:#e8eaf6;font-weight:700;font-size:.8rem;letter-spacing:.04em;border-bottom:2px solid var(--accent);white-space:nowrap}
 .attend-td{padding:.7rem 1rem;border-bottom:1px solid #1e2a3f;vertical-align:middle}
+
+/* ── NEW: Create User card styling ── */
+.create-user-card{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:1.8rem;margin-bottom:1.5rem}
+.create-user-card h2{font-size:1.1rem;margin-bottom:1.4rem;display:flex;align-items:center;gap:.5rem}
+.field-group{margin-bottom:1.1rem}
+.field-group label{font-size:.72rem;color:var(--muted);font-weight:700;letter-spacing:.07em;text-transform:uppercase;margin-bottom:.35rem;display:flex;align-items:center;gap:.4rem}
+.field-group label .field-icon{font-size:.9rem}
+.field-group input{margin-bottom:0;padding:.7rem 1rem}
+.field-step{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;background:var(--accent);color:#fff;font-size:.65rem;font-weight:700;flex-shrink:0}
+
 @media(max-width:600px){.grid2,.grid3{grid-template-columns:1fr}.home-cards{grid-template-columns:1fr!important}}
 </style>
 </head>
@@ -131,58 +128,36 @@ select option{background:var(--surface);color:var(--text)}
 <div id="app"></div>
 
 <script>
-// ── DATA ──────────────────────────────────────────────────────────────────────
 const KEY = "vibeAttendanceData";
 let SCRIPT_URL = "https://script.google.com/macros/s/AKfycby23p4CGlRYA3Uxy1xhnTrRMzHIKV_vEOf7lflKxlSBSshhEKFszyy9XIdA3s1SIhPc/exec";
-// Always use the hardcoded URL above; also persist to localStorage for consistency
 localStorage.setItem("vibeScriptUrl", SCRIPT_URL);
 
-// ── GOOGLE SHEETS SYNC ────────────────────────────────────────
 async function gsFetch(params) {
   if (!SCRIPT_URL) return null;
   try {
-    const res = await fetch(SCRIPT_URL + "?" + new URLSearchParams(params), {
-      method: "GET",
-      redirect: "follow",
-    });
-    const text = await res.text();
-    return JSON.parse(text);
+    const res = await fetch(SCRIPT_URL + "?" + new URLSearchParams(params), { method: "GET", redirect: "follow" });
+    return JSON.parse(await res.text());
   } catch(e) { console.error("GS GET error", e); return null; }
 }
 async function gsPost(body) {
   if (!SCRIPT_URL) return null;
   try {
-    const res = await fetch(SCRIPT_URL, {
-      method: "POST",
-      redirect: "follow",
-      headers: { "Content-Type": "text/plain" },
-      body: JSON.stringify(body)
-    });
-    const text = await res.text();
-    return JSON.parse(text);
+    const res = await fetch(SCRIPT_URL, { method: "POST", redirect: "follow", headers: { "Content-Type": "text/plain" }, body: JSON.stringify(body) });
+    return JSON.parse(await res.text());
   } catch(e) { console.error("GS POST error", e); return null; }
 }
-// ── AUTO-ABSENCE MARKER ──────────────────────────────────────────────────────
+
 function markAbsences() {
   const today = new Date();
   const todayStr = localDateStr(today);
-  const dayOfWeek = today.getDay(); // 0=Sun, 6=Sat
-  if (dayOfWeek === 0) return; // skip Sunday only
-
+  if (today.getDay() === 0) return;
   if (!DB.absences) DB.absences = [];
   const regularUsers = DB.users.filter(u => u.role !== "admin");
-
   regularUsers.forEach(u => {
-    // Checked in today?
-    const checkedIn = DB.attendance.find(r =>
-      r.username === u.username && r.type === "in" &&
-      localDateStr(new Date(r.timestamp)) === todayStr
-    );
+    const checkedIn = DB.attendance.find(r => r.username === u.username && r.type === "in" && localDateStr(new Date(r.timestamp)) === todayStr);
     if (checkedIn) {
-      // ✅ Remove any absent record for today if user has since checked in
       DB.absences = DB.absences.filter(a => !(a.username === u.username && a.date === todayStr));
     } else {
-      // Not checked in — add absent record if not already there
       if (!DB.absences.find(a => a.username === u.username && a.date === todayStr)) {
         DB.absences.push({ id: Date.now() + Math.random(), username: u.username, date: todayStr, auto: true });
       }
@@ -191,135 +166,94 @@ function markAbsences() {
   save(DB);
 }
 
-// Run absence check every minute
 setInterval(markAbsences, 60000);
 
-// Auto-sync from Google Sheets every 5 minutes (keeps all devices in sync)
 let autoSyncInterval = null;
 function startAutoSync() {
   if (autoSyncInterval) clearInterval(autoSyncInterval);
   autoSyncInterval = setInterval(async () => {
     if (SESSION && SCRIPT_URL) {
       await loadFromSheet();
-      // Re-render if on a dashboard
       if (SESSION.role === "admin") renderAdmin();
       else renderUser();
     }
-  }, 5 * 60 * 1000); // every 5 minutes
+  }, 5 * 60 * 1000);
 }
 
 async function syncToSheet() {
   if (!SCRIPT_URL) return;
-  const result = await gsPost({ action:"fullSync", data: DB });
-  return result;
+  return await gsPost({ action:"fullSync", data: DB });
 }
+
 async function loadFromSheet() {
   if (!SCRIPT_URL) return false;
   try {
     const result = await gsFetch({ action:"getAll" });
     if (!result || !result.ok) return false;
 
-    // Sheet is master — always replace users fully (handles deletions)
     const sheetUsers = (result.users||[]).map(u => ({
       username: String(u.username||"").trim(),
       password: String(u.password||"").trim(),
+      fullName: u.fullName||"",
+      userId: u.userId||"",
       designation: u.designation||"",
       location: u.location||"",
       role: u.role||"user"
     })).filter(u => u.username);
 
     if (sheetUsers.length) {
-      // Always keep admin accounts from local in case sheet doesn't have them
       const localAdmins = DB.users.filter(u => u.role === "admin" && !sheetUsers.find(s => s.username === u.username));
       DB.users = [...sheetUsers, ...localAdmins];
     }
 
-    // Attendance from sheet
     const sheetAttend = (result.attendance||[]).map(r => {
       const lat = parseFloat(r.lat), lng = parseFloat(r.lng);
       const outLat = parseFloat(r.outLat), outLng = parseFloat(r.outLng);
-      // Validate: real GPS coords are lat -90..90, lng -180..180; reject bogus values like 1900
-      const validLoc = (r.lat && r.lng && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180)
-        ? {lat, lng} : null;
-      const validOutLoc = (r.outLat && r.outLng && outLat >= -90 && outLat <= 90 && outLng >= -180 && outLng <= 180)
-        ? {lat: outLat, lng: outLng} : null;
-      return { id: r.id, username: r.username, type: r.type,
-        timestamp: parseInt(r.timestamp)||0, location: validLoc, outLocation: validOutLoc };
+      const validLoc = (r.lat && r.lng && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) ? {lat, lng} : null;
+      const validOutLoc = (r.outLat && r.outLng && outLat >= -90 && outLat <= 90 && outLng >= -180 && outLng <= 180) ? {lat: outLat, lng: outLng} : null;
+      return { id: r.id, username: r.username, type: r.type, timestamp: parseInt(r.timestamp)||0, location: validLoc, outLocation: validOutLoc };
     }).filter(r => r.username && r.timestamp);
-    // Always replace — sheet is master (handles deletions from any device)
     DB.attendance = sheetAttend;
 
-    // Surveys from sheet
     const sheetSurveys = (result.surveys||[]).map(s => {
       const ts = parseInt(s.timestamp)||0;
-      // CRITICAL: Always derive the date from the Unix timestamp using the LOCAL timezone.
-      // Never trust the date string stored in the sheet — it may have been written in UTC
-      // by the Apps Script server, causing an off-by-one day error in IST (UTC+5:30).
-      // The timestamp is always correct; only the stored date string can be wrong.
       let d = ts ? localDateStr(new Date(ts)) : (s.date || "").slice(0,10);
-      return {
-        id: s.id, username: s.username, date: d,
-        timestamp: ts,
-        policy: s.policy||0, rsa: s.rsa||0, gpa: s.gpa||0
-      };
+      return { id: s.id, username: s.username, date: d, timestamp: ts, policy: s.policy||0, rsa: s.rsa||0, gpa: s.gpa||0 };
     }).filter(s => s.username);
 
-    // Deduplicate: if same user has multiple entries for the same date,
-    // keep the one with the highest total count; if equal, keep latest timestamp.
     const surveyMap = {};
     sheetSurveys.forEach(s => {
       const key = s.username + "__" + s.date;
       const existing = surveyMap[key];
-      if (!existing) {
-        surveyMap[key] = s;
-      } else {
+      if (!existing) { surveyMap[key] = s; }
+      else {
         const existTotal = (parseInt(existing.policy)||0) + (parseInt(existing.rsa)||0) + (parseInt(existing.gpa)||0);
-        const newTotal   = (parseInt(s.policy)||0)        + (parseInt(s.rsa)||0)        + (parseInt(s.gpa)||0);
-        if (newTotal > existTotal || (newTotal === existTotal && s.timestamp > existing.timestamp)) {
-          surveyMap[key] = s;
-        }
+        const newTotal = (parseInt(s.policy)||0) + (parseInt(s.rsa)||0) + (parseInt(s.gpa)||0);
+        if (newTotal > existTotal || (newTotal === existTotal && s.timestamp > existing.timestamp)) surveyMap[key] = s;
       }
     });
-    // Always replace — sheet is master (deduplicated, dates fixed)
     DB.surveys = Object.values(surveyMap);
-
     save(DB);
     return true;
-  } catch(e) {
-    console.error("loadFromSheet error:", e);
-    return false;
-  }
+  } catch(e) { console.error("loadFromSheet error:", e); return false; }
 }
+
 function loadData(){try{const r=localStorage.getItem(KEY);if(!r)return def();return JSON.parse(r)}catch{return def()}}
 function def(){return{users:[{username:"admin",password:"admin123",role:"admin"}],attendance:[],surveys:[],absences:[]}}
 function save(d){try{localStorage.setItem(KEY,JSON.stringify(d))}catch(e){}}
-// Use local date (not UTC) to avoid timezone off-by-one day issues
-function localDateStr(date){
-  const d=date||new Date();
-  return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
-}
-function localMonthStr(date){
-  const d=date||new Date();
-  return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
-}
+function localDateStr(date){const d=date||new Date();return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`}
+function localMonthStr(date){const d=date||new Date();return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`}
+
 let DB = loadData();
 let SESSION = null;
 
-// ── HELPERS ───────────────────────────────────────────────────────────────────
 function getLocation(){
   return new Promise((res,rej)=>{
     if(!navigator.geolocation){rej("Geolocation not supported.");return}
     navigator.geolocation.getCurrentPosition(
-      p=>{
-        const lat=p.coords.latitude, lng=p.coords.longitude;
-        // Reject obviously invalid GPS (e.g. 1900, 0,0 default)
-        if(lat < -90 || lat > 90 || lng < -180 || lng > 180){rej("Invalid location received. Try again.");return}
-        res({lat, lng});
-      },
-      e=>{if(e.code===1)rej("Location denied. Please allow location.");
-          else if(e.code===2)rej("Location unavailable.");
-          else rej("Location timed out.");},
-      {timeout:10000, enableHighAccuracy:true}
+      p=>{const lat=p.coords.latitude,lng=p.coords.longitude;if(lat<-90||lat>90||lng<-180||lng>180){rej("Invalid location received.");return}res({lat,lng});},
+      e=>{if(e.code===1)rej("Location denied. Please allow location.");else if(e.code===2)rej("Location unavailable.");else rej("Location timed out.");},
+      {timeout:10000,enableHighAccuracy:true}
     );
   });
 }
@@ -348,24 +282,11 @@ function h(tag,attrs,children){
 function el(tag,cls,children,style){return h(tag,{className:cls,...(style?{style}:{})},children)}
 function render(node){const app=document.getElementById("app");app.innerHTML="";app.appendChild(node)}
 
-// ── ROUTER ────────────────────────────────────────────────────────────────────
 function route(){
-  if(!SESSION){
-    if(autoSyncInterval){clearInterval(autoSyncInterval);autoSyncInterval=null;}
-    renderLogin();return;
-  }
+  if(!SESSION){if(autoSyncInterval){clearInterval(autoSyncInterval);autoSyncInterval=null;}renderLogin();return;}
   startAutoSync();
   if(SESSION.role==="admin"){renderAdmin();return}
   renderUser();
-}
-
-// ── SYNC STATUS HELPER ───────────────────────────────────────────────────────
-function showSyncStatus(parent, msg, type) {
-  let el2 = parent.querySelector(".sync-status");
-  if (!el2) { el2 = document.createElement("div"); el2.className = "sync-status alert"; parent.appendChild(el2); }
-  el2.className = "sync-status alert alert-" + type;
-  el2.textContent = msg;
-  if (type === "success") setTimeout(() => { el2.textContent = ""; el2.className = "sync-status"; }, 4000);
 }
 
 // ── LOGIN ─────────────────────────────────────────────────────────────────────
@@ -379,7 +300,6 @@ function renderLogin(){
     </div>
     <div style="font-size:.85rem;font-weight:700;letter-spacing:.18em;color:#94a3b8;text-transform:uppercase;margin-top:.2rem;text-align:center">Attendance</div>
   `;
-  const title=h("div",{});
   const sub=el("div","subtitle","Sign in to mark your attendance");
   const errBox=el("div","alert alert-error hidden","");
   const lbU=h("label",{},"Username");
@@ -399,11 +319,8 @@ function renderLogin(){
     const u=inU.value.trim(),p=inP.value.trim();
     errBox.classList.add("hidden");
     if(!u||!p){errBox.textContent="Please enter username and password.";errBox.classList.remove("hidden");return}
-
-    // First: validate against local DB (fast), then sync from sheet and re-validate
     const localFound=DB.users.find(x=>x.username===u&&x.password===p);
     if(!localFound){
-      // Try syncing from sheet first, then re-check (handles new users added via sheet)
       btn.disabled=true;btn.textContent="Verifying…";
       loadFromSheet().then(()=>{
         const found2=DB.users.find(x=>x.username===u&&x.password===p);
@@ -415,15 +332,13 @@ function renderLogin(){
     proceedLogin(localFound,u,p);
   }
 
-  function proceedLogin(found,u,p){
+  function proceedLogin(found){
     if(found.role==="admin"){
-      // Admin: sync from sheet silently then route
       btn.disabled=true;btn.textContent="Syncing data…";
       loadFromSheet().finally(()=>{SESSION={username:found.username,role:"admin"};route();});
       return;
     }
     btn.disabled=true;btn.textContent="Syncing data…";locWarn.classList.remove("hidden");
-    // Sync from sheet first, then get location
     loadFromSheet().finally(()=>{
       btn.textContent="Getting location…";
       getLocation().then(loc=>{SESSION={username:found.username,role:"user",location:loc};route();})
@@ -432,7 +347,7 @@ function renderLogin(){
   }
   btn.addEventListener("click",doLogin);
   [inU,inP].forEach(i=>i.addEventListener("keydown",e=>{if(e.key==="Enter")doLogin()}));
-  [logo,title,sub,errBox,lbU,inU,lbP,pwWrap,btn,locWarn].forEach(x=>card.appendChild(x));
+  [logo,sub,errBox,lbU,inU,lbP,pwWrap,btn,locWarn].forEach(x=>card.appendChild(x));
   wrap.appendChild(card);render(wrap);
 }
 
@@ -441,11 +356,9 @@ function showSurvey(onSubmit){
   const overlay=el("div","modal-overlay");
   const modal=el("div","modal");
   const xBtn=h("button",{className:"x-btn"},"✕");
-  xBtn.addEventListener("click",()=>{overlay.remove()});
-
+  xBtn.addEventListener("click",()=>overlay.remove());
   const title=h("h2",{},"Checking out, "+SESSION.username+"!");
   const sub=el("div","sub","Enter today's counts before checking out");
-
   function field(lbl,cls,placeholder){
     const wrap=h("div",{style:{marginBottom:"1.2rem"}});
     const ql=el("div","q-label "+cls,lbl);
@@ -457,21 +370,13 @@ function showSurvey(onSubmit){
   const {wrap:w1,inp:i1}=field("📜 Today's Policy Count","q-policy","e.g. 5");
   const {wrap:w2,inp:i2}=field("🔐 Today's RSA Count","q-rsa","e.g. 3");
   const {wrap:w3,inp:i3}=field("🎓 Today's GPA Count","q-gpa","e.g. 2");
-
   const submitBtn=h("button",{className:"btn btn-primary",disabled:true,style:{marginTop:".5rem"}},"Please fill all 3 fields");
-
   function checkFill(){
     const ok=i1.value!==""&&i2.value!==""&&i3.value!=="";
-    submitBtn.disabled=!ok;
-    submitBtn.textContent=ok?"✓ Submit & Check Out":"Please fill all 3 fields";
+    submitBtn.disabled=!ok;submitBtn.textContent=ok?"✓ Submit & Check Out":"Please fill all 3 fields";
   }
   [i1,i2,i3].forEach(i=>i.addEventListener("input",checkFill));
-
-  submitBtn.addEventListener("click",()=>{
-    onSubmit({policy:i1.value,rsa:i2.value,gpa:i3.value});
-    overlay.remove();
-  });
-
+  submitBtn.addEventListener("click",()=>{onSubmit({policy:i1.value,rsa:i2.value,gpa:i3.value});overlay.remove();});
   [xBtn,title,sub,w1,w2,w3,submitBtn].forEach(x=>modal.appendChild(x));
   overlay.appendChild(modal);document.body.appendChild(overlay);
 }
@@ -482,14 +387,14 @@ function renderUser(){
   const todayStr=new Date().toDateString();
   const todayRecs=()=>myRecs().filter(r=>new Date(r.timestamp).toDateString()===todayStr);
   const isIn=()=>{const t=todayRecs();return t.length>0&&t[0].type==="in"};
-
   const dash=el("div","dash");
-
-  // Topbar
   const tb=el("div","topbar");
   tb.appendChild(el("div","topbar-brand","📋 AttendanceVibe"));
   const tbR=el("div","topbar-right");
-  tbR.appendChild(document.createTextNode(SESSION.username+" "));
+  // Show full name if available
+  const meUser = DB.users.find(u => u.username === SESSION.username);
+  const displayName = (meUser && meUser.fullName) ? meUser.fullName : SESSION.username;
+  tbR.appendChild(document.createTextNode(displayName+" "));
   tbR.appendChild(el("span","badge badge-green","User"));
   const soBtn=h("button",{className:"btn btn-ghost btn-sm",style:{marginLeft:".5rem"}},"Sign Out");
   soBtn.addEventListener("click",()=>{SESSION=null;route()});
@@ -501,13 +406,10 @@ function renderUser(){
     setTimeout(()=>{refBtn.textContent="🔄 Refresh";refBtn.disabled=false;},2000);
     refresh();
   });
-  tbR.appendChild(refBtn);
-  tbR.appendChild(soBtn);
+  tbR.appendChild(refBtn);tbR.appendChild(soBtn);
   tb.appendChild(tbR);dash.appendChild(tb);
-
   const content=el("div","content");
   dash.appendChild(content);
-
   let curTab="today";
   const now=new Date();
   const curMonthKey=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}`;
@@ -515,37 +417,30 @@ function renderUser(){
 
   function refresh(){
     content.innerHTML="";
-
-    // Stats
     const allRecs=myRecs();
     const totalDays=[...new Set(allRecs.filter(r=>r.type==="in").map(r=>new Date(r.timestamp).toDateString()))].length;
     const nowS=new Date();
     const curMKS=`${nowS.getFullYear()}-${String(nowS.getMonth()+1).padStart(2,"0")}`;
     const mySurveys=(DB.surveys||[]).filter(s=>s.username===SESSION.username);
-    // Normalize date helper for user dash
     const normD=d=>{if(!d)return"";const s=String(d);return s.includes("T")?s.slice(0,10):s.slice(0,10);}
     const monthSurveysU=mySurveys.filter(s=>normD(s.date).startsWith(curMKS));
     const monthPolicyU=monthSurveysU.reduce((s,r)=>s+(parseInt(r.policy)||0),0);
     const monthRsaU=monthSurveysU.reduce((s,r)=>s+(parseInt(r.rsa)||0),0);
     const monthGpaU=monthSurveysU.reduce((s,r)=>s+(parseInt(r.gpa)||0),0);
-    // total absent = days in current month with no check-in
     const absentDays=(DB.absences||[]).filter(a=>a.username===SESSION.username&&a.date&&a.date.startsWith(curMKS)).length;
     const monthLblU=nowS.toLocaleString("default",{month:"long",year:"numeric"});
 
-    // Row 1: Total Present / Total Absent
     const grid=el("div","grid2",null,{marginBottom:".8rem"});
     const b1=el("div","stat-box");b1.innerHTML=`<div class="num" style="color:var(--accent2)">${totalDays}</div><div class="lbl">Total Present</div>`;
     const b2=el("div","stat-box");b2.innerHTML=`<div class="num" style="color:var(--danger)">${absentDays}</div><div class="lbl">Absent (${monthLblU})</div>`;
     grid.appendChild(b1);grid.appendChild(b2);content.appendChild(grid);
 
-    // Row 2: Month Policy / RSA / GPA
     const grid2=el("div","grid3",null,{marginBottom:"1.5rem"});
     const bp=el("div","stat-box policy");bp.innerHTML=`<div class="num">${monthPolicyU}</div><div class="lbl">📜 ${monthLblU} Policy</div>`;
     const br=el("div","stat-box rsa");br.innerHTML=`<div class="num">${monthRsaU}</div><div class="lbl">🔐 ${monthLblU} RSA</div>`;
     const bg=el("div","stat-box gpa");bg.innerHTML=`<div class="num">${monthGpaU}</div><div class="lbl">🎓 ${monthLblU} GPA</div>`;
     grid2.appendChild(bp);grid2.appendChild(br);grid2.appendChild(bg);content.appendChild(grid2);
 
-    // Tabs
     const tabs=el("div","tabs");
     ["today","monthly"].forEach(t=>{
       const btn=h("button",{className:"tab"+(curTab===t?" active":"")},t==="today"?"📅 Today":"📊 Monthly Data");
@@ -555,31 +450,24 @@ function renderUser(){
     content.appendChild(tabs);
 
     if(curTab==="today"){
-      // Check in/out button
       const checkedIn=isIn();
       const mainBtn=h("button",{className:"btn "+(checkedIn?"btn-danger":"btn-success")},checkedIn?"⏹ Check Out":"▶ Check In");
       mainBtn.addEventListener("click",()=>{
         if(checkedIn){
           showSurvey(answers=>{
-            // Use the check-in timestamp's date so the survey date always matches
-            // the day the user actually worked (avoids timezone/overnight mismatch)
             const todayCheckins=DB.attendance.filter(r=>r.username===SESSION.username&&r.type==="in"&&new Date(r.timestamp).toDateString()===new Date().toDateString());
             const checkInTs=todayCheckins.length?Math.min(...todayCheckins.map(r=>r.timestamp)):Date.now();
             const surveyDate=localDateStr(new Date(checkInTs));
             const sur={id:Date.now(),username:SESSION.username,timestamp:Date.now(),date:surveyDate,...answers};
-            DB.surveys.push(sur);
-            gsPost({action:"addSurvey",data:sur});
-            save(DB);
+            DB.surveys.push(sur);gsPost({action:"addSurvey",data:sur});save(DB);
             getLocation().then(loc=>{
               const rec_out={id:Date.now(),username:SESSION.username,type:"out",timestamp:Date.now(),location:loc};
               DB.attendance.push(rec_out);save(DB);
-              gsPost({action:"addAttendance",data:{...rec_out, lat:loc?.lat||"", lng:loc?.lng||""}});
-              refresh();
+              gsPost({action:"addAttendance",data:{...rec_out,lat:loc?.lat||"",lng:loc?.lng||""}});refresh();
             }).catch(()=>{
               const rec_outn={id:Date.now(),username:SESSION.username,type:"out",timestamp:Date.now(),location:null};
               DB.attendance.push(rec_outn);save(DB);
-              gsPost({action:"addAttendance",data:{...rec_outn, lat:"", lng:""}});
-              refresh();
+              gsPost({action:"addAttendance",data:{...rec_outn,lat:"",lng:""}});refresh();
             });
           });
         } else {
@@ -587,13 +475,11 @@ function renderUser(){
           getLocation().then(loc=>{
             const rec_in={id:Date.now(),username:SESSION.username,type:"in",timestamp:Date.now(),location:loc};
             DB.attendance.push(rec_in);save(DB);
-            gsPost({action:"addAttendance",data:{...rec_in, lat:loc?.lat||"", lng:loc?.lng||""}});
-            refresh();
+            gsPost({action:"addAttendance",data:{...rec_in,lat:loc?.lat||"",lng:loc?.lng||""}});refresh();
           }).catch(msg=>{mainBtn.disabled=false;mainBtn.textContent="▶ Check In";alert(msg)});
         }
       });
       content.appendChild(mainBtn);
-
       const st=el("div","section-title","Today's Activity",{marginTop:"2rem"});
       content.appendChild(st);
       const tr=todayRecs();
@@ -606,14 +492,11 @@ function renderUser(){
         const loc=el("div","rec-loc",r.location?`📍 ${r.location.lat.toFixed(4)}, ${r.location.lng.toFixed(4)}`:"No location");
         info.appendChild(loc);
         const time=el("div","rec-time",new Date(r.timestamp).toLocaleTimeString());
-        rc.appendChild(dot);rc.appendChild(info);rc.appendChild(time);
-        content.appendChild(rc);
+        rc.appendChild(dot);rc.appendChild(info);rc.appendChild(time);content.appendChild(rc);
       });
     } else {
-      // Monthly
       const allM=[...new Set(myRecs().map(r=>{const d=new Date(r.timestamp);return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`}))].sort().reverse();
       if(!allM.includes(curMonthKey))allM.unshift(curMonthKey);
-
       const bar=el("div","month-bar");
       const lbl=h("label",{},"Month:");lbl.style.margin="0";
       const sel=h("select",{});
@@ -623,7 +506,6 @@ function renderUser(){
 
       const mRecs=myRecs().filter(r=>{const d=new Date(r.timestamp);return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`===selMonth});
       const mSurveys=(DB.surveys||[]).filter(s=>s.username===SESSION.username&&s.date&&s.date.startsWith(selMonth));
-
       const g3=el("div","grid3",null,{marginBottom:"1.2rem"});
       const policySum=mSurveys.reduce((s,r)=>s+(parseInt(r.policy)||0),0);
       const rsaSum=mSurveys.reduce((s,r)=>s+(parseInt(r.rsa)||0),0);
@@ -633,17 +515,14 @@ function renderUser(){
       });
       content.appendChild(g3);
 
-      // Day map
       const dayMap={};
       mRecs.forEach(r=>{const k=new Date(r.timestamp).toDateString();if(!dayMap[k])dayMap[k]={date:new Date(r.timestamp),in:null,out:null,loc:null};
         if(r.type==="in"&&(!dayMap[k].in||r.timestamp<dayMap[k].in)){dayMap[k].in=r.timestamp;dayMap[k].loc=r.location}
         if(r.type==="out"&&(!dayMap[k].out||r.timestamp>dayMap[k].out))dayMap[k].out=r.timestamp;
       });
       const days=Object.values(dayMap).sort((a,b)=>b.date-a.date);
-
       const st1=el("div","section-title",`Attendance — ${new Date(selMonth+"-01").toLocaleString("default",{month:"long",year:"numeric"})}`);
       content.appendChild(st1);
-
       if(!days.length){content.appendChild(el("div","empty","No attendance for this month."))}
       else{
         const tw=h("div",{style:{overflowX:"auto",background:"var(--card)",borderRadius:"12px",border:"1px solid var(--border)"}});
@@ -695,40 +574,29 @@ function openSurveyEditModal(survey, onSave) {
   const sub=el("div","sub","");
   sub.innerHTML=`User: <strong>${survey.username}</strong> &nbsp;·&nbsp; Date: <strong>${survey.date}</strong>`;
   mo.appendChild(sub);
-
   function numField(labelTxt, cls, val) {
     const wrap=h("div",{style:{marginBottom:"1.2rem"}});
     const ql=el("div","q-label "+cls,labelTxt);
     const inp=h("input",{type:"number",min:"0",value:val});
-    inp.style.marginBottom="0";
-    wrap.appendChild(ql);wrap.appendChild(inp);
+    inp.style.marginBottom="0";wrap.appendChild(ql);wrap.appendChild(inp);
     return {wrap,inp};
   }
   const {wrap:w1,inp:i1}=numField("📜 Policy Count","q-policy",survey.policy||0);
   const {wrap:w2,inp:i2}=numField("🔐 RSA Count","q-rsa",survey.rsa||0);
   const {wrap:w3,inp:i3}=numField("🎓 GPA Count","q-gpa",survey.gpa||0);
-
   const saveBtn=h("button",{className:"btn btn-primary",style:{marginTop:".5rem"}},"💾 Save Changes");
   saveBtn.addEventListener("click",()=>{
     const idx=DB.surveys.findIndex(s=>s.id===survey.id);
-    if(idx>=0){
-      DB.surveys[idx]={...DB.surveys[idx],policy:i1.value,rsa:i2.value,gpa:i3.value};
-      save(DB);
-      syncToSheet();
-    }
-    ov.remove();
-    onSave();
+    if(idx>=0){DB.surveys[idx]={...DB.surveys[idx],policy:i1.value,rsa:i2.value,gpa:i3.value};save(DB);syncToSheet();}
+    ov.remove();onSave();
   });
   const delBtn=h("button",{className:"btn btn-danger",style:{marginTop:".6rem"}},"🗑 Delete This Entry");
   delBtn.addEventListener("click",()=>{
     if(!confirm("Delete this survey entry?"))return;
-    DB.surveys=DB.surveys.filter(s=>s.id!==survey.id);
-    save(DB);syncToSheet();
-    ov.remove();onSave();
+    DB.surveys=DB.surveys.filter(s=>s.id!==survey.id);save(DB);syncToSheet();ov.remove();onSave();
   });
   const cancelBtn=h("button",{className:"btn btn-ghost",style:{marginTop:".6rem"}},"Cancel");
   cancelBtn.addEventListener("click",()=>ov.remove());
-
   [w1,w2,w3,saveBtn,delBtn,cancelBtn].forEach(x=>mo.appendChild(x));
   ov.appendChild(mo);document.body.appendChild(ov);
 }
@@ -737,7 +605,6 @@ function openSurveyEditModal(survey, onSave) {
 function renderAdmin(){
   let curTab="users";
   let dlMonth="";
-  let editingUser=null;
   const dash=el("div","dash");
 
   // VIBE Header
@@ -751,34 +618,19 @@ function renderAdmin(){
   hdrR.appendChild(h("span",{style:{fontSize:".85rem",color:"#64748b"}},SESSION.username));
   hdrR.appendChild(h("span",{style:{background:"#2563eb",color:"#fff",fontSize:".7rem",padding:".2rem .6rem",borderRadius:"20px",fontWeight:"700"}},"Admin"));
   const soBtn=h("button",{style:{padding:".4rem .9rem",border:"1.5px solid #e5e7eb",borderRadius:"8px",background:"#fff",color:"#64748b",fontFamily:"var(--font)",fontSize:".82rem",cursor:"pointer",fontWeight:"600"}},"Sign Out");
-  const syncBtn=h("button",{style:{padding:".4rem .9rem",border:"1.5px solid #e5e7eb",borderRadius:"8px",background:"#dcfce7",color:"#15803d",fontFamily:"var(--font)",fontSize:".82rem",cursor:"pointer",fontWeight:"600",transition:"all .2s"}},"🟢 Sync Now");
-  syncBtn.addEventListener("click",async ()=>{
+  const syncBtn=h("button",{style:{padding:".4rem .9rem",border:"1.5px solid #e5e7eb",borderRadius:"8px",background:"#dcfce7",color:"#15803d",fontFamily:"var(--font)",fontSize:".82rem",cursor:"pointer",fontWeight:"600"}},"🟢 Sync Now");
+  syncBtn.addEventListener("click",async()=>{
     syncBtn.textContent="⏳ Syncing…";syncBtn.disabled=true;
-    // Pull latest from sheet first, then push local DB
-    await loadFromSheet();
-    const ok=await syncToSheet();
-    if(ok&&ok.ok){syncBtn.textContent="✅ Synced!";syncBtn.style.background="#dcfce7";syncBtn.style.color="#15803d";}
-    else{syncBtn.textContent="❌ Failed";}
-    refresh();
-    setTimeout(()=>{syncBtn.textContent="🟢 Sync Now";syncBtn.disabled=false;},3000);
+    await loadFromSheet();const ok=await syncToSheet();
+    syncBtn.textContent=ok&&ok.ok?"✅ Synced!":"❌ Failed";
+    refresh();setTimeout(()=>{syncBtn.textContent="🟢 Sync Now";syncBtn.disabled=false;},3000);
   });
-  hdrR.appendChild(syncBtn);
-  hdrR.appendChild(soBtn);hdr.appendChild(hdrR);dash.appendChild(hdr);
+  hdrR.appendChild(syncBtn);hdrR.appendChild(soBtn);hdr.appendChild(hdrR);dash.appendChild(hdr);
 
   const content=el("div","content");dash.appendChild(content);
 
-  // Pull from sheet every 30 seconds automatically
-  const adminPollInterval = setInterval(async ()=>{
-    await loadFromSheet();
-    refresh();
-  }, 30000);
-  // Clear interval on sign out
-  soBtn.addEventListener("click", ()=>{ clearInterval(adminPollInterval); SESSION=null; route(); });
-
-  async function refreshFromSheet() {
-    await loadFromSheet();
-    refresh();
-  }
+  const adminPollInterval=setInterval(async()=>{await loadFromSheet();refresh();},30000);
+  soBtn.addEventListener("click",()=>{clearInterval(adminPollInterval);SESSION=null;route();});
 
   function refresh(){
     content.innerHTML="";
@@ -786,12 +638,10 @@ function renderAdmin(){
     const allSurveys=DB.surveys||[];
     const allAttend=DB.attendance.sort((a,b)=>b.timestamp-a.timestamp);
     const todayStr=localDateStr();
-    // Normalize date for comparison — handles ISO strings, sheet date formats etc.
-    function normDate(d){ if(!d) return ""; const s=String(d); return s.includes("T")?s.slice(0,10):s.slice(0,10); }
+    function normDate(d){if(!d)return"";const s=String(d);return s.includes("T")?s.slice(0,10):s.slice(0,10);}
     const todaySurveys=allSurveys.filter(s=>normDate(s.date)===todayStr);
     const todayInUsers=[...new Set(allAttend.filter(r=>r.type==="in"&&new Date(r.timestamp).toDateString()===new Date().toDateString()).map(r=>r.username))];
     const todayAbsent=regularUsers.filter(u=>!todayInUsers.includes(u.username));
-    // Auto-mark absences for today when admin opens dashboard
     markAbsences();
     const totalPolicy=allSurveys.reduce((s,r)=>s+(parseInt(r.policy)||0),0);
     const todayPolicy=todaySurveys.reduce((s,r)=>s+(parseInt(r.policy)||0),0);
@@ -799,25 +649,32 @@ function renderAdmin(){
     const todayGpa=todaySurveys.reduce((s,r)=>s+(parseInt(r.gpa)||0),0);
 
     // HOME STAT CARDS
-    const homeGrid=h("div",{style:{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:"1rem",margin:"1.5rem 0 .8rem",className:"home-cards"}});
-
-    // Present card
+    const homeGrid=h("div",{style:{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:"1rem",margin:"1.5rem 0 .8rem"}});
     const c1=el("div","home-card");
     c1.innerHTML=`<div class="big-num" style="color:#16a34a">${todayInUsers.length}</div><div class="card-label">Today Present</div>`;
     const p1=h("div",{style:{marginTop:".6rem",display:"flex",gap:".3rem",flexWrap:"wrap"}});
-    if(todayInUsers.length){todayInUsers.forEach(u=>{const sp=h("span",{className:"name-pill",style:{background:"#dcfce7",color:"#15803d"}},u);p1.appendChild(sp)})}
-    else p1.appendChild(h("span",{style:{color:"#9ca3af",fontSize:".75rem"}},"No check-ins yet"));
+    if(todayInUsers.length){
+      todayInUsers.forEach(uname=>{
+        const uInfo=regularUsers.find(u=>u.username===uname);
+        const displayN=(uInfo&&uInfo.fullName)?uInfo.fullName:uname;
+        const sp=h("span",{className:"name-pill",style:{background:"#dcfce7",color:"#15803d"}},displayN);
+        p1.appendChild(sp);
+      });
+    } else p1.appendChild(h("span",{style:{color:"#9ca3af",fontSize:".75rem"}},"No check-ins yet"));
     c1.appendChild(p1);homeGrid.appendChild(c1);
 
-    // Absent card
     const c2=el("div","home-card");
     c2.innerHTML=`<div class="big-num" style="color:#dc2626">${todayAbsent.length}</div><div class="card-label">Today Absent</div>`;
     const p2=h("div",{style:{marginTop:".6rem",display:"flex",gap:".3rem",flexWrap:"wrap"}});
-    if(todayAbsent.length){todayAbsent.forEach(u=>{const sp=h("span",{className:"name-pill",style:{background:"#fee2e2",color:"#b91c1c"}},u.username);p2.appendChild(sp)})}
-    else p2.appendChild(h("span",{style:{color:"#9ca3af",fontSize:".75rem"}},"All present! 🎉"));
+    if(todayAbsent.length){
+      todayAbsent.forEach(u=>{
+        const displayN=(u.fullName)?u.fullName:u.username;
+        const sp=h("span",{className:"name-pill",style:{background:"#fee2e2",color:"#b91c1c"}},displayN);
+        p2.appendChild(sp);
+      });
+    } else p2.appendChild(h("span",{style:{color:"#9ca3af",fontSize:".75rem"}},"All present! 🎉"));
     c2.appendChild(p2);homeGrid.appendChild(c2);
 
-    // Policy card
     const c3=el("div","home-card");
     c3.innerHTML=`<div class="big-num" style="color:#7c3aed">${totalPolicy}</div><div class="card-label">Total Policy</div>`;
     const p3=h("div",{style:{marginTop:".6rem",display:"flex",gap:".5rem",flexWrap:"wrap"}});
@@ -827,7 +684,6 @@ function renderAdmin(){
     c3.appendChild(p3);homeGrid.appendChild(c3);
     content.appendChild(homeGrid);
 
-    // Date strip
     const ds=h("div",{style:{fontSize:".78rem",color:"#94a3b8",marginBottom:"1.2rem",fontWeight:"600"}},
       `📅 ${new Date().toLocaleDateString("en-GB",{weekday:"long",day:"2-digit",month:"long",year:"numeric"})} · ${regularUsers.length} total staff`);
     content.appendChild(ds);
@@ -836,70 +692,104 @@ function renderAdmin(){
     const navRow=h("div",{style:{display:"flex",gap:".6rem",marginBottom:"1.5rem",flexWrap:"wrap"}});
     [["users","👥 Users"],["records","📋 Attendance"],["export","📜 Policy Details"]].forEach(([key,lbl])=>{
       const btn=h("button",{className:"home-nav-btn",style:{background:curTab===key?"#2563eb":"#fff",color:curTab===key?"#fff":"#374151",boxShadow:curTab===key?"0 4px 14px #2563eb44":"0 1px 4px #0000001a"}},lbl);
-      btn.addEventListener("click",async ()=>{
-        curTab=key;
-        await loadFromSheet(); // pull latest before showing tab
-        refresh();
-      });
+      btn.addEventListener("click",async()=>{curTab=key;await loadFromSheet();refresh();});
       navRow.appendChild(btn);
     });
     content.appendChild(navRow);
 
     // ── USERS TAB ──
     if(curTab==="users"){
-      // Create user form
-      const fc=el("div","card",null,{marginBottom:"1.5rem"});
-      fc.appendChild(h("h2",{},"Create New User"));
+      // ── CREATE USER FORM (new field order: Full Name → User ID → Password) ──
+      const fc=el("div","create-user-card");
+      const formTitle=h("h2",{});
+      formTitle.innerHTML='👤 Create New User';
+      fc.appendChild(formTitle);
+
       const errB=el("div","alert alert-error hidden","");
       const sucB=el("div","alert alert-success hidden","");
       fc.appendChild(errB);fc.appendChild(sucB);
-      const iUN=h("input",{type:"text",placeholder:"Username"});
-      const iPW=h("input",{type:"password",placeholder:"Password"});
-      const iDS=h("input",{type:"text",placeholder:"e.g. Sales Executive"});
-      const iLoc=h("input",{type:"text",placeholder:"e.g. Chennai Branch"});
-      [["Username",iUN],["Password",iPW],["Designation",iDS],["Working Location",iLoc]].forEach(([l,i])=>{fc.appendChild(h("label",{},l));fc.appendChild(i)});
-      const addBtn=h("button",{className:"btn btn-primary"},"+ Create User");
-      addBtn.addEventListener("click",()=>{
-        const u=iUN.value.trim(),p=iPW.value.trim(),d=iDS.value.trim();
-        errB.classList.add("hidden");sucB.classList.add("hidden");
-        if(!u||!p){errB.textContent="Username and password required.";errB.classList.remove("hidden");return}
-        if(DB.users.find(x=>x.username===u)){errB.textContent="Username already exists.";errB.classList.remove("hidden");return}
-        const loc2=iLoc.value.trim();
-        DB.users.push({username:u,password:p,designation:d,location:loc2,role:"user"});
-        save(DB);
-        syncToSheet(); // immediately push new user to sheet
-        sucB.textContent=`User "${u}" created.`;sucB.classList.remove("hidden");
-        iUN.value="";iPW.value="";iDS.value="";iLoc.value="";refresh();
-      });
-      fc.appendChild(addBtn);content.appendChild(fc);
 
-      content.appendChild(el("div","section-title","All Users"));
+      // Helper to build a labeled field with a step badge
+      function makeField(stepNum, icon, labelText, inputAttrs) {
+        const fg=el("div","field-group");
+        const lbl=h("label",{});
+        const stepBadge=el("span","field-step",String(stepNum));
+        lbl.appendChild(stepBadge);
+        lbl.appendChild(document.createTextNode(" "+icon+" "+labelText));
+        const inp=h("input",inputAttrs);
+        fg.appendChild(lbl);fg.appendChild(inp);
+        return {fg, inp};
+      }
+
+      const {fg:fg1, inp:iName} = makeField(1,"👤","Full Name",{type:"text",placeholder:"e.g. Arjun Sharma"});
+      const {fg:fg2, inp:iUID}  = makeField(2,"🪪","User ID",{type:"text",placeholder:"e.g. EMP001"});
+      const {fg:fg3, inp:iPW}   = makeField(3,"🔑","Password",{type:"password",placeholder:"Set a password"});
+
+      // Optional fields (designation & location) — collapsible for cleanliness
+      const optToggle=h("button",{type:"button",style:{background:"none",border:"none",color:"var(--muted)",fontFamily:"var(--font)",fontSize:".8rem",cursor:"pointer",padding:"0 0 .8rem",display:"flex",alignItems:"center",gap:".3rem"}},"＋ Add designation & location (optional)");
+      const optFields=h("div",{style:{display:"none"}});
+      const {fg:fg4, inp:iDS} = makeField("","🏷","Designation",{type:"text",placeholder:"e.g. Sales Executive"});
+      const {fg:fg5, inp:iLoc} = makeField("","📍","Working Location",{type:"text",placeholder:"e.g. Chennai Branch"});
+      optFields.appendChild(fg4);optFields.appendChild(fg5);
+      let optOpen=false;
+      optToggle.addEventListener("click",()=>{
+        optOpen=!optOpen;
+        optFields.style.display=optOpen?"block":"none";
+        optToggle.textContent=optOpen?"▾ Hide optional fields":"＋ Add designation & location (optional)";
+      });
+
+      const addBtn=h("button",{className:"btn btn-primary"},"✚ Create User");
+      addBtn.addEventListener("click",()=>{
+        const name=iName.value.trim();
+        const uid=iUID.value.trim();
+        const pw=iPW.value.trim();
+        const des=iDS.value.trim();
+        const loc2=iLoc.value.trim();
+        errB.classList.add("hidden");sucB.classList.add("hidden");
+        if(!name){errB.textContent="Full name is required.";errB.classList.remove("hidden");return}
+        if(!uid){errB.textContent="User ID is required.";errB.classList.remove("hidden");return}
+        if(!pw){errB.textContent="Password is required.";errB.classList.remove("hidden");return}
+        // Use User ID as the login username
+        if(DB.users.find(x=>x.username===uid)){errB.textContent="User ID already exists. Choose a different one.";errB.classList.remove("hidden");return}
+        DB.users.push({username:uid,password:pw,fullName:name,userId:uid,designation:des,location:loc2,role:"user"});
+        save(DB);syncToSheet();
+        sucB.textContent=`✅ User "${name}" (ID: ${uid}) created successfully.`;sucB.classList.remove("hidden");
+        iName.value="";iUID.value="";iPW.value="";iDS.value="";iLoc.value="";
+        refresh();
+      });
+
+      [fg1,fg2,fg3,optToggle,optFields,addBtn].forEach(x=>fc.appendChild(x));
+      content.appendChild(fc);
+
+      // User list
+      content.appendChild(el("div","section-title",`All Users (${regularUsers.length})`));
       if(!regularUsers.length){content.appendChild(el("div","empty","No users yet."))}
       else regularUsers.forEach(u=>{
         const row=el("div","user-row");
-        const info=h("div",{});
-        info.appendChild(el("div","uname",u.username));
-        const roleRow=h("div",{style:{display:"flex",alignItems:"center",gap:".5rem",flexWrap:"wrap"}});
-        roleRow.appendChild(h("span",{style:{fontSize:".75rem",color:"var(--muted)"}},(u.designation||"Regular User")+(u.location?" · 📍 "+u.location:"")));
-        const pwPill=h("span",{style:{fontSize:".7rem",background:"#ffd16622",color:"var(--warn)",border:"1px solid #ffd16644",borderRadius:"6px",padding:".1rem .45rem",fontFamily:"var(--mono)",letterSpacing:".03em",cursor:"pointer"}},"🔑 ••••••");
+        const info=h("div",{style:{flex:1,minWidth:0}});
+        // Show full name as primary, user ID below
+        const nameEl=el("div","uname",(u.fullName||u.username));
+        const metaRow=h("div",{style:{display:"flex",alignItems:"center",gap:".5rem",flexWrap:"wrap",marginTop:".2rem"}});
+        metaRow.appendChild(h("span",{style:{fontSize:".72rem",color:"var(--accent)",fontFamily:"var(--mono)",background:"#4f8ef722",border:"1px solid #4f8ef744",borderRadius:"6px",padding:".1rem .45rem"}},"ID: "+(u.userId||u.username)));
+        if(u.designation)metaRow.appendChild(h("span",{style:{fontSize:".72rem",color:"var(--muted)"}},u.designation));
+        if(u.location)metaRow.appendChild(h("span",{style:{fontSize:".72rem",color:"var(--muted)"}},"📍 "+u.location));
+        const pwPill=h("span",{style:{fontSize:".7rem",background:"#ffd16622",color:"var(--warn)",border:"1px solid #ffd16644",borderRadius:"6px",padding:".1rem .45rem",fontFamily:"var(--mono)",cursor:"pointer"}},"🔑 ••••••");
         let pwShown=false;
         pwPill.addEventListener("click",()=>{pwShown=!pwShown;pwPill.textContent=pwShown?"🔑 "+u.password:"🔑 ••••••"});
-        roleRow.appendChild(pwPill);
-        info.appendChild(roleRow);
+        metaRow.appendChild(pwPill);
+        info.appendChild(nameEl);info.appendChild(metaRow);
         row.appendChild(info);
-        const btns=h("div",{style:{display:"flex",gap:".5rem"}});
+        const btns=h("div",{style:{display:"flex",gap:".5rem",flexShrink:0}});
         const eBtn=h("button",{className:"btn btn-ghost btn-sm"},"✏️ Edit");
         eBtn.addEventListener("click",()=>openEditModal(u));
         const dBtn=h("button",{className:"btn btn-danger btn-sm"},"Delete");
         dBtn.addEventListener("click",()=>{
-          if(!confirm(`Delete "${u.username}"?`))return;
+          if(!confirm(`Delete "${u.fullName||u.username}"?`))return;
           DB.users=DB.users.filter(x=>x.username!==u.username);
           DB.attendance=DB.attendance.filter(r=>r.username!==u.username);
           DB.surveys=(DB.surveys||[]).filter(r=>r.username!==u.username);
           DB.absences=(DB.absences||[]).filter(r=>r.username!==u.username);
-          save(DB);
-          syncToSheet(); // immediately push deletion to sheet
-          refresh();
+          save(DB);syncToSheet();refresh();
         });
         btns.appendChild(eBtn);btns.appendChild(dBtn);row.appendChild(btns);content.appendChild(row);
       });
@@ -920,8 +810,10 @@ function renderAdmin(){
       ms.addEventListener("change",()=>{window._recMonth=ms.value;refresh()});
       const ul=h("label",{},"\u00a0\u00a0User:");ul.style.margin="0";
       const us=h("select",{});
-      h("option",{value:"all"},"All Users");
-      [h("option",{value:"all"},"All Users"),...regularUsers.map(u=>h("option",{value:u.username},u.username))].forEach(o=>{if(o.value===window._recUser)o.selected=true;us.appendChild(o)});
+      [h("option",{value:"all"},"All Users"),...regularUsers.map(u=>{
+        const o=h("option",{value:u.username},(u.fullName?u.fullName+" ("+u.username+")":u.username));
+        if(u.username===window._recUser)o.selected=true;return o;
+      })].forEach(o=>us.appendChild(o));
       us.addEventListener("change",()=>{window._recUser=us.value;refresh()});
       [ml,ms,ul,us].forEach(x=>bar.appendChild(x));content.appendChild(bar);
 
@@ -933,7 +825,6 @@ function renderAdmin(){
       });
       const rows=Object.values(dayMap2).sort((a,b)=>b.date-a.date);
 
-      // Summary
       const sg=el("div","grid3",null,{marginBottom:"1.2rem"});
       const present=rows.filter(r=>r.in).length;
       const full=rows.filter(r=>r.in&&r.out).length;
@@ -944,7 +835,6 @@ function renderAdmin(){
       });
       content.appendChild(sg);
 
-      // Absent users for selected month
       const absentRecs=(DB.absences||[]).filter(a=>{
         const m=a.date?a.date.slice(0,7):"";
         return m===window._recMonth&&(window._recUser==="all"||a.username===window._recUser);
@@ -959,8 +849,9 @@ function renderAdmin(){
         absentRecs.sort((a,b)=>b.date.localeCompare(a.date)).forEach((a,i)=>{
           const tr2=document.createElement("tr");if(i%2)tr2.style.background="#ffffff05";
           const uInfo=regularUsers.find(u=>u.username===a.username);
+          const displayN=(uInfo&&uInfo.fullName)?uInfo.fullName:a.username;
           tr2.innerHTML=`<td class="attend-td" style="font-family:var(--mono);font-size:.8rem">${a.date}</td>
-            <td class="attend-td" style="font-weight:700;color:var(--accent)">${a.username}${uInfo?.designation?`<div style="font-size:.7rem;color:var(--muted)">${uInfo.designation}</div>`:""}</td>
+            <td class="attend-td" style="font-weight:700;color:var(--accent)">${displayN}${uInfo?.designation?`<div style="font-size:.7rem;color:var(--muted)">${uInfo.designation}</div>`:""}</td>
             <td class="attend-td"><span style="padding:.2rem .6rem;border-radius:20px;font-size:.75rem;font-weight:700;background:#ff5f6d22;color:var(--danger);border:1px solid #ff5f6d44">🔴 Absent</span></td>`;
           abBody.appendChild(tr2);
         });
@@ -973,7 +864,7 @@ function renderAdmin(){
         const tbl=document.createElement("table");tbl.style.width="100%";tbl.style.borderCollapse="collapse";tbl.style.fontSize=".85rem";
         const thead=document.createElement("thead");
         const hrow=document.createElement("tr");
-        ["Date","User","Check In","Check Out","Hours","📍 In Location","📍 Out Location"].forEach(h2=>{const th=h("th",{className:"attend-th"},h2);hrow.appendChild(th)});
+        ["Date","Name / ID","Check In","Check Out","Hours","📍 In Location","📍 Out Location"].forEach(h2=>{const th=h("th",{className:"attend-th"},h2);hrow.appendChild(th)});
         thead.appendChild(hrow);tbl.appendChild(thead);
         const tbody=document.createElement("tbody");
         rows.forEach((r,i)=>{
@@ -985,14 +876,15 @@ function renderAdmin(){
           const hrsBg=hrsVal>=8?"#38d9a922":hrsVal>=4?"#ffd16622":"#ff5f6d22";
           const hrsBorder=hrsVal>=8?"#38d9a944":hrsVal>=4?"#ffd16644":"#ff5f6d44";
           const uInfo=regularUsers.find(u=>u.username===r.username);
+          const displayN=(uInfo&&uInfo.fullName)?uInfo.fullName:r.username;
           const cells=[
             `<td class="attend-td" style="font-family:var(--mono);font-size:.8rem;white-space:nowrap">${r.date.toLocaleDateString("en-GB",{weekday:"short",day:"2-digit",month:"short",year:"numeric"})}</td>`,
-            `<td class="attend-td" style="font-weight:700;color:var(--accent)">${r.username}${uInfo?.designation?`<div style="font-size:.7rem;color:var(--muted);font-weight:400">${uInfo.designation}</div>`:""}</td>`,
+            `<td class="attend-td"><span style="font-weight:700;color:var(--accent)">${displayN}</span><div style="font-size:.7rem;color:var(--muted);font-family:var(--mono)">${r.username}${uInfo?.designation?" · "+uInfo.designation:""}</div></td>`,
             `<td class="attend-td" style="font-family:var(--mono);font-size:.82rem;color:var(--accent2)">${r.in?new Date(r.in).toLocaleTimeString([],({"hour":"2-digit","minute":"2-digit"})):"—"}</td>`,
             `<td class="attend-td" style="font-family:var(--mono);font-size:.82rem;color:var(--danger)">${r.out?new Date(r.out).toLocaleTimeString([],({"hour":"2-digit","minute":"2-digit"})):"—"}</td>`,
             `<td class="attend-td">${mins?`<span style="padding:.2rem .6rem;border-radius:20px;font-size:.75rem;font-weight:700;background:${hrsBg};color:${hrsColor};border:1px solid ${hrsBorder};font-family:var(--mono)">${hrs}</span>`:"<span style='color:var(--muted)'>—</span>"}</td>`,
-            `<td class="attend-td" style="color:var(--accent2);font-size:.78rem;font-family:var(--mono)">${r.loc?`<a href="https://maps.google.com/?q=${r.loc.lat},${r.loc.lng}" target="_blank" style="color:var(--accent2);text-decoration:none" title="Open in Maps">📍 ${r.loc.lat.toFixed(4)}, ${r.loc.lng.toFixed(4)}</a>`:"<span style='color:var(--muted)'>—</span>"}</td>`,
-            `<td class="attend-td" style="color:var(--danger);font-size:.78rem;font-family:var(--mono)">${r.outLoc?`<a href="https://maps.google.com/?q=${r.outLoc.lat},${r.outLoc.lng}" target="_blank" style="color:var(--danger);text-decoration:none" title="Open in Maps">📍 ${r.outLoc.lat.toFixed(4)}, ${r.outLoc.lng.toFixed(4)}</a>`:"<span style='color:var(--muted)'>—</span>"}</td>`,
+            `<td class="attend-td" style="color:var(--accent2);font-size:.78rem;font-family:var(--mono)">${r.loc?`<a href="https://maps.google.com/?q=${r.loc.lat},${r.loc.lng}" target="_blank" style="color:var(--accent2);text-decoration:none">📍 ${r.loc.lat.toFixed(4)}, ${r.loc.lng.toFixed(4)}</a>`:"<span style='color:var(--muted)'>—</span>"}</td>`,
+            `<td class="attend-td" style="color:var(--danger);font-size:.78rem;font-family:var(--mono)">${r.outLoc?`<a href="https://maps.google.com/?q=${r.outLoc.lat},${r.outLoc.lng}" target="_blank" style="color:var(--danger);text-decoration:none">📍 ${r.outLoc.lat.toFixed(4)}, ${r.outLoc.lng.toFixed(4)}</a>`:"<span style='color:var(--muted)'>—</span>"}</td>`,
           ];
           tr2.innerHTML=cells.join("");tbody.appendChild(tr2);
         });
@@ -1004,17 +896,13 @@ function renderAdmin(){
     if(curTab==="export"){
       const todayFull=new Date().toLocaleDateString("en-GB",{weekday:"long",day:"2-digit",month:"long",year:"numeric"});
       content.appendChild(el("div","section-title","Today's Counts — "+todayFull));
-
       const todayAttendCount=allAttend.filter(r=>new Date(r.timestamp).toDateString()===new Date().toDateString()).length;
-      // Today row
       const cg=h("div",{style:{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:".8rem",marginBottom:".8rem"}});
       [["policy",todayPolicy,"📜 Today Policy"],["rsa",todayRsa,"🔐 Today RSA"],["gpa",todayGpa,"🎓 Today GPA"],["",todayAttendCount,"📋 Today Attend"]].forEach(([cls,v,l])=>{
         const b=el("div","stat-box "+(cls||""),null,{padding:".8rem"});
-        b.innerHTML=`<div class="num" style="font-size:1.5rem">${v}</div><div class="lbl">${l}</div>`;
-        cg.appendChild(b);
+        b.innerHTML=`<div class="num" style="font-size:1.5rem">${v}</div><div class="lbl">${l}</div>`;cg.appendChild(b);
       });
       content.appendChild(cg);
-      // Month total row
       const nowM=new Date();const curMK2=`${nowM.getFullYear()}-${String(nowM.getMonth()+1).padStart(2,"0")}`;
       const monthSurveys=allSurveys.filter(s=>normDate(s.date).startsWith(curMK2));
       const monthPolicy=monthSurveys.reduce((s,r)=>s+(parseInt(r.policy)||0),0);
@@ -1025,24 +913,23 @@ function renderAdmin(){
       const cg2=h("div",{style:{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:".8rem",marginBottom:"1rem"}});
       [["policy",monthPolicy,"📜 "+monthLbl+" Policy"],["rsa",monthRsa,"🔐 "+monthLbl+" RSA"],["gpa",monthGpa,"🎓 "+monthLbl+" GPA"],["",monthAttend,"📋 "+monthLbl+" Attend"]].forEach(([cls,v,l])=>{
         const b=el("div","stat-box "+(cls||""),null,{padding:".8rem",borderStyle:"dashed",opacity:".9"});
-        b.innerHTML=`<div class="num" style="font-size:1.5rem">${v}</div><div class="lbl" style="font-size:.72rem">${l}</div>`;
-        cg2.appendChild(b);
+        b.innerHTML=`<div class="num" style="font-size:1.5rem">${v}</div><div class="lbl" style="font-size:.72rem">${l}</div>`;cg2.appendChild(b);
       });
       content.appendChild(cg2);
 
-      // All survey entries — editable
       content.appendChild(el("div","section-title","All Survey Entries — ✏️ Click Edit to fix wrong counts"));
       const allSurveysSorted=[...allSurveys].sort((a,b)=>b.timestamp-a.timestamp);
       if(!allSurveysSorted.length){content.appendChild(el("div","empty","No survey entries yet."));}
       else{
         const tw=h("div",{style:{background:"var(--card)",borderRadius:"12px",border:"1px solid var(--border)",overflow:"hidden",marginBottom:"1.2rem"}});
         const tbl=el("table","month-table");
-        tbl.innerHTML='<thead><tr><th>User</th><th>Date</th><th>📜 Policy</th><th>🔐 RSA</th><th>🎓 GPA</th><th>Edit</th></tr></thead>';
+        tbl.innerHTML='<thead><tr><th>Name</th><th>Date</th><th>📜 Policy</th><th>🔐 RSA</th><th>🎓 GPA</th><th>Edit</th></tr></thead>';
         const tb2=document.createElement("tbody");
         allSurveysSorted.slice(0,60).forEach(s=>{
           const uInfo=regularUsers.find(u=>u.username===s.username);
+          const displayN=(uInfo&&uInfo.fullName)?uInfo.fullName:s.username;
           const tr2=document.createElement("tr");
-          tr2.innerHTML=`<td style="font-weight:600">${s.username}<br><span style="font-size:.7rem;color:var(--muted)">${uInfo?.designation||""}</span></td>
+          tr2.innerHTML=`<td style="font-weight:600">${displayN}<br><span style="font-size:.7rem;color:var(--muted);font-family:var(--mono)">${s.username}${uInfo?.designation?" · "+uInfo.designation:""}</span></td>
             <td style="font-family:var(--mono);font-size:.78rem">${s.date}</td>
             <td><span class="pill pill-pend">${parseInt(s.policy)||0}</span></td>
             <td><span class="pill pill-yes">${parseInt(s.rsa)||0}</span></td>
@@ -1051,17 +938,14 @@ function renderAdmin(){
           const editTd=tr2.querySelector("td:last-child");
           const eBtn=h("button",{className:"btn btn-ghost btn-sm"},"✏️ Edit");
           eBtn.addEventListener("click",()=>openSurveyEditModal(s,refresh));
-          editTd.appendChild(eBtn);
-          tb2.appendChild(tr2);
+          editTd.appendChild(eBtn);tb2.appendChild(tr2);
         });
         tbl.appendChild(tb2);tw.appendChild(tbl);content.appendChild(tw);
       }
 
-      // Month total per user — uses dlMonth filter (same as download section)
+      // Per-user month totals
       const now2x=new Date();const curMKx=`${now2x.getFullYear()}-${String(now2x.getMonth()+1).padStart(2,"0")}`;
       const selMx=dlMonth||curMKx;
-      const selMLabel=new Date(selMx+"-01").toLocaleString("default",{month:"long",year:"numeric"});
-      // Month picker for this table
       const allMonthsX=[...new Set([...allSurveys.map(s=>s.date?.slice(0,7)).filter(Boolean),...allAttend.map(r=>{const d=new Date(r.timestamp);return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`})])].sort().reverse();
       if(!allMonthsX.includes(curMKx))allMonthsX.unshift(curMKx);
       const mPickerRow=el("div","month-bar",null,{marginTop:"1.5rem",marginBottom:".5rem"});
@@ -1071,16 +955,18 @@ function renderAdmin(){
       mPickSel.addEventListener("change",()=>{dlMonth=mPickSel.value;refresh()});
       mPickerRow.appendChild(mPickLbl);mPickerRow.appendChild(mPickSel);content.appendChild(mPickerRow);
 
+      const selMLabel=new Date(selMx+"-01").toLocaleString("default",{month:"long",year:"numeric"});
       content.appendChild(el("div","section-title",`Per User — ${selMLabel} Total`));
       const tw2=h("div",{style:{background:"var(--card)",borderRadius:"12px",border:"1px solid var(--border)",overflow:"hidden",marginBottom:"1.5rem"}});
       const tbl2=el("table","month-table");
-      tbl2.innerHTML='<thead><tr><th>User</th><th>📜 Policy</th><th>🔐 RSA</th><th>🎓 GPA</th><th>📋 Days</th></tr></thead>';
+      tbl2.innerHTML='<thead><tr><th>Name / ID</th><th>📜 Policy</th><th>🔐 RSA</th><th>🎓 GPA</th><th>📋 Days</th></tr></thead>';
       const tb3=document.createElement("tbody");
       regularUsers.forEach(u=>{
         const uS=allSurveys.filter(s=>s.username===u.username&&s.date&&s.date.startsWith(selMx));
         const uD=[...new Set(allAttend.filter(r=>r.username===u.username&&r.type==="in"&&localMonthStr(new Date(r.timestamp))===selMx).map(r=>new Date(r.timestamp).toDateString()))].length;
         const tr3=document.createElement("tr");
-        tr3.innerHTML=`<td style="font-weight:600">${u.username}<br><span style="font-size:.72rem;color:var(--muted)">${u.designation||""}${u.location?" · 📍 "+u.location:""}</span></td>
+        const displayN=(u.fullName||u.username);
+        tr3.innerHTML=`<td><span style="font-weight:600">${displayN}</span><br><span style="font-size:.72rem;color:var(--muted);font-family:var(--mono)">${u.username}${u.designation?" · "+u.designation:""}${u.location?" · 📍 "+u.location:""}</span></td>
           <td><span class="pill pill-pend">${uS.reduce((s,r)=>s+(parseInt(r.policy)||0),0)}</span></td>
           <td><span class="pill pill-yes">${uS.reduce((s,r)=>s+(parseInt(r.rsa)||0),0)}</span></td>
           <td><span class="pill pill-pend">${uS.reduce((s,r)=>s+(parseInt(r.gpa)||0),0)}</span></td>
@@ -1091,8 +977,8 @@ function renderAdmin(){
 
       // Download section
       content.appendChild(el("div","section-title","Download Data"));
-      const mbar=el("div","month-bar");
       const allMonths2=[...new Set([...allSurveys.map(s=>s.date?.slice(0,7)).filter(Boolean),...allAttend.map(r=>{const d=new Date(r.timestamp);return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`})])].sort().reverse();
+      const mbar=el("div","month-bar");
       const ml2=h("label",{},"Filter by Month:");ml2.style.margin="0";
       const ms2=h("select",{});
       [h("option",{value:""},"All Months"),...allMonths2.map(m=>h("option",{value:m},new Date(m+"-01").toLocaleString("default",{month:"long",year:"numeric"})))].forEach(o=>{if(o.value===dlMonth)o.selected=true;ms2.appendChild(o)});
@@ -1103,14 +989,15 @@ function renderAdmin(){
       const fA=dlMonth?allAttend.filter(r=>{const d=new Date(r.timestamp);return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`===dlMonth}):allAttend;
       const mLbl=dlMonth?new Date(dlMonth+"-01").toLocaleString("default",{month:"long",year:"numeric"}):"All Months";
 
+      function getFullName(username){ const u=regularUsers.find(u=>u.username===username); return(u&&u.fullName)?u.fullName:username; }
+
       [
-        ["#a78bfa44","var(--policy)","📜 Policy Data",fS.length,"Policy",()=>exportCSV(fS.map(s=>({Username:s.username,Date:s.date,Time:new Date(s.timestamp).toLocaleTimeString(),Policy_Count:s.policy||""})),`Policy_${dlMonth||"All"}.csv`),"btn-policy"],
-        ["#fb923c44","var(--rsa)","🔐 RSA Data",fS.length,"RSA",()=>exportCSV(fS.map(s=>({Username:s.username,Date:s.date,Time:new Date(s.timestamp).toLocaleTimeString(),RSA_Count:s.rsa||""})),`RSA_${dlMonth||"All"}.csv`),"btn-rsa"],
-        ["#34d39944","var(--gpa)","🎓 GPA Data",fS.length,"GPA",()=>exportCSV(fS.map(s=>({Username:s.username,Date:s.date,Time:new Date(s.timestamp).toLocaleTimeString(),GPA_Count:s.gpa||""})),`GPA_${dlMonth||"All"}.csv`),"btn-gpa"],
+        ["#a78bfa44","var(--policy)","📜 Policy Data",fS.length,"Policy",()=>exportCSV(fS.map(s=>({Name:getFullName(s.username),UserID:s.username,Date:s.date,Time:new Date(s.timestamp).toLocaleTimeString(),Policy_Count:s.policy||""})),`Policy_${dlMonth||"All"}.csv`),"btn-policy"],
+        ["#fb923c44","var(--rsa)","🔐 RSA Data",fS.length,"RSA",()=>exportCSV(fS.map(s=>({Name:getFullName(s.username),UserID:s.username,Date:s.date,Time:new Date(s.timestamp).toLocaleTimeString(),RSA_Count:s.rsa||""})),`RSA_${dlMonth||"All"}.csv`),"btn-rsa"],
+        ["#34d39944","var(--gpa)","🎓 GPA Data",fS.length,"GPA",()=>exportCSV(fS.map(s=>({Name:getFullName(s.username),UserID:s.username,Date:s.date,Time:new Date(s.timestamp).toLocaleTimeString(),GPA_Count:s.gpa||""})),`GPA_${dlMonth||"All"}.csv`),"btn-gpa"],
         ["var(--border)","var(--accent)","📋 Attendance",fA.length,"records",()=>{
-          // Group by user+day, include both in/out locations
           const dm={};
-          fA.forEach(r=>{const k=r.username+"__"+new Date(r.timestamp).toDateString();if(!dm[k])dm[k]={Username:r.username,Date:new Date(r.timestamp).toLocaleDateString(),CheckIn:"",CheckOut:"",Hours:"",InLat:"",InLng:"",OutLat:"",OutLng:""};
+          fA.forEach(r=>{const k=r.username+"__"+new Date(r.timestamp).toDateString();if(!dm[k])dm[k]={Name:getFullName(r.username),UserID:r.username,Date:new Date(r.timestamp).toLocaleDateString(),CheckIn:"",CheckOut:"",Hours:"",InLat:"",InLng:"",OutLat:"",OutLng:""};
             if(r.type==="in"&&(!dm[k]._inTs||r.timestamp<dm[k]._inTs)){dm[k]._inTs=r.timestamp;dm[k].CheckIn=new Date(r.timestamp).toLocaleTimeString();dm[k].InLat=r.location?.lat||"";dm[k].InLng=r.location?.lng||"";}
             if(r.type==="out"&&(!dm[k]._outTs||r.timestamp>dm[k]._outTs)){dm[k]._outTs=r.timestamp;dm[k].CheckOut=new Date(r.timestamp).toLocaleTimeString();dm[k].OutLat=r.location?.lat||"";dm[k].OutLng=r.location?.lng||"";}
           });
@@ -1129,48 +1016,61 @@ function renderAdmin(){
     }
   }
 
+  // ── EDIT USER MODAL ──
   function openEditModal(u){
     const ov=el("div","modal-overlay");
-    const mo=el("div","modal",null,{maxWidth:"420px"});
+    const mo=el("div","modal",null,{maxWidth:"440px"});
     const xb=h("button",{className:"x-btn"},"✕");xb.addEventListener("click",()=>ov.remove());
     mo.appendChild(xb);
     mo.appendChild(h("div",{style:{fontSize:"1.5rem",marginBottom:".4rem"}},"✏️"));
     mo.appendChild(h("h2",{},"Edit User"));
-    mo.appendChild(el("div","sub",`Update profile for ${u.username}`));
-    const iU=h("input",{type:"text",value:u.username,placeholder:"Username"});
-    const iP=h("input",{type:"password",value:u.password,placeholder:"Password"});
-    const iD=h("input",{type:"text",value:u.designation||"",placeholder:"e.g. Sales Executive"});
-    const iL=h("input",{type:"text",value:u.location||"",placeholder:"e.g. Chennai Branch"});
-    [["Username",iU],["Password",iP],["Designation",iD],["Working Location",iL]].forEach(([l,i])=>{mo.appendChild(h("label",{},l));mo.appendChild(i)});
+    mo.appendChild(el("div","sub","Editing: "+(u.fullName||u.username)));
+
+    function mf(stepNum,icon,labelTxt,inputAttrs){
+      const fg=el("div","field-group");
+      const lbl=h("label",{});
+      if(stepNum){const sb=el("span","field-step",String(stepNum));lbl.appendChild(sb);lbl.appendChild(document.createTextNode(" "));}
+      lbl.appendChild(document.createTextNode(icon+" "+labelTxt));
+      const inp=h("input",inputAttrs);
+      fg.appendChild(lbl);fg.appendChild(inp);
+      return {fg,inp};
+    }
+    const {fg:fg1,inp:iName}=mf(1,"👤","Full Name",{type:"text",value:u.fullName||""});
+    const {fg:fg2,inp:iUID}=mf(2,"🪪","User ID (Login Username)",{type:"text",value:u.userId||u.username});
+    const {fg:fg3,inp:iPW}=mf(3,"🔑","Password",{type:"password",value:u.password});
+    const {fg:fg4,inp:iDS}=mf("","🏷","Designation",{type:"text",value:u.designation||""});
+    const {fg:fg5,inp:iLoc}=mf("","📍","Working Location",{type:"text",value:u.location||""});
+
     const sb=h("button",{className:"btn btn-primary",style:{marginTop:".5rem"}},"💾 Save Changes");
     sb.addEventListener("click",()=>{
-      const nu=iU.value.trim(),np=iP.value.trim(),nd=iD.value.trim();
-      if(!nu||!np){alert("Username and password required.");return}
-      if(nu!==u.username&&DB.users.find(x=>x.username===nu)){alert("Username already exists.");return}
+      const name=iName.value.trim(),uid=iUID.value.trim(),pw=iPW.value.trim(),des=iDS.value.trim(),loc=iLoc.value.trim();
+      if(!name){alert("Full name is required.");return}
+      if(!uid||!pw){alert("User ID and password required.");return}
+      if(uid!==u.username&&DB.users.find(x=>x.username===uid)){alert("User ID already exists.");return}
       const idx=DB.users.findIndex(x=>x.username===u.username);
-      const nl=iL.value.trim();DB.users[idx]={...DB.users[idx],username:nu,password:np,designation:nd,location:nl};
-      if(nu!==u.username){
-        DB.attendance=DB.attendance.map(r=>r.username===u.username?{...r,username:nu}:r);
-        DB.surveys=(DB.surveys||[]).map(s=>s.username===u.username?{...s,username:nu}:s);
+      DB.users[idx]={...DB.users[idx],username:uid,password:pw,fullName:name,userId:uid,designation:des,location:loc};
+      if(uid!==u.username){
+        DB.attendance=DB.attendance.map(r=>r.username===u.username?{...r,username:uid}:r);
+        DB.surveys=(DB.surveys||[]).map(s=>s.username===u.username?{...s,username:uid}:s);
+        DB.absences=(DB.absences||[]).map(a=>a.username===u.username?{...a,username:uid}:a);
       }
       save(DB);syncToSheet();ov.remove();refresh();
     });
     const cb=h("button",{className:"btn btn-ghost",style:{marginTop:".6rem"}},"Cancel");
     cb.addEventListener("click",()=>ov.remove());
-    mo.appendChild(sb);mo.appendChild(cb);ov.appendChild(mo);document.body.appendChild(ov);
+    [fg1,fg2,fg3,fg4,fg5,sb,cb].forEach(x=>mo.appendChild(x));
+    ov.appendChild(mo);document.body.appendChild(ov);
   }
 
   refresh();render(dash);
 }
 
 // ── START ─────────────────────────────────────────────────────────────────────
-// Mark absences on startup
 markAbsences();
 
-// Show loading screen while fetching from Google Sheets
-const loadDiv = document.createElement("div");
-loadDiv.style.cssText = "min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;font-family:'Sora',sans-serif;color:#e8eaf6;background:#0b0f1a;gap:1rem";
-loadDiv.innerHTML = `
+const loadDiv=document.createElement("div");
+loadDiv.style.cssText="min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;font-family:'Sora',sans-serif;color:#e8eaf6;background:#0b0f1a;gap:1rem";
+loadDiv.innerHTML=`
   <div style="font-size:2.5rem">📋</div>
   <div style="font-weight:900;font-size:1.5rem">
     <span style="color:#e63329">V</span><span style="color:#f5a623">I</span><span style="color:#2563eb">B</span><span style="color:#16a34a">E</span>
@@ -1183,17 +1083,8 @@ loadDiv.innerHTML = `
   <style>@keyframes spin{to{transform:rotate(360deg)}}</style>
 `;
 document.getElementById("app").appendChild(loadDiv);
-
-// Timeout fallback: if sheet takes >5s, use local data
-const timeout = setTimeout(() => { route(); }, 5000);
-
-loadFromSheet().then(ok => {
-  clearTimeout(timeout);
-  route();
-}).catch(() => {
-  clearTimeout(timeout);
-  route();
-});
+const timeout=setTimeout(()=>{route();},5000);
+loadFromSheet().then(()=>{clearTimeout(timeout);route();}).catch(()=>{clearTimeout(timeout);route();});
 </script>
 </body>
 </html>
