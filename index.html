@@ -255,14 +255,59 @@ async function loadFromSheet() {
       let d = s.date || "";
       if (d.includes("T")) d = d.slice(0,10);
       else if (d.length > 10) d = d.slice(0,10);
+      const ts = parseInt(s.timestamp)||0;
+      // Fix date: use the check-in date from attendance for this user on this day,
+      // so that timezone/overnight issues don't cause yesterday's date to appear.
+      // We look for the earliest check-in whose local date matches either the stored
+      // survey date or the timestamp's local date.
+      const tsDate = ts ? localDateStr(new Date(ts)) : d;
       return {
-        id: s.id, username: s.username, date: d,
-        timestamp: parseInt(s.timestamp)||0,
+        id: s.id, username: s.username, date: d || tsDate,
+        timestamp: ts,
         policy: s.policy||0, rsa: s.rsa||0, gpa: s.gpa||0
       };
     }).filter(s => s.username);
-    // Always replace — sheet is master
-    DB.surveys = sheetSurveys;
+
+    // Deduplicate: if same user has multiple entries for the same date,
+    // merge them by keeping the one with the highest total count (most recent edit),
+    // falling back to the latest timestamp.
+    const surveyMap = {};
+    sheetSurveys.forEach(s => {
+      const key = s.username + "__" + s.date;
+      const existing = surveyMap[key];
+      if (!existing) {
+        surveyMap[key] = s;
+      } else {
+        // Keep the entry with the higher total count; if equal, keep the latest timestamp
+        const existTotal = (parseInt(existing.policy)||0) + (parseInt(existing.rsa)||0) + (parseInt(existing.gpa)||0);
+        const newTotal = (parseInt(s.policy)||0) + (parseInt(s.rsa)||0) + (parseInt(s.gpa)||0);
+        if (newTotal > existTotal || (newTotal === existTotal && s.timestamp > existing.timestamp)) {
+          surveyMap[key] = s;
+        }
+      }
+    });
+    // Always replace — sheet is master (deduplicated)
+    DB.surveys = Object.values(surveyMap);
+
+    // DATE CORRECTION: fix survey dates that are off by 1 day (UTC vs IST mismatch)
+    // After attendance is loaded, match each survey to its real check-in date
+    if (sheetAttend && sheetAttend.length) {
+      DB.surveys = DB.surveys.map(s => {
+        const sDate = s.date;
+        const userCheckins = sheetAttend.filter(r => r.username === s.username && r.type === "in" && r.timestamp);
+        const checkinOnSameDay = userCheckins.find(r => localDateStr(new Date(r.timestamp)) === sDate);
+        if (!checkinOnSameDay) {
+          const sDateObj = new Date(sDate + "T00:00:00");
+          const dayAfter  = localDateStr(new Date(sDateObj.getTime() + 86400000));
+          const dayBefore = localDateStr(new Date(sDateObj.getTime() - 86400000));
+          const checkinDayAfter  = userCheckins.find(r => localDateStr(new Date(r.timestamp)) === dayAfter);
+          if (checkinDayAfter) return { ...s, date: dayAfter };
+          const checkinDayBefore = userCheckins.find(r => localDateStr(new Date(r.timestamp)) === dayBefore);
+          if (checkinDayBefore) return { ...s, date: dayBefore };
+        }
+        return s;
+      });
+    }
 
     save(DB);
     return true;
