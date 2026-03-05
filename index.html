@@ -217,7 +217,7 @@ async function loadFromSheet() {
     const result = await gsFetch({ action:"getAll" });
     if (!result || !result.ok) return false;
 
-    // Merge sheet users — always keep local users as fallback
+    // Sheet is master — always replace users fully (handles deletions)
     const sheetUsers = (result.users||[]).map(u => ({
       username: String(u.username||"").trim(),
       password: String(u.password||"").trim(),
@@ -227,12 +227,9 @@ async function loadFromSheet() {
     })).filter(u => u.username);
 
     if (sheetUsers.length) {
-      // Merge: sheet wins for existing, keep local-only users too
-      const merged = [...sheetUsers];
-      DB.users.forEach(lu => {
-        if (!merged.find(su => su.username === lu.username)) merged.push(lu);
-      });
-      DB.users = merged;
+      // Always keep admin accounts from local in case sheet doesn't have them
+      const localAdmins = DB.users.filter(u => u.role === "admin" && !sheetUsers.find(s => s.username === u.username));
+      DB.users = [...sheetUsers, ...localAdmins];
     }
 
     // Attendance from sheet
@@ -247,7 +244,8 @@ async function loadFromSheet() {
       return { id: r.id, username: r.username, type: r.type,
         timestamp: parseInt(r.timestamp)||0, location: validLoc, outLocation: validOutLoc };
     }).filter(r => r.username && r.timestamp);
-    if (sheetAttend.length) DB.attendance = sheetAttend;
+    // Always replace — sheet is master (handles deletions from any device)
+    DB.attendance = sheetAttend;
 
     // Surveys from sheet
     const sheetSurveys = (result.surveys||[]).map(s => {
@@ -261,7 +259,8 @@ async function loadFromSheet() {
         policy: s.policy||0, rsa: s.rsa||0, gpa: s.gpa||0
       };
     }).filter(s => s.username);
-    if (sheetSurveys.length) DB.surveys = sheetSurveys;
+    // Always replace — sheet is master
+    DB.surveys = sheetSurveys;
 
     save(DB);
     return true;
@@ -845,7 +844,11 @@ function renderAdmin(){
           if(!confirm(`Delete "${u.username}"?`))return;
           DB.users=DB.users.filter(x=>x.username!==u.username);
           DB.attendance=DB.attendance.filter(r=>r.username!==u.username);
-          save(DB);refresh();
+          DB.surveys=(DB.surveys||[]).filter(r=>r.username!==u.username);
+          DB.absences=(DB.absences||[]).filter(r=>r.username!==u.username);
+          save(DB);
+          syncToSheet(); // immediately push deletion to sheet
+          refresh();
         });
         btns.appendChild(eBtn);btns.appendChild(dBtn);row.appendChild(btns);content.appendChild(row);
       });
