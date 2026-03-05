@@ -335,13 +335,13 @@ function renderLogin(){
   function proceedLogin(found){
     if(found.role==="admin"){
       btn.disabled=true;btn.textContent="Syncing data…";
-      loadFromSheet().finally(()=>{SESSION={username:found.username,role:"admin"};route();});
+      loadFromSheet().finally(()=>{const u2=DB.users.find(x=>x.username===found.username)||found;SESSION={username:u2.username,fullName:u2.fullName&&u2.fullName.trim()?u2.fullName.trim():u2.username,role:"admin"};route();});
       return;
     }
     btn.disabled=true;btn.textContent="Syncing data…";locWarn.classList.remove("hidden");
     loadFromSheet().finally(()=>{
       btn.textContent="Getting location…";
-      getLocation().then(loc=>{SESSION={username:found.username,fullName:found.fullName||found.username,role:"user",location:loc};route();})
+      getLocation().then(loc=>{const u2=DB.users.find(x=>x.username===found.username)||found;const fn=u2.fullName&&u2.fullName.trim()?u2.fullName.trim():u2.username.charAt(0).toUpperCase()+u2.username.slice(1).toLowerCase();SESSION={username:u2.username,fullName:fn,role:"user",location:loc};route();})
         .catch(msg=>{errBox.textContent=msg;errBox.classList.remove("hidden");btn.disabled=false;btn.textContent="Sign In";locWarn.classList.add("hidden");});
     });
   }
