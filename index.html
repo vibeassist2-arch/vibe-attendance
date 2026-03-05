@@ -133,7 +133,7 @@ select option{background:var(--surface);color:var(--text)}
 <script>
 // ── DATA ──────────────────────────────────────────────────────────────────────
 const KEY = "vibeAttendanceData";
-let SCRIPT_URL = localStorage.getItem("vibeScriptUrl") || "https://script.google.com/macros/s/AKfycbzQS320iYiwMZ4g3hm6ICB382npxFLq-Ti1wSwSQxulcADMhEJVycH7jfvlJRF5h5L8/exec";
+let SCRIPT_URL = localStorage.getItem("vibeScriptUrl") || "https://script.google.com/macros/s/AKfycbyQDZxE9Gq10hGZ0fo2xyvtH1tiblt9B1_ZWgqi69SC9vOUYrSsGhSEML9YycrJ07a9/exec";
 
 // ── GOOGLE SHEETS SYNC ────────────────────────────────────────
 async function gsFetch(params) {
@@ -171,15 +171,19 @@ function markAbsences() {
   const regularUsers = DB.users.filter(u => u.role !== "admin");
 
   regularUsers.forEach(u => {
-    // Already marked absent today?
-    if (DB.absences.find(a => a.username === u.username && a.date === todayStr)) return;
     // Checked in today?
     const checkedIn = DB.attendance.find(r =>
       r.username === u.username && r.type === "in" &&
       new Date(r.timestamp).toISOString().slice(0,10) === todayStr
     );
-    if (!checkedIn) {
-      DB.absences.push({ id: Date.now() + Math.random(), username: u.username, date: todayStr, auto: true });
+    if (checkedIn) {
+      // ✅ Remove any absent record for today if user has since checked in
+      DB.absences = DB.absences.filter(a => !(a.username === u.username && a.date === todayStr));
+    } else {
+      // Not checked in — add absent record if not already there
+      if (!DB.absences.find(a => a.username === u.username && a.date === todayStr)) {
+        DB.absences.push({ id: Date.now() + Math.random(), username: u.username, date: todayStr, auto: true });
+      }
     }
   });
   save(DB);
@@ -187,6 +191,20 @@ function markAbsences() {
 
 // Run absence check every minute
 setInterval(markAbsences, 60000);
+
+// Auto-sync from Google Sheets every 5 minutes (keeps all devices in sync)
+let autoSyncInterval = null;
+function startAutoSync() {
+  if (autoSyncInterval) clearInterval(autoSyncInterval);
+  autoSyncInterval = setInterval(async () => {
+    if (SESSION && SCRIPT_URL) {
+      await loadFromSheet();
+      // Re-render if on a dashboard
+      if (SESSION.role === "admin") renderAdmin();
+      else renderUser();
+    }
+  }, 5 * 60 * 1000); // every 5 minutes
+}
 
 async function syncToSheet() {
   if (!SCRIPT_URL) return;
@@ -218,11 +236,14 @@ async function loadFromSheet() {
     }
 
     // Attendance from sheet
-    const sheetAttend = (result.attendance||[]).map(r => ({
-      id: r.id, username: r.username, type: r.type,
-      timestamp: parseInt(r.timestamp)||0,
-      location: (r.lat && r.lng) ? {lat:parseFloat(r.lat), lng:parseFloat(r.lng)} : null
-    })).filter(r => r.username && r.timestamp);
+    const sheetAttend = (result.attendance||[]).map(r => {
+      const lat = parseFloat(r.lat), lng = parseFloat(r.lng);
+      // Validate: real GPS coords are lat -90..90, lng -180..180; reject bogus values like 1900
+      const validLoc = (r.lat && r.lng && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180)
+        ? {lat, lng} : null;
+      return { id: r.id, username: r.username, type: r.type,
+        timestamp: parseInt(r.timestamp)||0, location: validLoc };
+    }).filter(r => r.username && r.timestamp);
     if (sheetAttend.length) DB.attendance = sheetAttend;
 
     // Surveys from sheet
@@ -257,11 +278,16 @@ function getLocation(){
   return new Promise((res,rej)=>{
     if(!navigator.geolocation){rej("Geolocation not supported.");return}
     navigator.geolocation.getCurrentPosition(
-      p=>res({lat:p.coords.latitude,lng:p.coords.longitude}),
+      p=>{
+        const lat=p.coords.latitude, lng=p.coords.longitude;
+        // Reject obviously invalid GPS (e.g. 1900, 0,0 default)
+        if(lat < -90 || lat > 90 || lng < -180 || lng > 180){rej("Invalid location received. Try again.");return}
+        res({lat, lng});
+      },
       e=>{if(e.code===1)rej("Location denied. Please allow location.");
           else if(e.code===2)rej("Location unavailable.");
           else rej("Location timed out.");},
-      {timeout:10000}
+      {timeout:10000, enableHighAccuracy:true}
     );
   });
 }
@@ -292,7 +318,11 @@ function render(node){const app=document.getElementById("app");app.innerHTML="";
 
 // ── ROUTER ────────────────────────────────────────────────────────────────────
 function route(){
-  if(!SESSION){renderLogin();return}
+  if(!SESSION){
+    if(autoSyncInterval){clearInterval(autoSyncInterval);autoSyncInterval=null;}
+    renderLogin();return;
+  }
+  startAutoSync();
   if(SESSION.role==="admin"){renderAdmin();return}
   renderUser();
 }
@@ -337,16 +367,40 @@ function renderLogin(){
     const u=inU.value.trim(),p=inP.value.trim();
     errBox.classList.add("hidden");
     if(!u||!p){errBox.textContent="Please enter username and password.";errBox.classList.remove("hidden");return}
-    const found=DB.users.find(x=>x.username===u&&x.password===p);
-    if(!found){errBox.textContent="Incorrect username or password.";errBox.classList.remove("hidden");return}
-    if(found.role==="admin"){SESSION={username:found.username,role:"admin"};route();return}
-    btn.disabled=true;btn.textContent="Getting location…";locWarn.classList.remove("hidden");
-    getLocation().then(loc=>{SESSION={username:found.username,role:"user",location:loc};route();})
-      .catch(msg=>{errBox.textContent=msg;errBox.classList.remove("hidden");btn.disabled=false;btn.textContent="Sign In";locWarn.classList.add("hidden");});
+
+    // First: validate against local DB (fast), then sync from sheet and re-validate
+    const localFound=DB.users.find(x=>x.username===u&&x.password===p);
+    if(!localFound){
+      // Try syncing from sheet first, then re-check (handles new users added via sheet)
+      btn.disabled=true;btn.textContent="Verifying…";
+      loadFromSheet().then(()=>{
+        const found2=DB.users.find(x=>x.username===u&&x.password===p);
+        if(!found2){errBox.textContent="Incorrect username or password.";errBox.classList.remove("hidden");btn.disabled=false;btn.textContent="Sign In";return}
+        proceedLogin(found2,u,p);
+      }).catch(()=>{errBox.textContent="Incorrect username or password.";errBox.classList.remove("hidden");btn.disabled=false;btn.textContent="Sign In";});
+      return;
+    }
+    proceedLogin(localFound,u,p);
+  }
+
+  function proceedLogin(found,u,p){
+    if(found.role==="admin"){
+      // Admin: sync from sheet silently then route
+      btn.disabled=true;btn.textContent="Syncing data…";
+      loadFromSheet().finally(()=>{SESSION={username:found.username,role:"admin"};route();});
+      return;
+    }
+    btn.disabled=true;btn.textContent="Syncing data…";locWarn.classList.remove("hidden");
+    // Sync from sheet first, then get location
+    loadFromSheet().finally(()=>{
+      btn.textContent="Getting location…";
+      getLocation().then(loc=>{SESSION={username:found.username,role:"user",location:loc};route();})
+        .catch(msg=>{errBox.textContent=msg;errBox.classList.remove("hidden");btn.disabled=false;btn.textContent="Sign In";locWarn.classList.add("hidden");});
+    });
   }
   btn.addEventListener("click",doLogin);
   [inU,inP].forEach(i=>i.addEventListener("keydown",e=>{if(e.key==="Enter")doLogin()}));
-  [logo,title,sub,errBox,lbU,inU,lbP,inP,btn,locWarn].forEach(x=>card.appendChild(x));
+  [logo,title,sub,errBox,lbU,inU,lbP,pwWrap,btn,locWarn].forEach(x=>card.appendChild(x));
   wrap.appendChild(card);render(wrap);
 }
 
@@ -407,6 +461,15 @@ function renderUser(){
   tbR.appendChild(el("span","badge badge-green","User"));
   const soBtn=h("button",{className:"btn btn-ghost btn-sm",style:{marginLeft:".5rem"}},"Sign Out");
   soBtn.addEventListener("click",()=>{SESSION=null;route()});
+  const refBtn=h("button",{className:"btn btn-ghost btn-sm"},"🔄 Refresh");
+  refBtn.addEventListener("click",async()=>{
+    refBtn.disabled=true;refBtn.textContent="⏳ Syncing…";
+    await loadFromSheet();
+    refBtn.textContent="✅ Done";
+    setTimeout(()=>{refBtn.textContent="🔄 Refresh";refBtn.disabled=false;},2000);
+    refresh();
+  });
+  tbR.appendChild(refBtn);
   tbR.appendChild(soBtn);
   tb.appendChild(tbR);dash.appendChild(tb);
 
@@ -660,9 +723,12 @@ function renderAdmin(){
     } else {
       syncBtn.textContent="⏳ Syncing…";syncBtn.disabled=true;
     }
+    // Pull latest from sheet first, then push local DB
+    await loadFromSheet();
     const ok=await syncToSheet();
     if(ok&&ok.ok){syncBtn.textContent="✅ Synced!";syncBtn.style.background="#dcfce7";syncBtn.style.color="#15803d";}
     else{syncBtn.textContent="❌ Failed";}
+    refresh();
     setTimeout(()=>{syncBtn.textContent=SCRIPT_URL?"🟢 Sync Now":"⚙️ Setup Sheets";syncBtn.disabled=false;},3000);
   });
   hdrR.appendChild(syncBtn);
