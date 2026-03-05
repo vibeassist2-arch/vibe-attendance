@@ -163,7 +163,7 @@ async function gsPost(body) {
 // ── AUTO-ABSENCE MARKER ──────────────────────────────────────────────────────
 function markAbsences() {
   const today = new Date();
-  const todayStr = today.toISOString().slice(0,10);
+  const todayStr = localDateStr(today);
   const dayOfWeek = today.getDay(); // 0=Sun, 6=Sat
   if (dayOfWeek === 0) return; // skip Sunday only
 
@@ -174,7 +174,7 @@ function markAbsences() {
     // Checked in today?
     const checkedIn = DB.attendance.find(r =>
       r.username === u.username && r.type === "in" &&
-      new Date(r.timestamp).toISOString().slice(0,10) === todayStr
+      localDateStr(new Date(r.timestamp)) === todayStr
     );
     if (checkedIn) {
       // ✅ Remove any absent record for today if user has since checked in
@@ -272,6 +272,15 @@ async function loadFromSheet() {
 function loadData(){try{const r=localStorage.getItem(KEY);if(!r)return def();return JSON.parse(r)}catch{return def()}}
 function def(){return{users:[{username:"admin",password:"admin123",role:"admin"}],attendance:[],surveys:[],absences:[]}}
 function save(d){try{localStorage.setItem(KEY,JSON.stringify(d))}catch(e){}}
+// Use local date (not UTC) to avoid timezone off-by-one day issues
+function localDateStr(date){
+  const d=date||new Date();
+  return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+}
+function localMonthStr(date){
+  const d=date||new Date();
+  return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+}
 let DB = loadData();
 let SESSION = null;
 
@@ -531,7 +540,7 @@ function renderUser(){
       mainBtn.addEventListener("click",()=>{
         if(checkedIn){
           showSurvey(answers=>{
-            const sur={id:Date.now(),username:SESSION.username,timestamp:Date.now(),date:new Date().toISOString().slice(0,10),...answers};
+            const sur={id:Date.now(),username:SESSION.username,timestamp:Date.now(),date:localDateStr(),...answers};
             DB.surveys.push(sur);
             gsPost({action:"addSurvey",data:sur});
             save(DB);
@@ -760,7 +769,7 @@ function renderAdmin(){
     const regularUsers=DB.users.filter(u=>u.role!=="admin");
     const allSurveys=DB.surveys||[];
     const allAttend=DB.attendance.sort((a,b)=>b.timestamp-a.timestamp);
-    const todayStr=new Date().toISOString().slice(0,10);
+    const todayStr=localDateStr();
     // Normalize date for comparison — handles ISO strings, sheet date formats etc.
     function normDate(d){ if(!d) return ""; const s=String(d); return s.includes("T")?s.slice(0,10):s.slice(0,10); }
     const todaySurveys=allSurveys.filter(s=>normDate(s.date)===todayStr);
@@ -995,7 +1004,7 @@ function renderAdmin(){
       const monthPolicy=monthSurveys.reduce((s,r)=>s+(parseInt(r.policy)||0),0);
       const monthRsa=monthSurveys.reduce((s,r)=>s+(parseInt(r.rsa)||0),0);
       const monthGpa=monthSurveys.reduce((s,r)=>s+(parseInt(r.gpa)||0),0);
-      const monthAttend=[...new Set(allAttend.filter(r=>r.type==="in"&&new Date(r.timestamp).toISOString().slice(0,7)===curMK2).map(r=>r.username+new Date(r.timestamp).toDateString()))].length;
+      const monthAttend=[...new Set(allAttend.filter(r=>r.type==="in"&&localMonthStr(new Date(r.timestamp))===curMK2).map(r=>r.username+new Date(r.timestamp).toDateString()))].length;
       const monthLbl=nowM.toLocaleString("default",{month:"long",year:"numeric"});
       const cg2=h("div",{style:{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:".8rem",marginBottom:"1rem"}});
       [["policy",monthPolicy,"📜 "+monthLbl+" Policy"],["rsa",monthRsa,"🔐 "+monthLbl+" RSA"],["gpa",monthGpa,"🎓 "+monthLbl+" GPA"],["",monthAttend,"📋 "+monthLbl+" Attend"]].forEach(([cls,v,l])=>{
@@ -1055,7 +1064,7 @@ function renderAdmin(){
       const tb3=document.createElement("tbody");
       regularUsers.forEach(u=>{
         const uS=allSurveys.filter(s=>s.username===u.username&&s.date&&s.date.startsWith(selMx));
-        const uD=[...new Set(allAttend.filter(r=>r.username===u.username&&r.type==="in"&&new Date(r.timestamp).toISOString().slice(0,7)===selMx).map(r=>new Date(r.timestamp).toDateString()))].length;
+        const uD=[...new Set(allAttend.filter(r=>r.username===u.username&&r.type==="in"&&localMonthStr(new Date(r.timestamp))===selMx).map(r=>new Date(r.timestamp).toDateString()))].length;
         const tr3=document.createElement("tr");
         tr3.innerHTML=`<td style="font-weight:600">${u.username}<br><span style="font-size:.72rem;color:var(--muted)">${u.designation||""}${u.location?" · 📍 "+u.location:""}</span></td>
           <td><span class="pill pill-pend">${uS.reduce((s,r)=>s+(parseInt(r.policy)||0),0)}</span></td>
