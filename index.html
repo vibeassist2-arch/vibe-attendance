@@ -133,7 +133,7 @@ select option{background:var(--surface);color:var(--text)}
 <script>
 // ── DATA ──────────────────────────────────────────────────────────────────────
 const KEY = "vibeAttendanceData";
-let SCRIPT_URL = localStorage.getItem("vibeScriptUrl") || "https://script.google.com/macros/s/AKfycbyQDZxE9Gq10hGZ0fo2xyvtH1tiblt9B1_ZWgqi69SC9vOUYrSsGhSEML9YycrJ07a9/exec";
+let SCRIPT_URL = localStorage.getItem("vibeScriptUrl") || "https://script.google.com/macros/s/AKfycbwFx0jfIn7D_KWwsMi1q2gUofqOR_NmzPo4uatNseJKGGsfG5HSvo9jVmnWlnXbKI-3/exec";
 
 // ── GOOGLE SHEETS SYNC ────────────────────────────────────────
 async function gsFetch(params) {
@@ -870,9 +870,9 @@ function renderAdmin(){
 
       const filtered=allAttend.filter(r=>{const d=new Date(r.timestamp);const m=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;return m===window._recMonth&&(window._recUser==="all"||r.username===window._recUser)});
       const dayMap2={};
-      filtered.forEach(r=>{const k=r.username+"__"+new Date(r.timestamp).toDateString();if(!dayMap2[k])dayMap2[k]={username:r.username,date:new Date(r.timestamp),in:null,out:null,loc:null};
+      filtered.forEach(r=>{const k=r.username+"__"+new Date(r.timestamp).toDateString();if(!dayMap2[k])dayMap2[k]={username:r.username,date:new Date(r.timestamp),in:null,out:null,loc:null,outLoc:null};
         if(r.type==="in"&&(!dayMap2[k].in||r.timestamp<dayMap2[k].in)){dayMap2[k].in=r.timestamp;dayMap2[k].loc=r.location}
-        if(r.type==="out"&&(!dayMap2[k].out||r.timestamp>dayMap2[k].out))dayMap2[k].out=r.timestamp;
+        if(r.type==="out"&&(!dayMap2[k].out||r.timestamp>dayMap2[k].out)){dayMap2[k].out=r.timestamp;dayMap2[k].outLoc=r.location;}
       });
       const rows=Object.values(dayMap2).sort((a,b)=>b.date-a.date);
 
@@ -916,7 +916,7 @@ function renderAdmin(){
         const tbl=document.createElement("table");tbl.style.width="100%";tbl.style.borderCollapse="collapse";tbl.style.fontSize=".85rem";
         const thead=document.createElement("thead");
         const hrow=document.createElement("tr");
-        ["Date","User","Check In","Check Out","Hours","Location"].forEach(h2=>{const th=h("th",{className:"attend-th"},h2);hrow.appendChild(th)});
+        ["Date","User","Check In","Check Out","Hours","📍 In Location","📍 Out Location"].forEach(h2=>{const th=h("th",{className:"attend-th"},h2);hrow.appendChild(th)});
         thead.appendChild(hrow);tbl.appendChild(thead);
         const tbody=document.createElement("tbody");
         rows.forEach((r,i)=>{
@@ -934,7 +934,8 @@ function renderAdmin(){
             `<td class="attend-td" style="font-family:var(--mono);font-size:.82rem;color:var(--accent2)">${r.in?new Date(r.in).toLocaleTimeString([],({"hour":"2-digit","minute":"2-digit"})):"—"}</td>`,
             `<td class="attend-td" style="font-family:var(--mono);font-size:.82rem;color:var(--danger)">${r.out?new Date(r.out).toLocaleTimeString([],({"hour":"2-digit","minute":"2-digit"})):"—"}</td>`,
             `<td class="attend-td">${mins?`<span style="padding:.2rem .6rem;border-radius:20px;font-size:.75rem;font-weight:700;background:${hrsBg};color:${hrsColor};border:1px solid ${hrsBorder};font-family:var(--mono)">${hrs}</span>`:"<span style='color:var(--muted)'>—</span>"}</td>`,
-            `<td class="attend-td" style="color:var(--muted);font-size:.78rem;font-family:var(--mono)">${r.loc?`${r.loc.lat.toFixed(4)}, ${r.loc.lng.toFixed(4)}`:"—"}</td>`,
+            `<td class="attend-td" style="color:var(--accent2);font-size:.78rem;font-family:var(--mono)">${r.loc?`<a href="https://maps.google.com/?q=${r.loc.lat},${r.loc.lng}" target="_blank" style="color:var(--accent2);text-decoration:none" title="Open in Maps">📍 ${r.loc.lat.toFixed(4)}, ${r.loc.lng.toFixed(4)}</a>`:"<span style='color:var(--muted)'>—</span>"}</td>`,
+            `<td class="attend-td" style="color:var(--danger);font-size:.78rem;font-family:var(--mono)">${r.outLoc?`<a href="https://maps.google.com/?q=${r.outLoc.lat},${r.outLoc.lng}" target="_blank" style="color:var(--danger);text-decoration:none" title="Open in Maps">📍 ${r.outLoc.lat.toFixed(4)}, ${r.outLoc.lng.toFixed(4)}</a>`:"<span style='color:var(--muted)'>—</span>"}</td>`,
           ];
           tr2.innerHTML=cells.join("");tbody.appendChild(tr2);
         });
@@ -1051,7 +1052,16 @@ function renderAdmin(){
         ["#a78bfa44","var(--policy)","📜 Policy Data",fS.length,"Policy",()=>exportCSV(fS.map(s=>({Username:s.username,Date:s.date,Time:new Date(s.timestamp).toLocaleTimeString(),Policy_Count:s.policy||""})),`Policy_${dlMonth||"All"}.csv`),"btn-policy"],
         ["#fb923c44","var(--rsa)","🔐 RSA Data",fS.length,"RSA",()=>exportCSV(fS.map(s=>({Username:s.username,Date:s.date,Time:new Date(s.timestamp).toLocaleTimeString(),RSA_Count:s.rsa||""})),`RSA_${dlMonth||"All"}.csv`),"btn-rsa"],
         ["#34d39944","var(--gpa)","🎓 GPA Data",fS.length,"GPA",()=>exportCSV(fS.map(s=>({Username:s.username,Date:s.date,Time:new Date(s.timestamp).toLocaleTimeString(),GPA_Count:s.gpa||""})),`GPA_${dlMonth||"All"}.csv`),"btn-gpa"],
-        ["var(--border)","var(--accent)","📋 Attendance",fA.length,"records",()=>exportCSV(fA.map(r=>({Username:r.username,Type:r.type==="in"?"Check In":"Check Out",Date:new Date(r.timestamp).toLocaleDateString(),Time:new Date(r.timestamp).toLocaleTimeString(),Lat:r.location?.lat||"",Lng:r.location?.lng||""})),`Attendance_${dlMonth||"All"}.csv`),"btn-primary"],
+        ["var(--border)","var(--accent)","📋 Attendance",fA.length,"records",()=>{
+          // Group by user+day, include both in/out locations
+          const dm={};
+          fA.forEach(r=>{const k=r.username+"__"+new Date(r.timestamp).toDateString();if(!dm[k])dm[k]={Username:r.username,Date:new Date(r.timestamp).toLocaleDateString(),CheckIn:"",CheckOut:"",Hours:"",InLat:"",InLng:"",OutLat:"",OutLng:""};
+            if(r.type==="in"&&(!dm[k]._inTs||r.timestamp<dm[k]._inTs)){dm[k]._inTs=r.timestamp;dm[k].CheckIn=new Date(r.timestamp).toLocaleTimeString();dm[k].InLat=r.location?.lat||"";dm[k].InLng=r.location?.lng||"";}
+            if(r.type==="out"&&(!dm[k]._outTs||r.timestamp>dm[k]._outTs)){dm[k]._outTs=r.timestamp;dm[k].CheckOut=new Date(r.timestamp).toLocaleTimeString();dm[k].OutLat=r.location?.lat||"";dm[k].OutLng=r.location?.lng||"";}
+          });
+          Object.values(dm).forEach(d=>{if(d._inTs&&d._outTs){const m=Math.round((d._outTs-d._inTs)/60000);d.Hours=`${Math.floor(m/60)}h ${m%60}m`;}delete d._inTs;delete d._outTs;});
+          exportCSV(Object.values(dm).sort((a,b)=>new Date(b.Date)-new Date(a.Date)),`Attendance_${dlMonth||"All"}.csv`);
+        },"btn-primary"],
       ].forEach(([bc,nc,name,cnt,unit,fn,btnCls])=>{
         const dc=el("div","dl-card",null,{borderColor:bc});
         const di=h("div",{});
