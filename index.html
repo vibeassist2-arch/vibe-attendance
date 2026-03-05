@@ -738,6 +738,21 @@ function renderAdmin(){
 
   const content=el("div","content");dash.appendChild(content);
 
+  // Pull from sheet every 30 seconds automatically
+  const adminPollInterval = setInterval(async ()=>{
+    await loadFromSheet();
+    refresh();
+  }, 30000);
+  // Clear interval on sign out
+  const origSoClick = ()=>{ clearInterval(adminPollInterval); SESSION=null; route(); };
+  soBtn.removeEventListener("click", ()=>{SESSION=null;route()});
+  soBtn.addEventListener("click", origSoClick);
+
+  async function refreshFromSheet() {
+    await loadFromSheet();
+    refresh();
+  }
+
   function refresh(){
     content.innerHTML="";
     const regularUsers=DB.users.filter(u=>u.role!=="admin");
@@ -792,7 +807,11 @@ function renderAdmin(){
     const navRow=h("div",{style:{display:"flex",gap:".6rem",marginBottom:"1.5rem",flexWrap:"wrap"}});
     [["users","👥 Users"],["records","📋 Attendance"],["export","📜 Policy Details"]].forEach(([key,lbl])=>{
       const btn=h("button",{className:"home-nav-btn",style:{background:curTab===key?"#2563eb":"#fff",color:curTab===key?"#fff":"#374151",boxShadow:curTab===key?"0 4px 14px #2563eb44":"0 1px 4px #0000001a"}},lbl);
-      btn.addEventListener("click",()=>{curTab=key;refresh()});
+      btn.addEventListener("click",async ()=>{
+        curTab=key;
+        await loadFromSheet(); // pull latest before showing tab
+        refresh();
+      });
       navRow.appendChild(btn);
     });
     content.appendChild(navRow);
