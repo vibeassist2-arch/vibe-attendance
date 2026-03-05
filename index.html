@@ -816,9 +816,12 @@ function renderAdmin(){
         errB.classList.add("hidden");sucB.classList.add("hidden");
         if(!u||!p){errB.textContent="Username and password required.";errB.classList.remove("hidden");return}
         if(DB.users.find(x=>x.username===u)){errB.textContent="Username already exists.";errB.classList.remove("hidden");return}
-        const loc2=iLoc.value.trim();DB.users.push({username:u,password:p,designation:d,location:loc2,role:"user"});save(DB);
+        const loc2=iLoc.value.trim();
+        DB.users.push({username:u,password:p,designation:d,location:loc2,role:"user"});
+        save(DB);
+        syncToSheet(); // immediately push new user to sheet
         sucB.textContent=`User "${u}" created.`;sucB.classList.remove("hidden");
-        iUN.value="";iPW.value="";iDS.value="";refresh();
+        iUN.value="";iPW.value="";iDS.value="";iLoc.value="";refresh();
       });
       fc.appendChild(addBtn);content.appendChild(fc);
 
@@ -1104,7 +1107,7 @@ function renderAdmin(){
         DB.attendance=DB.attendance.map(r=>r.username===u.username?{...r,username:nu}:r);
         DB.surveys=(DB.surveys||[]).map(s=>s.username===u.username?{...s,username:nu}:s);
       }
-      save(DB);ov.remove();refresh();
+      save(DB);syncToSheet();ov.remove();refresh();
     });
     const cb=h("button",{className:"btn btn-ghost",style:{marginTop:".6rem"}},"Cancel");
     cb.addEventListener("click",()=>ov.remove());
