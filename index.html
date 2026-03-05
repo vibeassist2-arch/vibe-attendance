@@ -133,7 +133,9 @@ select option{background:var(--surface);color:var(--text)}
 <script>
 // ── DATA ──────────────────────────────────────────────────────────────────────
 const KEY = "vibeAttendanceData";
-let SCRIPT_URL = localStorage.getItem("vibeScriptUrl") || "https://script.google.com/macros/s/AKfycbziQFKa-D2hC39oUpZfqzc869PQHt96HZUCKbW_R9o6ghUUvQhq1hpZ1FGxOzP6K9BP/exec";
+let SCRIPT_URL = "https://script.google.com/macros/s/AKfycby23p4CGlRYA3Uxy1xhnTrRMzHIKV_vEOf7lflKxlSBSshhEKFszyy9XIdA3s1SIhPc/exec";
+// Always use the hardcoded URL above; also persist to localStorage for consistency
+localStorage.setItem("vibeScriptUrl", SCRIPT_URL);
 
 // ── GOOGLE SHEETS SYNC ────────────────────────────────────────
 async function gsFetch(params) {
@@ -725,24 +727,16 @@ function renderAdmin(){
   hdrR.appendChild(h("span",{style:{fontSize:".85rem",color:"#64748b"}},SESSION.username));
   hdrR.appendChild(h("span",{style:{background:"#2563eb",color:"#fff",fontSize:".7rem",padding:".2rem .6rem",borderRadius:"20px",fontWeight:"700"}},"Admin"));
   const soBtn=h("button",{style:{padding:".4rem .9rem",border:"1.5px solid #e5e7eb",borderRadius:"8px",background:"#fff",color:"#64748b",fontFamily:"var(--font)",fontSize:".82rem",cursor:"pointer",fontWeight:"600"}},"Sign Out");
-  soBtn.addEventListener("click",()=>{SESSION=null;route()});
-  const syncBtn=h("button",{style:{padding:".4rem .9rem",border:"1.5px solid #e5e7eb",borderRadius:"8px",background:SCRIPT_URL?"#dcfce7":"#f1f5f9",color:SCRIPT_URL?"#15803d":"#94a3b8",fontFamily:"var(--font)",fontSize:".82rem",cursor:"pointer",fontWeight:"600",transition:"all .2s"}},(SCRIPT_URL?"🟢 Sync Now":"⚙️ Setup Sheets"));
+  const syncBtn=h("button",{style:{padding:".4rem .9rem",border:"1.5px solid #e5e7eb",borderRadius:"8px",background:"#dcfce7",color:"#15803d",fontFamily:"var(--font)",fontSize:".82rem",cursor:"pointer",fontWeight:"600",transition:"all .2s"}},"🟢 Sync Now");
   syncBtn.addEventListener("click",async ()=>{
-    if(!SCRIPT_URL){
-      const url=prompt("Paste your Google Apps Script Web App URL:");
-      if(!url)return;
-      SCRIPT_URL=url.trim();localStorage.setItem("vibeScriptUrl",SCRIPT_URL);
-      syncBtn.textContent="⏳ Connecting…";
-    } else {
-      syncBtn.textContent="⏳ Syncing…";syncBtn.disabled=true;
-    }
+    syncBtn.textContent="⏳ Syncing…";syncBtn.disabled=true;
     // Pull latest from sheet first, then push local DB
     await loadFromSheet();
     const ok=await syncToSheet();
     if(ok&&ok.ok){syncBtn.textContent="✅ Synced!";syncBtn.style.background="#dcfce7";syncBtn.style.color="#15803d";}
     else{syncBtn.textContent="❌ Failed";}
     refresh();
-    setTimeout(()=>{syncBtn.textContent=SCRIPT_URL?"🟢 Sync Now":"⚙️ Setup Sheets";syncBtn.disabled=false;},3000);
+    setTimeout(()=>{syncBtn.textContent="🟢 Sync Now";syncBtn.disabled=false;},3000);
   });
   hdrR.appendChild(syncBtn);
   hdrR.appendChild(soBtn);hdr.appendChild(hdrR);dash.appendChild(hdr);
@@ -755,9 +749,7 @@ function renderAdmin(){
     refresh();
   }, 30000);
   // Clear interval on sign out
-  const origSoClick = ()=>{ clearInterval(adminPollInterval); SESSION=null; route(); };
-  soBtn.removeEventListener("click", ()=>{SESSION=null;route()});
-  soBtn.addEventListener("click", origSoClick);
+  soBtn.addEventListener("click", ()=>{ clearInterval(adminPollInterval); SESSION=null; route(); });
 
   async function refreshFromSheet() {
     await loadFromSheet();
@@ -1041,8 +1033,6 @@ function renderAdmin(){
         tbl.appendChild(tb2);tw.appendChild(tbl);content.appendChild(tw);
       }
 
-
-
       // Month total per user — uses dlMonth filter (same as download section)
       const now2x=new Date();const curMKx=`${now2x.getFullYear()}-${String(now2x.getMonth()+1).padStart(2,"0")}`;
       const selMx=dlMonth||curMKx;
@@ -1153,37 +1143,33 @@ function renderAdmin(){
 // Mark absences on startup
 markAbsences();
 
-if (SCRIPT_URL) {
-  // Show loading screen while fetching from Google Sheets
-  const loadDiv = document.createElement("div");
-  loadDiv.style.cssText = "min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;font-family:'Sora',sans-serif;color:#e8eaf6;background:#0b0f1a;gap:1rem";
-  loadDiv.innerHTML = `
-    <div style="font-size:2.5rem">📋</div>
-    <div style="font-weight:900;font-size:1.5rem">
-      <span style="color:#e63329">V</span><span style="color:#f5a623">I</span><span style="color:#2563eb">B</span><span style="color:#16a34a">E</span>
-      <span style="color:#e8eaf6;font-size:1rem;font-weight:400;margin-left:.5rem">Attendance</span>
-    </div>
-    <div style="display:flex;gap:.4rem;align-items:center;color:#7a8bad;font-size:.85rem">
-      <span style="display:inline-block;width:14px;height:14px;border:2px solid #4f8ef766;border-top-color:#4f8ef7;border-radius:50%;animation:spin .7s linear infinite"></span>
-      Connecting to Google Sheets…
-    </div>
-    <style>@keyframes spin{to{transform:rotate(360deg)}}</style>
-  `;
-  document.getElementById("app").appendChild(loadDiv);
+// Show loading screen while fetching from Google Sheets
+const loadDiv = document.createElement("div");
+loadDiv.style.cssText = "min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;font-family:'Sora',sans-serif;color:#e8eaf6;background:#0b0f1a;gap:1rem";
+loadDiv.innerHTML = `
+  <div style="font-size:2.5rem">📋</div>
+  <div style="font-weight:900;font-size:1.5rem">
+    <span style="color:#e63329">V</span><span style="color:#f5a623">I</span><span style="color:#2563eb">B</span><span style="color:#16a34a">E</span>
+    <span style="color:#e8eaf6;font-size:1rem;font-weight:400;margin-left:.5rem">Attendance</span>
+  </div>
+  <div style="display:flex;gap:.4rem;align-items:center;color:#7a8bad;font-size:.85rem">
+    <span style="display:inline-block;width:14px;height:14px;border:2px solid #4f8ef766;border-top-color:#4f8ef7;border-radius:50%;animation:spin .7s linear infinite"></span>
+    Connecting to Google Sheets…
+  </div>
+  <style>@keyframes spin{to{transform:rotate(360deg)}}</style>
+`;
+document.getElementById("app").appendChild(loadDiv);
 
-  // Timeout fallback: if sheet takes >5s, use local data
-  const timeout = setTimeout(() => { route(); }, 5000);
+// Timeout fallback: if sheet takes >5s, use local data
+const timeout = setTimeout(() => { route(); }, 5000);
 
-  loadFromSheet().then(ok => {
-    clearTimeout(timeout);
-    route();
-  }).catch(() => {
-    clearTimeout(timeout);
-    route();
-  });
-} else {
+loadFromSheet().then(ok => {
+  clearTimeout(timeout);
   route();
-}
+}).catch(() => {
+  clearTimeout(timeout);
+  route();
+});
 </script>
 </body>
 </html>
