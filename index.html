@@ -194,8 +194,8 @@ async function loadFromSheet() {
     const sheetUsers = (result.users||[]).map(u => ({
       username: String(u.username||"").trim(),
       password: String(u.password||"").trim(),
-      fullName: u.fullName||"",
-      userId: u.userId||"",
+      fullName: (u.fullName||u.full_name||u.FullName||u.name||"").trim(),
+      userId: (u.userId||u.user_id||u.UserId||u.username||"").trim(),
       designation: u.designation||"",
       location: u.location||"",
       role: u.role||"user"
