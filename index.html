@@ -270,7 +270,7 @@ async function loadFromSheet() {
   }
 }
 function loadData(){try{const r=localStorage.getItem(KEY);if(!r)return def();return JSON.parse(r)}catch{return def()}}
-function def(){return{users:[{username:"admin",password:"admin123",role:"admin"},{username:"vijay",password:"1234",designation:"Staff",location:"",role:"user"}],attendance:[],surveys:[],absences:[]}}
+function def(){return{users:[{username:"admin",password:"admin123",role:"admin"}],attendance:[],surveys:[],absences:[]}}
 function save(d){try{localStorage.setItem(KEY,JSON.stringify(d))}catch(e){}}
 let DB = loadData();
 let SESSION = null;
