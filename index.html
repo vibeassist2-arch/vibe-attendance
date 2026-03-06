@@ -4,6 +4,15 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>VIBE Attendance</title>
+<!-- PWA -->
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#4f8ef7">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="VIBE">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="icon" type="image/png" sizes="96x96" href="favicon-96x96.png">
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
 <link href="https://fonts.googleapis.com/css2?family=Sora:wght@300;400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet"/>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -94,10 +103,10 @@ select option{background:var(--surface);color:var(--text)}
 .month-table td{padding:.65rem .9rem;border-bottom:1px solid #1e2a3f;vertical-align:middle}
 .month-table tr:last-child td{border-bottom:none}
 .month-table tr:hover td{background:#1e2a3f55}
-.pill{display:inline-block;padding:.2rem .55rem;border-radius:20px;font-size:.72rem;font-weight:700;font-family:var(--mono)}
-.pill-yes{background:#38d9a922;color:var(--gpa);border:1px solid #38d9a944}
-.pill-no{background:#ff5f6d22;color:var(--danger);border:1px solid #ff5f6d44}
-.pill-pend{background:#ffd16622;color:var(--warn);border:1px solid #ffd16644}
+.pill{display:inline-block;padding:.25rem .7rem;border-radius:8px;font-size:.85rem;font-weight:800;font-family:var(--mono);min-width:2rem;text-align:center}
+.pill-yes{background:#38d9a9;color:#052e1c;border:none}
+.pill-no{background:#ff5f6d;color:#fff;border:none}
+.pill-pend{background:#ffd166;color:#1a1200;border:none}
 .dl-card{border:1px solid var(--border);border-radius:14px;padding:1.2rem 1.4rem;background:var(--card);display:flex;align-items:center;justify-content:space-between;gap:1rem;margin-bottom:.7rem}
 .dl-card .dl-name{font-weight:700;font-size:.95rem}
 .dl-card .dl-count{font-size:.78rem;color:var(--muted);margin-top:.15rem}
@@ -120,7 +129,77 @@ select option{background:var(--surface);color:var(--text)}
 .field-group input{margin-bottom:0;padding:.7rem 1rem}
 .field-step{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;background:var(--accent);color:#fff;font-size:.65rem;font-weight:700;flex-shrink:0}
 
-@media(max-width:600px){.grid2,.grid3{grid-template-columns:1fr}.home-cards{grid-template-columns:1fr!important}}
+@media(max-width:600px){
+  .grid2,.grid3{grid-template-columns:1fr}
+  .home-cards{grid-template-columns:1fr!important}
+
+  /* Header fix */
+  .vibe-header{padding:.6rem .9rem;gap:.5rem;flex-wrap:nowrap}
+  .vibe-logo-text{font-size:1.4rem}
+  .vibe-tagline{font-size:.45rem;letter-spacing:.08em}
+
+  /* Topbar fix */
+  .topbar{padding:.6rem .9rem;gap:.4rem;flex-wrap:wrap}
+  .topbar-right{gap:.4rem;flex-wrap:wrap;justify-content:flex-end}
+
+  /* Content padding */
+  .content{padding:.9rem}
+
+  /* Tabs full width */
+  .tabs{gap:.4rem}
+  .tab{flex:1;text-align:center;padding:.45rem .3rem;font-size:.78rem}
+  .home-nav-btn{flex:1;text-align:center;font-size:.78rem;padding:.5rem .4rem}
+
+  /* Home cards - 1 column */
+  .home-card{padding:1rem 1.1rem}
+  .home-card .big-num{font-size:2rem}
+
+  /* Stats box */
+  .stat-box{padding:.8rem}
+
+  /* Month bar */
+  .month-bar{flex-direction:column;align-items:stretch}
+  .month-bar select{width:100%}
+
+  /* Tables - horizontal scroll */
+  .table-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
+  .attend-th,.attend-td{padding:.5rem .6rem;font-size:.72rem}
+
+  /* Modal full width */
+  .modal{padding:1.4rem;border-radius:14px}
+
+  /* User row */
+  .user-row{flex-wrap:wrap;gap:.4rem}
+
+  /* Record card */
+  .record-card{flex-wrap:wrap}
+
+  /* Buttons small */
+  .btn-sm{padding:.3rem .6rem;font-size:.75rem}
+
+  /* DL card */
+  .dl-card{flex-direction:column;align-items:flex-start;gap:.5rem}
+
+  /* Geo banner */
+  .geo-banner{font-size:.8rem;padding:.7rem .9rem}
+}
+
+/* ── GEOFENCE & TIMING STYLES ── */
+.geo-banner{padding:.85rem 1.1rem;border-radius:12px;font-size:.88rem;margin-bottom:1rem;display:flex;align-items:flex-start;gap:.7rem;line-height:1.5}
+.geo-ok{background:#38d9a922;border:1.5px solid #38d9a966;color:#70efcd}
+.geo-fail{background:#ff5f6d22;border:1.5px solid #ff5f6d88;color:#ff9aa2}
+.geo-warn{background:#ffd16622;border:1.5px solid #ffd16666;color:#ffe08a}
+.geo-icon{font-size:1.3rem;flex-shrink:0;margin-top:.05rem}
+.timing-pill{display:inline-flex;align-items:center;gap:.3rem;padding:.2rem .6rem;border-radius:20px;font-size:.72rem;font-weight:700;font-family:var(--mono)}
+.tp-late{background:#ff5f6d22;color:var(--danger);border:1px solid #ff5f6d44}
+.tp-halfday{background:#ffd16622;color:var(--warn);border:1px solid #ffd16644}
+.tp-permission{background:#a78bfa22;color:var(--policy);border:1px solid #a78bfa44}
+.tp-ontime{background:#38d9a922;color:var(--gpa);border:1px solid #38d9a944}
+.loc-settings-card{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:1.8rem;margin-bottom:1.5rem}
+.loc-settings-card h2{font-size:1.1rem;margin-bottom:1.4rem;display:flex;align-items:center;gap:.5rem}
+.loc-entry{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:.9rem 1.1rem;margin-bottom:.6rem;display:flex;align-items:center;justify-content:space-between;gap:1rem}
+.loc-entry .loc-name{font-weight:700;font-size:.9rem;color:var(--accent)}
+.loc-entry .loc-coords{font-size:.75rem;color:var(--muted);font-family:var(--mono);margin-top:.15rem}
 </style>
 </head>
 <body>
@@ -139,23 +218,70 @@ async function gsFetch(params) {
     return JSON.parse(await res.text());
   } catch(e) { console.error("GS GET error", e); return null; }
 }
+
+// ── RETRY QUEUE — never lose a check-in even if network fails ─────────────────
+const QUEUE_KEY = "vibePostQueue";
+function loadQueue(){ try{ return JSON.parse(localStorage.getItem(QUEUE_KEY)||"[]"); }catch{ return []; } }
+function saveQueue(q){ try{ localStorage.setItem(QUEUE_KEY, JSON.stringify(q)); }catch(e){} }
+
+let _queueRunning = false;
+async function flushQueue(){
+  if(_queueRunning || !SCRIPT_URL) return;
+  _queueRunning = true;
+  let q = loadQueue();
+  while(q.length > 0){
+    const item = q[0];
+    try{
+      const res = await fetch(SCRIPT_URL, { method:"POST", redirect:"follow", headers:{"Content-Type":"text/plain"}, body: JSON.stringify(item) });
+      await res.text();
+      q.shift();
+      saveQueue(q);
+    } catch(e){
+      break; // stop on failure, retry later
+    }
+  }
+  _queueRunning = false;
+}
+
 async function gsPost(body) {
   if (!SCRIPT_URL) return null;
-  try {
-    const res = await fetch(SCRIPT_URL, { method: "POST", redirect: "follow", headers: { "Content-Type": "text/plain" }, body: JSON.stringify(body) });
-    return JSON.parse(await res.text());
-  } catch(e) { console.error("GS POST error", e); return null; }
+  // Add to queue first — guarantees no data loss
+  const q = loadQueue();
+  q.push(body);
+  saveQueue(q);
+  flushQueue(); // try immediately, non-blocking
+  return { ok: true };
 }
+
+// Flush queue on visibility change (when user reopens tab/phone)
+document.addEventListener("visibilitychange", () => { if(!document.hidden) flushQueue(); });
+// Flush queue periodically
+setInterval(flushQueue, 30000);
+
+// ── DEBOUNCE — prevent double check-in on rapid taps ─────────────────────────
+let _lastCheckIn = 0;
+function canCheckIn(){ const now = Date.now(); if(now - _lastCheckIn < 5000) return false; _lastCheckIn = now; return true; }
 
 function markAbsences() {
   const today = new Date();
   const todayStr = localDateStr(today);
-  if (today.getDay() === 0) return;
+  const day = today.getDay();
+  if (day === 0 || day === 6) return; // Skip weekends
+
+  // Only mark absent AFTER work start time (9:00 AM)
+  const nowMin = today.getHours() * 60 + today.getMinutes();
+  const startMin = WORK_START_H * 60 + WORK_START_M; // 9:00 AM
+  if (nowMin < startMin) return;
+
   if (!DB.absences) DB.absences = [];
   const regularUsers = DB.users.filter(u => u.role !== "admin");
+  const checkedInToday = new Set(
+    DB.attendance
+      .filter(r => r.type === "in" && localDateStr(new Date(r.timestamp)) === todayStr)
+      .map(r => r.username)
+  );
   regularUsers.forEach(u => {
-    const checkedIn = DB.attendance.find(r => r.username === u.username && r.type === "in" && localDateStr(new Date(r.timestamp)) === todayStr);
-    if (checkedIn) {
+    if (checkedInToday.has(u.username)) {
       DB.absences = DB.absences.filter(a => !(a.username === u.username && a.date === todayStr));
     } else {
       if (!DB.absences.find(a => a.username === u.username && a.date === todayStr)) {
@@ -182,7 +308,9 @@ function startAutoSync() {
 
 async function syncToSheet() {
   if (!SCRIPT_URL) return;
-  return await gsPost({ action:"fullSync", data: DB });
+  // Only sync users + officeLocations (small data) not full attendance history
+  const payload = { action:"fullSync", data: { users: DB.users, surveys: DB.surveys, attendance: DB.attendance, absences: DB.absences, officeLocations: DB.officeLocations } };
+  return await gsPost(payload);
 }
 
 async function loadFromSheet() {
@@ -234,14 +362,116 @@ async function loadFromSheet() {
     });
     DB.surveys = Object.values(surveyMap);
     save(DB);
+    // Clean up orphan records for deleted users
+    const activeUsernames=new Set(DB.users.map(u=>u.username));
+    DB.absences=(DB.absences||[]).filter(a=>activeUsernames.has(a.username));
+    DB.surveys=(DB.surveys||[]).filter(s=>activeUsernames.has(s.username));
+    save(DB);
     return true;
   } catch(e) { console.error("loadFromSheet error:", e); return false; }
 }
 
-function loadData(){try{const r=localStorage.getItem(KEY);if(!r)return def();return JSON.parse(r)}catch{return def()}}
-function def(){return{users:[{username:"admin",password:"admin123",role:"admin"}],attendance:[],surveys:[],absences:[]}}
-function save(d){try{localStorage.setItem(KEY,JSON.stringify(d))}catch(e){}}
+function def(){return{users:[{username:"admin",password:"admin123",role:"admin"}],attendance:[],surveys:[],absences:[],officeLocations:[]}}
+
+function loadData(){
+  try{
+    const r=localStorage.getItem(KEY);
+    if(!r) return def();
+    const d=JSON.parse(r);
+    if(!d.users) d.users=[];
+    if(!d.attendance) d.attendance=[];
+    if(!d.surveys) d.surveys=[];
+    if(!d.absences) d.absences=[];
+    if(!d.officeLocations) d.officeLocations=[];
+    return d;
+  }catch{return def();}
+}
+const LS_LIMIT = 5 * 1024 * 1024; // 5MB
+function getStorageUsage(){
+  try{ return JSON.stringify(DB).length; } catch(e){ return 0; }
+}
+function storagePercent(){ return Math.round(getStorageUsage()/LS_LIMIT*100); }
+
+function archiveOldData(d, months=6){
+  // Keep only last N months of attendance + surveys + absences
+  // Users and officeLocations are always kept
+  const cutoff = Date.now() - (months * 30 * 24 * 60 * 60 * 1000);
+  const cutoffDate = new Date(cutoff);
+  const cutoffStr = `${cutoffDate.getFullYear()}-${String(cutoffDate.getMonth()+1).padStart(2,"0")}`;
+  d.attendance = d.attendance.filter(r => r.timestamp > cutoff);
+  d.surveys = (d.surveys||[]).filter(s => (s.date||"") >= cutoffStr);
+  d.absences = (d.absences||[]).filter(a => (a.date||"") >= cutoffStr);
+  return d;
+}
+
+function save(d){
+  try{
+    let str = JSON.stringify(d);
+    const pct = str.length / LS_LIMIT * 100;
+    // Auto-archive when above 75% — keeps last 6 months
+    if(pct > 75){
+      archiveOldData(d, 6);
+      str = JSON.stringify(d);
+    }
+    // Emergency archive when above 90% — keeps last 3 months
+    if(str.length / LS_LIMIT * 100 > 90){
+      archiveOldData(d, 3);
+      str = JSON.stringify(d);
+    }
+    localStorage.setItem(KEY, str);
+  } catch(e){
+    if(e.name === "QuotaExceededError"){
+      // Last resort — keep only 1 month
+      archiveOldData(d, 1);
+      try{ localStorage.setItem(KEY, JSON.stringify(d)); } catch(e2){ console.error("Storage critically full", e2); }
+    }
+  }
+}
 function localDateStr(date){const d=date||new Date();return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`}
+
+// ── GEOFENCE HELPERS ──────────────────────────────────────────────────────────
+function haversineDistance(lat1,lng1,lat2,lng2){
+  const R=6371000,toRad=x=>x*Math.PI/180;
+  const dLat=toRad(lat2-lat1),dLng=toRad(lng2-lng1);
+  const a=Math.sin(dLat/2)**2+Math.cos(toRad(lat1))*Math.cos(toRad(lat2))*Math.sin(dLng/2)**2;
+  return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
+}
+function checkGeofence(userLat,userLng){
+  const locs=(DB.officeLocations||[]);
+  if(!locs.length)return{ok:true,name:"No office location set",dist:null};
+  let best=null,bestDist=Infinity;
+  locs.forEach(loc=>{
+    const d=haversineDistance(userLat,userLng,loc.lat,loc.lng);
+    if(d<bestDist){bestDist=d;best=loc;}
+  });
+  const radius=best.radius||100;
+  return{ok:bestDist<=radius,name:best.name,dist:Math.round(bestDist),radius};
+}
+
+// ── WORK TIMING HELPERS ───────────────────────────────────────────────────────
+const WORK_START_H=9,WORK_START_M=0;   // 9:00 AM
+const WORK_END_H=19,WORK_END_M=0;      // 7:00 PM
+const HALF_DAY_LATE_MIN=4*60;          // 4 hours late = half day
+
+function getArrivalStatus(tsMs){
+  if(!tsMs)return null;
+  const d=new Date(tsMs);
+  const inMin=d.getHours()*60+d.getMinutes();
+  const startMin=WORK_START_H*60+WORK_START_M;
+  const lateMin=inMin-startMin;
+  if(lateMin<=0)return{type:"ontime",label:"On Time"};
+  if(lateMin>=HALF_DAY_LATE_MIN)return{type:"halfday",label:"Half Day"};
+  const h=Math.floor(lateMin/60),m=lateMin%60;
+  return{type:"late",label:h>0?(m>0?`${h}h ${m}m Late`:`${h}h Late`):`${m}m Late`};
+}
+function getDepartureStatus(tsMs){
+  if(!tsMs)return null;
+  const d=new Date(tsMs);
+  const outMin=d.getHours()*60+d.getMinutes();
+  const endMin=WORK_END_H*60+WORK_END_M;
+  if(outMin<endMin)return{type:"permission",label:"Permission"};
+  return{type:"full",label:"Full Day"};
+}
 function localMonthStr(date){const d=date||new Date();return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`}
 
 let DB = loadData();
@@ -409,6 +639,13 @@ function renderUser(){
     refresh();
   });
   tbR.appendChild(refBtn);tbR.appendChild(soBtn);
+  // Pending queue badge
+  const qCount = loadQueue().length;
+  if(qCount > 0){
+    const qBadge = h("span",{style:{fontSize:".7rem",padding:".2rem .5rem",borderRadius:"20px",background:"#ffd16622",color:"var(--warn)",border:"1px solid #ffd16644",fontWeight:"700"}},`⏳ ${qCount} pending`);
+    qBadge.title = `${qCount} record(s) waiting to sync to Google Sheets`;
+    tbR.appendChild(qBadge);
+  }
   tb.appendChild(tbR);dash.appendChild(tb);
   const content=el("div","content");
   dash.appendChild(content);
@@ -452,6 +689,15 @@ function renderUser(){
     content.appendChild(tabs);
 
     if(curTab==="today"){
+      // ── NEAREST OFFICE BANNER — shown from last known check-in record ──
+      const locs=(DB.officeLocations||[]);
+      const todayIn=todayRecs().find(r=>r.type==="in");
+      if(locs.length&&todayIn&&todayIn.geoName){
+        const banner=el("div","geo-banner "+(todayIn.geoOk?"geo-ok":"geo-fail"));
+        banner.innerHTML=`<span class="geo-icon">${todayIn.geoOk?"✅":"❌"}</span><div><strong>📍 ${todayIn.geoName}</strong><br><span style="font-size:.8rem">${todayIn.geoOk?"Within range":"Outside range"} · ${todayIn.geoDist}m away at check-in</span></div>`;
+        content.appendChild(banner);
+      }
+
       const checkedIn=isIn();
       const mainBtn=h("button",{className:"btn "+(checkedIn?"btn-danger":"btn-success")},checkedIn?"⏹ Check Out":"▶ Check In");
       mainBtn.addEventListener("click",()=>{
@@ -473,9 +719,11 @@ function renderUser(){
             });
           });
         } else {
+          if(!canCheckIn()){ return; } // debounce — prevent double tap
           mainBtn.disabled=true;mainBtn.innerHTML='<span class="spinner"></span>Getting location…';
           getLocation().then(loc=>{
-            const rec_in={id:Date.now(),username:SESSION.username,type:"in",timestamp:Date.now(),location:loc};
+            const geo=checkGeofence(loc.lat,loc.lng);
+            const rec_in={id:Date.now(),username:SESSION.username,type:"in",timestamp:Date.now(),location:loc,geoOk:geo.ok,geoName:geo.name,geoDist:geo.dist};
             DB.attendance.push(rec_in);save(DB);
             gsPost({action:"addAttendance",data:{...rec_in,lat:loc?.lat||"",lng:loc?.lng||""}});refresh();
           }).catch(msg=>{mainBtn.disabled=false;mainBtn.textContent="▶ Check In";alert(msg)});
@@ -491,7 +739,7 @@ function renderUser(){
         const dot=el("span","status-dot "+(r.type==="in"?"dot-in":"dot-out"));
         const info=h("div",{style:{flex:1}});
         info.appendChild(document.createTextNode(r.type==="in"?"Checked In":"Checked Out"));
-        const loc=el("div","rec-loc",r.location?`📍 ${r.location.lat.toFixed(4)}, ${r.location.lng.toFixed(4)}`:"No location");
+        const loc=el("div","rec-loc",r.geoName?`📍 ${r.geoName}`:(r.location?`📍 ${r.location.lat.toFixed(4)}, ${r.location.lng.toFixed(4)}`:"No location"));
         info.appendChild(loc);
         const time=el("div","rec-time",new Date(r.timestamp).toLocaleTimeString());
         rc.appendChild(dot);rc.appendChild(info);rc.appendChild(time);content.appendChild(rc);
@@ -529,16 +777,25 @@ function renderUser(){
       else{
         const tw=h("div",{style:{overflowX:"auto",background:"var(--card)",borderRadius:"12px",border:"1px solid var(--border)"}});
         const tbl=el("table","month-table");
-        tbl.innerHTML=`<thead><tr><th>Date</th><th>Check In</th><th>Check Out</th><th>Hours</th></tr></thead>`;
+        tbl.innerHTML=`<thead><tr><th>Date</th><th>Check In</th><th>Check Out</th><th>Hours</th><th>⏰ Arrival</th><th>🚪 Departure</th><th>📍 Location</th></tr></thead>`;
         const tb2=document.createElement("tbody");
         days.forEach(d=>{
           const tr2=document.createElement("tr");
           const mins=d.in&&d.out?Math.round((d.out-d.in)/60000):null;
           const hrs=mins?`${Math.floor(mins/60)}h ${mins%60}m`:"—";
+          const arr=getArrivalStatus(d.in);
+          const dep=getDepartureStatus(d.out);
+          const arrCell=arr?`<span class="timing-pill tp-${arr.type}">${arr.label}</span>`:"—";
+          const depCell=dep?`<span class="timing-pill tp-${dep.type==="full"?"ontime":dep.type}">${dep.label}</span>`:"—";
+          const geoRec=myRecs().find(r=>r.type==="in"&&r.timestamp===d.in);
+          const geoCell=geoRec?.geoName?`<span style="font-size:.75rem;color:${geoRec.geoOk?"var(--gpa)":"var(--danger)"}">${geoRec.geoOk?"✅":"❌"} ${geoRec.geoName}</span>`:`<span style="color:var(--muted);font-size:.75rem">—</span>`;
           tr2.innerHTML=`<td style="font-family:var(--mono);font-size:.8rem">${d.date.toLocaleDateString("en-GB",{weekday:"short",day:"2-digit",month:"short"})}</td>
             <td style="color:var(--accent2);font-family:var(--mono);font-size:.82rem">${d.in?new Date(d.in).toLocaleTimeString([],({"hour":"2-digit","minute":"2-digit"})):"—"}</td>
             <td style="color:var(--danger);font-family:var(--mono);font-size:.82rem">${d.out?new Date(d.out).toLocaleTimeString([],({"hour":"2-digit","minute":"2-digit"})):"—"}</td>
-            <td style="font-family:var(--mono);font-size:.82rem;color:var(--warn)">${hrs}</td>`;
+            <td style="font-family:var(--mono);font-size:.82rem;color:var(--warn)">${hrs}</td>
+            <td>${arrCell}</td>
+            <td>${depCell}</td>
+            <td>${geoCell}</td>`;
           tb2.appendChild(tr2);
         });
         tbl.appendChild(tb2);tw.appendChild(tbl);content.appendChild(tw);
@@ -616,23 +873,34 @@ function renderAdmin(){
   logoText.innerHTML='<span style="color:#e63329">V</span><span style="color:#f5a623">I</span><span style="color:#2563eb">B</span><span style="color:#16a34a">E</span>';
   const tagline=el("div","vibe-tagline","Insurance Broking & Advisory Service");
   logoWrap.appendChild(logoText);logoWrap.appendChild(tagline);hdr.appendChild(logoWrap);
-  const hdrR=h("div",{style:{display:"flex",alignItems:"center",gap:".75rem"}});
-  hdrR.appendChild(h("span",{style:{fontSize:".85rem",color:"#64748b"}},SESSION.username));
-  hdrR.appendChild(h("span",{style:{background:"#2563eb",color:"#fff",fontSize:".7rem",padding:".2rem .6rem",borderRadius:"20px",fontWeight:"700"}},"Admin"));
-  const soBtn=h("button",{style:{padding:".4rem .9rem",border:"1.5px solid #e5e7eb",borderRadius:"8px",background:"#fff",color:"#64748b",fontFamily:"var(--font)",fontSize:".82rem",cursor:"pointer",fontWeight:"600"}},"Sign Out");
-  const syncBtn=h("button",{style:{padding:".4rem .9rem",border:"1.5px solid #e5e7eb",borderRadius:"8px",background:"#dcfce7",color:"#15803d",fontFamily:"var(--font)",fontSize:".82rem",cursor:"pointer",fontWeight:"600"}},"🟢 Sync Now");
+  const hdrR=h("div",{style:{display:"flex",alignItems:"center",gap:".5rem",flexWrap:"wrap",justifyContent:"flex-end"}});
+  hdrR.appendChild(h("span",{style:{fontSize:".8rem",color:"#64748b",whiteSpace:"nowrap"}},SESSION.username));
+  hdrR.appendChild(h("span",{style:{background:"#2563eb",color:"#fff",fontSize:".65rem",padding:".15rem .5rem",borderRadius:"20px",fontWeight:"700",whiteSpace:"nowrap"}},"Admin"));
+  const soBtn=h("button",{style:{padding:".35rem .7rem",border:"1.5px solid #e5e7eb",borderRadius:"8px",background:"#fff",color:"#64748b",fontFamily:"var(--font)",fontSize:".75rem",cursor:"pointer",fontWeight:"600",whiteSpace:"nowrap"}},"Sign Out");
+  const syncBtn=h("button",{style:{padding:".35rem .7rem",border:"1.5px solid #e5e7eb",borderRadius:"8px",background:"#dcfce7",color:"#15803d",fontFamily:"var(--font)",fontSize:".75rem",cursor:"pointer",fontWeight:"600",whiteSpace:"nowrap"}},"🟢 Sync");
   syncBtn.addEventListener("click",async()=>{
     syncBtn.textContent="⏳ Syncing…";syncBtn.disabled=true;
     await loadFromSheet();const ok=await syncToSheet();
     syncBtn.textContent=ok&&ok.ok?"✅ Synced!":"❌ Failed";
     refresh();setTimeout(()=>{syncBtn.textContent="🟢 Sync Now";syncBtn.disabled=false;},3000);
   });
+
+  // Storage health badge
+  const pct=storagePercent();
+  const storageColor=pct>85?"#ef4444":pct>65?"#f59e0b":"#22c55e";
+  const storageBadge=h("span",{style:{fontSize:".72rem",padding:".2rem .55rem",borderRadius:"20px",fontWeight:"700",background:storageColor+"22",color:storageColor,border:`1px solid ${storageColor}44`,fontFamily:"var(--mono)",cursor:"help",title:`Local storage: ${Math.round(getStorageUsage()/1024)}KB / 5120KB`}},`💾 ${pct}%`);
+  storageBadge.title=`Local cache: ${Math.round(getStorageUsage()/1024)} KB used of 5120 KB. Data syncs to Google Sheets — this is just the local cache.`;
+  hdrR.appendChild(storageBadge);
   hdrR.appendChild(syncBtn);hdrR.appendChild(soBtn);hdr.appendChild(hdrR);dash.appendChild(hdr);
 
   const content=el("div","content");dash.appendChild(content);
 
-  const adminPollInterval=setInterval(async()=>{await loadFromSheet();const u2=DB.users.find(x=>x.username===SESSION.username);if(u2&&u2.fullName&&u2.fullName.trim())SESSION.fullName=u2.fullName.trim();refresh();},30000);
-  soBtn.addEventListener("click",()=>{clearInterval(adminPollInterval);SESSION=null;route();});
+  // Smart poll — slower during 9AM rush (8:45–9:30), normal otherwise
+  function getAdminPollMs(){ const h=new Date().getHours(),m=new Date().getMinutes(),t=h*60+m; return(t>=525&&t<=570)?120000:30000; }
+  let adminPollInterval=null;
+  function scheduleAdminPoll(){ adminPollInterval=setTimeout(async()=>{ await loadFromSheet(); const u2=DB.users.find(x=>x.username===SESSION.username); if(u2&&u2.fullName&&u2.fullName.trim())SESSION.fullName=u2.fullName.trim(); refresh(); scheduleAdminPoll(); }, getAdminPollMs()); }
+  scheduleAdminPoll();
+  soBtn.addEventListener("click",()=>{clearTimeout(adminPollInterval);SESSION=null;route();});
 
   function refresh(){
     content.innerHTML="";
@@ -651,7 +919,7 @@ function renderAdmin(){
     const todayGpa=todaySurveys.reduce((s,r)=>s+(parseInt(r.gpa)||0),0);
 
     // HOME STAT CARDS
-    const homeGrid=h("div",{style:{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:"1rem",margin:"1.5rem 0 .8rem"}});
+    const homeGrid=h("div",{style:{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:"1rem",margin:"1.5rem 0 .8rem"},className:"home-cards"});
     const c1=el("div","home-card");
     c1.innerHTML=`<div class="big-num" style="color:#16a34a">${todayInUsers.length}</div><div class="card-label">Today Present</div>`;
     const p1=h("div",{style:{marginTop:".6rem",display:"flex",gap:".3rem",flexWrap:"wrap"}});
@@ -691,9 +959,9 @@ function renderAdmin(){
     content.appendChild(ds);
 
     // NAV TABS
-    const navRow=h("div",{style:{display:"flex",gap:".6rem",marginBottom:"1.5rem",flexWrap:"wrap"}});
-    [["users","👥 Users"],["records","📋 Attendance"],["export","📜 Policy Details"]].forEach(([key,lbl])=>{
-      const btn=h("button",{className:"home-nav-btn",style:{background:curTab===key?"#2563eb":"#fff",color:curTab===key?"#fff":"#374151",boxShadow:curTab===key?"0 4px 14px #2563eb44":"0 1px 4px #0000001a"}},lbl);
+    const navRow=h("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:".6rem",marginBottom:"1.5rem"}});
+    [["users","👥 Users"],["records","📋 Attendance"],["export","📜 Policy Details"],["locations","📍 Office Locations"]].forEach(([key,lbl])=>{
+      const btn=h("button",{className:"home-nav-btn",style:{background:curTab===key?"#2563eb":"#fff",color:curTab===key?"#fff":"#374151",boxShadow:curTab===key?"0 4px 14px #2563eb44":"0 1px 4px #0000001a",width:"100%",textAlign:"center"}},lbl);
       btn.addEventListener("click",async()=>{curTab=key;await loadFromSheet();refresh();});
       navRow.appendChild(btn);
     });
@@ -763,38 +1031,68 @@ function renderAdmin(){
       [fg1,fg2,fg3,optToggle,optFields,addBtn].forEach(x=>fc.appendChild(x));
       content.appendChild(fc);
 
-      // User list
-      content.appendChild(el("div","section-title",`All Users (${regularUsers.length})`));
-      if(!regularUsers.length){content.appendChild(el("div","empty","No users yet."))}
-      else regularUsers.forEach(u=>{
-        const row=el("div","user-row");
-        const info=h("div",{style:{flex:1,minWidth:0}});
-        // Show full name as primary, user ID below
-        const nameEl=el("div","uname",(u.fullName&&u.fullName.trim()?u.fullName.trim():(u.username.charAt(0).toUpperCase()+u.username.slice(1).toLowerCase())));
-        const metaRow=h("div",{style:{display:"flex",alignItems:"center",gap:".5rem",flexWrap:"wrap",marginTop:".2rem"}});
-        metaRow.appendChild(h("span",{style:{fontSize:".72rem",color:"var(--accent)",fontFamily:"var(--mono)",background:"#4f8ef722",border:"1px solid #4f8ef744",borderRadius:"6px",padding:".1rem .45rem"}},"ID: "+(u.userId||u.username)));
-        if(u.designation)metaRow.appendChild(h("span",{style:{fontSize:".72rem",color:"var(--muted)"}},u.designation));
-        if(u.location)metaRow.appendChild(h("span",{style:{fontSize:".72rem",color:"var(--muted)"}},"📍 "+u.location));
-        const pwPill=h("span",{style:{fontSize:".7rem",background:"#ffd16622",color:"var(--warn)",border:"1px solid #ffd16644",borderRadius:"6px",padding:".1rem .45rem",fontFamily:"var(--mono)",cursor:"pointer"}},"🔑 ••••••");
-        let pwShown=false;
-        pwPill.addEventListener("click",()=>{pwShown=!pwShown;pwPill.textContent=pwShown?"🔑 "+u.password:"🔑 ••••••"});
-        metaRow.appendChild(pwPill);
-        info.appendChild(nameEl);info.appendChild(metaRow);
-        row.appendChild(info);
-        const btns=h("div",{style:{display:"flex",gap:".5rem",flexShrink:0}});
-        const eBtn=h("button",{className:"btn btn-ghost btn-sm"},"✏️ Edit");
-        eBtn.addEventListener("click",()=>openEditModal(u));
-        const dBtn=h("button",{className:"btn btn-danger btn-sm"},"Delete");
-        dBtn.addEventListener("click",()=>{
-          if(!confirm(`Delete "${u.fullName||u.username}"?`))return;
-          DB.users=DB.users.filter(x=>x.username!==u.username);
-          DB.attendance=DB.attendance.filter(r=>r.username!==u.username);
-          DB.surveys=(DB.surveys||[]).filter(r=>r.username!==u.username);
-          DB.absences=(DB.absences||[]).filter(r=>r.username!==u.username);
-          save(DB);syncToSheet();refresh();
+
+      // User list with search
+      const userListHeader=h("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:".6rem",marginBottom:".8rem",marginTop:"1.5rem"}});
+      const userTitle=el("div","section-title",`All Users (${regularUsers.length})`);
+      userTitle.style.margin="0";
+      const searchInp=h("input",{type:"text",placeholder:"🔍 Search by name or ID…"});
+      searchInp.style.cssText="width:220px;padding:.4rem .85rem;border-radius:8px;border:1.5px solid var(--border);background:var(--surface);color:var(--text);font-family:var(--font);font-size:.82rem;outline:none;max-width:100%";
+      userListHeader.appendChild(userTitle);
+      userListHeader.appendChild(searchInp);
+      content.appendChild(userListHeader);
+
+      const userListWrap=h("div",{});
+      content.appendChild(userListWrap);
+
+      function renderUserList(query=""){
+        userListWrap.innerHTML="";
+        const q=query.toLowerCase().trim();
+        const filtered=regularUsers.filter(u=>{
+          if(!q) return true;
+          const name=(u.fullName||u.username).toLowerCase();
+          const id=(u.userId||u.username).toLowerCase();
+          const desig=(u.designation||"").toLowerCase();
+          return name.includes(q)||id.includes(q)||desig.includes(q);
         });
-        btns.appendChild(eBtn);btns.appendChild(dBtn);row.appendChild(btns);content.appendChild(row);
-      });
+        userTitle.textContent=`All Users (${filtered.length}${q?" found":""} of ${regularUsers.length})`;
+        if(!filtered.length){
+          userListWrap.appendChild(el("div","empty",q?`No users match "${query}".`:"No users yet."));
+          return;
+        }
+        filtered.forEach(u=>{
+          const row=el("div","user-row");
+          const info=h("div",{style:{flex:1,minWidth:0}});
+          const nameEl=el("div","uname",(u.fullName&&u.fullName.trim()?u.fullName.trim():(u.username.charAt(0).toUpperCase()+u.username.slice(1).toLowerCase())));
+          const metaRow=h("div",{style:{display:"flex",alignItems:"center",gap:".5rem",flexWrap:"wrap",marginTop:".2rem"}});
+          metaRow.appendChild(h("span",{style:{fontSize:".72rem",color:"var(--accent)",fontFamily:"var(--mono)",background:"#4f8ef722",border:"1px solid #4f8ef744",borderRadius:"6px",padding:".1rem .45rem"}},"ID: "+(u.userId||u.username)));
+          if(u.designation)metaRow.appendChild(h("span",{style:{fontSize:".72rem",color:"var(--muted)"}},u.designation));
+          if(u.location)metaRow.appendChild(h("span",{style:{fontSize:".72rem",color:"var(--muted)"}},"📍 "+u.location));
+          const pwPill=h("span",{style:{fontSize:".7rem",background:"#ffd16622",color:"var(--warn)",border:"1px solid #ffd16644",borderRadius:"6px",padding:".1rem .45rem",fontFamily:"var(--mono)",cursor:"pointer"}},"🔑 ••••••");
+          let pwShown=false;
+          pwPill.addEventListener("click",()=>{pwShown=!pwShown;pwPill.textContent=pwShown?"🔑 "+u.password:"🔑 ••••••"});
+          metaRow.appendChild(pwPill);
+          info.appendChild(nameEl);info.appendChild(metaRow);
+          row.appendChild(info);
+          const btns=h("div",{style:{display:"flex",gap:".5rem",flexShrink:0}});
+          const eBtn=h("button",{className:"btn btn-ghost btn-sm"},"✏️ Edit");
+          eBtn.addEventListener("click",()=>openEditModal(u));
+          const dBtn=h("button",{className:"btn btn-danger btn-sm"},"Delete");
+          dBtn.addEventListener("click",()=>{
+            if(!confirm(`Delete "${u.fullName||u.username}"?`))return;
+            DB.users=DB.users.filter(x=>x.username!==u.username);
+            DB.attendance=DB.attendance.filter(r=>r.username!==u.username);
+            DB.surveys=(DB.surveys||[]).filter(r=>r.username!==u.username);
+            DB.absences=(DB.absences||[]).filter(r=>r.username!==u.username);
+            save(DB);syncToSheet();refresh();
+          });
+          btns.appendChild(eBtn);btns.appendChild(dBtn);row.appendChild(btns);userListWrap.appendChild(row);
+        });
+      }
+
+      renderUserList();
+      searchInp.addEventListener("input",()=>renderUserList(searchInp.value));
+      searchInp.focus();
     }
 
     // ── RECORDS TAB ──
@@ -839,7 +1137,8 @@ function renderAdmin(){
 
       const absentRecs=(DB.absences||[]).filter(a=>{
         const m=a.date?a.date.slice(0,7):"";
-        return m===window._recMonth&&(window._recUser==="all"||a.username===window._recUser);
+        const userExists=regularUsers.find(u=>u.username===a.username);
+        return userExists&&m===window._recMonth&&(window._recUser==="all"||a.username===window._recUser);
       });
       if(absentRecs.length){
         const abSt=el("div","section-title","Absent Days",{marginTop:"1.2rem"});content.appendChild(abSt);
@@ -862,35 +1161,87 @@ function renderAdmin(){
 
       if(!rows.length){content.appendChild(el("div","empty","No records for this filter."))}
       else{
+        const PAGE=50;let pg=0;
         const tw=h("div",{style:{overflowX:"auto",background:"var(--card)",borderRadius:"12px",border:"1px solid var(--border)"}});
         const tbl=document.createElement("table");tbl.style.width="100%";tbl.style.borderCollapse="collapse";tbl.style.fontSize=".85rem";
         const thead=document.createElement("thead");
         const hrow=document.createElement("tr");
-        ["Date","Name / ID","Check In","Check Out","Hours","📍 In Location","📍 Out Location"].forEach(h2=>{const th=h("th",{className:"attend-th"},h2);hrow.appendChild(th)});
+        ["Date","Name / ID","Check In","Check Out","⏰ Arrival","🚪 Departure","📍 In Location","📍 Out Location"].forEach(h2=>{const th=h("th",{className:"attend-th"},h2);hrow.appendChild(th)});
         thead.appendChild(hrow);tbl.appendChild(thead);
         const tbody=document.createElement("tbody");
-        rows.forEach((r,i)=>{
-          const tr2=document.createElement("tr");if(i%2)tr2.style.background="#ffffff05";
-          const mins=r.in&&r.out?Math.round((r.out-r.in)/60000):null;
-          const hrs=mins?`${Math.floor(mins/60)}h ${mins%60}m`:"—";
-          const hrsVal=mins?mins/60:null;
-          const hrsColor=hrsVal>=8?"var(--gpa)":hrsVal>=4?"var(--warn)":"var(--danger)";
-          const hrsBg=hrsVal>=8?"#38d9a922":hrsVal>=4?"#ffd16622":"#ff5f6d22";
-          const hrsBorder=hrsVal>=8?"#38d9a944":hrsVal>=4?"#ffd16644":"#ff5f6d44";
-          const uInfo=regularUsers.find(u=>u.username===r.username);
-          const displayN=(uInfo&&uInfo.fullName)?uInfo.fullName:r.username;
-          const cells=[
-            `<td class="attend-td" style="font-family:var(--mono);font-size:.8rem;white-space:nowrap">${r.date.toLocaleDateString("en-GB",{weekday:"short",day:"2-digit",month:"short",year:"numeric"})}</td>`,
-            `<td class="attend-td"><span style="font-weight:700;color:var(--accent)">${displayN}</span><div style="font-size:.7rem;color:var(--muted);font-family:var(--mono)">${r.username}${uInfo?.designation?" · "+uInfo.designation:""}</div></td>`,
-            `<td class="attend-td" style="font-family:var(--mono);font-size:.82rem;color:var(--accent2)">${r.in?new Date(r.in).toLocaleTimeString([],({"hour":"2-digit","minute":"2-digit"})):"—"}</td>`,
-            `<td class="attend-td" style="font-family:var(--mono);font-size:.82rem;color:var(--danger)">${r.out?new Date(r.out).toLocaleTimeString([],({"hour":"2-digit","minute":"2-digit"})):"—"}</td>`,
-            `<td class="attend-td">${mins?`<span style="padding:.2rem .6rem;border-radius:20px;font-size:.75rem;font-weight:700;background:${hrsBg};color:${hrsColor};border:1px solid ${hrsBorder};font-family:var(--mono)">${hrs}</span>`:"<span style='color:var(--muted)'>—</span>"}</td>`,
-            `<td class="attend-td" style="color:var(--accent2);font-size:.78rem;font-family:var(--mono)">${r.loc?`<a href="https://maps.google.com/?q=${r.loc.lat},${r.loc.lng}" target="_blank" style="color:var(--accent2);text-decoration:none">📍 ${r.loc.lat.toFixed(4)}, ${r.loc.lng.toFixed(4)}</a>`:"<span style='color:var(--muted)'>—</span>"}</td>`,
-            `<td class="attend-td" style="color:var(--danger);font-size:.78rem;font-family:var(--mono)">${r.outLoc?`<a href="https://maps.google.com/?q=${r.outLoc.lat},${r.outLoc.lng}" target="_blank" style="color:var(--danger);text-decoration:none">📍 ${r.outLoc.lat.toFixed(4)}, ${r.outLoc.lng.toFixed(4)}</a>`:"<span style='color:var(--muted)'>—</span>"}</td>`,
-          ];
-          tr2.innerHTML=cells.join("");tbody.appendChild(tr2);
-        });
+
+        function renderPage(){
+          tbody.innerHTML="";
+          const pageRows=rows.slice(pg*PAGE,(pg+1)*PAGE);
+          pageRows.forEach((r,i)=>{
+            const tr2=document.createElement("tr");if(i%2)tr2.style.background="#ffffff05";
+            const mins=r.in&&r.out?Math.round((r.out-r.in)/60000):null;
+            const hrs=mins?`${Math.floor(mins/60)}h ${mins%60}m`:"—";
+            const hrsVal=mins?mins/60:null;
+            const hrsColor=hrsVal>=8?"var(--gpa)":hrsVal>=4?"var(--warn)":"var(--danger)";
+            const hrsBg=hrsVal>=8?"#38d9a922":hrsVal>=4?"#ffd16622":"#ff5f6d22";
+            const hrsBorder=hrsVal>=8?"#38d9a944":hrsVal>=4?"#ffd16644":"#ff5f6d44";
+            const uInfo=regularUsers.find(u=>u.username===r.username);
+            const displayN=(uInfo&&uInfo.fullName)?uInfo.fullName:r.username;
+            const arr=getArrivalStatus(r.in);
+            const dep=getDepartureStatus(r.out);
+            const arrCell=arr?`<span class="timing-pill tp-${arr.type}">${arr.label}</span>`:"—";
+            const depCell=dep?`<span class="timing-pill tp-${dep.type==="full"?"ontime":dep.type}">${dep.label}</span>`:"—";
+            const inRec=allAttend.find(x=>x.username===r.username&&x.type==="in"&&x.timestamp===r.in);
+            const outRec=allAttend.find(x=>x.username===r.username&&x.type==="out"&&x.timestamp===r.out);
+
+            // Helper: build location cell with office name + distance
+            function locCell(rec, rawLoc, accentColor){
+              if(!rawLoc&&!rec) return "<span style='color:var(--muted)'>—</span>";
+              const lat=rawLoc?.lat, lng=rawLoc?.lng;
+              const mapsUrl=lat?`https://maps.google.com/?q=${lat},${lng}`:"";
+              // Get office info: prefer stored geoName, fallback to nearest computed
+              let officeName="", dist=0, ok=false;
+              if(rec?.geoName){ officeName=rec.geoName; dist=rec.geoDist||0; ok=rec.geoOk; }
+              else if(lat&&(DB.officeLocations||[]).length){
+                const g=checkGeofence(lat,lng); officeName=g.name; dist=g.dist; ok=g.ok;
+              }
+              const coordStr=lat?`${lat.toFixed(4)}, ${lng.toFixed(4)}`:"";
+              const distBadge=dist?`<span style="display:inline-block;margin-top:3px;padding:1px 7px;border-radius:10px;font-size:.7rem;font-weight:700;background:${ok?"#38d9a922":"#ff5f6d22"};color:${ok?"var(--gpa)":"var(--danger)"};border:1px solid ${ok?"#38d9a955":"#ff5f6d55"}">${ok?"✅":"❌"} ${officeName?officeName+" · ":""}${dist}m</span>`:"";
+              const nameHtml=officeName?`<div style="font-size:.75rem;font-weight:700;color:${accentColor}">${officeName}</div>`:"";
+              const coordHtml=coordStr?`<a href="${mapsUrl}" target="_blank" style="color:var(--muted);font-size:.7rem;font-family:var(--mono);text-decoration:none">📍 ${coordStr}</a>`:"";
+              return `${nameHtml}${coordHtml}${distBadge?"<br>"+distBadge:""}`;
+            }
+
+            const cells=[
+              `<td class="attend-td" style="font-family:var(--mono);font-size:.8rem;white-space:nowrap">${r.date.toLocaleDateString("en-GB",{weekday:"short",day:"2-digit",month:"short",year:"numeric"})}</td>`,
+              `<td class="attend-td"><span style="font-weight:700;color:var(--accent)">${displayN}</span><div style="font-size:.7rem;color:var(--muted);font-family:var(--mono)">${r.username}${uInfo?.designation?" · "+uInfo.designation:""}</div></td>`,
+              `<td class="attend-td" style="font-family:var(--mono);font-size:.82rem;color:var(--accent2)">${r.in?new Date(r.in).toLocaleTimeString([],({"hour":"2-digit","minute":"2-digit"})):"—"}</td>`,
+              `<td class="attend-td" style="font-family:var(--mono);font-size:.82rem;color:var(--danger)">${r.out?new Date(r.out).toLocaleTimeString([],({"hour":"2-digit","minute":"2-digit"})):"—"}</td>`,
+              `<td class="attend-td">${arrCell}</td>`,
+              `<td class="attend-td">${depCell}</td>`,
+              `<td class="attend-td">${locCell(inRec, r.loc, "var(--accent2)")}</td>`,
+              `<td class="attend-td">${locCell(outRec, r.outLoc, "var(--danger)")}</td>`,
+            ];
+            tr2.innerHTML=cells.join("");tbody.appendChild(tr2);
+          });
+          // Update pagination bar
+          pgBar.innerHTML="";
+          const total=Math.ceil(rows.length/PAGE);
+          const info=h("span",{style:{fontSize:".8rem",color:"var(--muted)"}},`Showing ${pg*PAGE+1}–${Math.min((pg+1)*PAGE,rows.length)} of ${rows.length} records`);
+          pgBar.appendChild(info);
+          if(total>1){
+            const prevBtn=h("button",{className:"btn btn-ghost btn-sm"},"← Prev");
+            prevBtn.disabled=pg===0;
+            prevBtn.addEventListener("click",()=>{pg--;renderPage();});
+            const nextBtn=h("button",{className:"btn btn-ghost btn-sm"},"Next →");
+            nextBtn.disabled=pg>=total-1;
+            nextBtn.addEventListener("click",()=>{pg++;renderPage();});
+            pgBar.appendChild(prevBtn);
+            pgBar.appendChild(h("span",{style:{fontSize:".8rem",color:"var(--text)",fontWeight:"600"}},`Page ${pg+1} / ${total}`));
+            pgBar.appendChild(nextBtn);
+          }
+        }
+
         tbl.appendChild(tbody);tw.appendChild(tbl);content.appendChild(tw);
+        const pgBar=h("div",{style:{display:"flex",alignItems:"center",gap:".75rem",padding:".8rem 0",flexWrap:"wrap"}});
+        content.appendChild(pgBar);
+        renderPage();
       }
     }
 
@@ -927,7 +1278,7 @@ function renderAdmin(){
         const tbl=el("table","month-table");
         tbl.innerHTML='<thead><tr><th>Name</th><th>Date</th><th>📜 Policy</th><th>🔐 RSA</th><th>🎓 GPA</th><th>Edit</th></tr></thead>';
         const tb2=document.createElement("tbody");
-        allSurveysSorted.slice(0,60).forEach(s=>{
+        allSurveysSorted.forEach(s=>{
           const uInfo=regularUsers.find(u=>u.username===s.username);
           const displayN=(uInfo&&uInfo.fullName)?uInfo.fullName:s.username;
           const tr2=document.createElement("tr");
@@ -1003,7 +1354,14 @@ function renderAdmin(){
             if(r.type==="in"&&(!dm[k]._inTs||r.timestamp<dm[k]._inTs)){dm[k]._inTs=r.timestamp;dm[k].CheckIn=new Date(r.timestamp).toLocaleTimeString();dm[k].InLat=r.location?.lat||"";dm[k].InLng=r.location?.lng||"";}
             if(r.type==="out"&&(!dm[k]._outTs||r.timestamp>dm[k]._outTs)){dm[k]._outTs=r.timestamp;dm[k].CheckOut=new Date(r.timestamp).toLocaleTimeString();dm[k].OutLat=r.location?.lat||"";dm[k].OutLng=r.location?.lng||"";}
           });
-          Object.values(dm).forEach(d=>{if(d._inTs&&d._outTs){const m=Math.round((d._outTs-d._inTs)/60000);d.Hours=`${Math.floor(m/60)}h ${m%60}m`;}delete d._inTs;delete d._outTs;});
+          Object.values(dm).forEach(d=>{
+            if(d._inTs&&d._outTs){const m=Math.round((d._outTs-d._inTs)/60000);d.Hours=`${Math.floor(m/60)}h ${m%60}m`;}
+            const arr=getArrivalStatus(d._inTs);
+            const dep=getDepartureStatus(d._outTs);
+            d.Late_Arrival=arr?arr.label:"";
+            d.Departure=dep?dep.label:"";
+            delete d._inTs;delete d._outTs;
+          });
           exportCSV(Object.values(dm).sort((a,b)=>new Date(b.Date)-new Date(a.Date)),`Attendance_${dlMonth||"All"}.csv`);
         },"btn-primary"],
       ].forEach(([bc,nc,name,cnt,unit,fn,btnCls])=>{
@@ -1016,9 +1374,112 @@ function renderAdmin(){
         dc.appendChild(di);dc.appendChild(db);content.appendChild(dc);
       });
     }
-  }
+    // ── OFFICE LOCATIONS TAB ──
+    if(curTab==="locations"){
+      if(!DB.officeLocations)DB.officeLocations=[];
+      if(!DB.officeLocations) DB.officeLocations=[];
+      const lc=el("div","loc-settings-card");
+      lc.appendChild(h("h2",{},"📍 Office Locations & Geofence"));
 
-  // ── EDIT USER MODAL ──
+      const errLoc=el("div","alert alert-error hidden","");
+      const sucLoc=el("div","alert alert-success hidden","");
+      lc.appendChild(errLoc);lc.appendChild(sucLoc);
+
+      // ── SINGLE ADD FORM ──
+      function locField(icon,lbl,attrs){
+        const fg=el("div","field-group");
+        const lab=h("label",{});lab.innerHTML=icon+" "+lbl;
+        const inp=h("input",attrs);
+        fg.appendChild(lab);fg.appendChild(inp);
+        return{fg,inp};
+      }
+      const {fg:lfn,inp:iLocName}=locField("🏢","Location Name",{type:"text",placeholder:"e.g. Chennai HQ"});
+      const {fg:lfLat,inp:iLocLat}=locField("🌐","Latitude",{type:"number",step:"any",placeholder:""});
+      const {fg:lfLng,inp:iLocLng}=locField("🌐","Longitude",{type:"number",step:"any",placeholder:""});
+      lfLat.style.display="none";lfLng.style.display="none";
+      const {fg:lfR,inp:iLocR}=locField("📏","Radius (meters)",{type:"number",min:"10",max:"500",value:"100",placeholder:"e.g. 100"});
+
+      const coordFg=el("div","field-group");
+      const coordLbl=h("label",{});coordLbl.innerHTML="🌐 Coordinates (Latitude, Longitude)";
+      const coordInp=h("input",{type:"text",placeholder:"e.g. 13.082700, 80.270700"});
+      const coordHint=h("div",{style:{fontSize:".75rem",color:"var(--muted)",marginTop:".3rem"}},'📌 Copy from Google Maps → right-click location → copy numbers');
+      coordFg.appendChild(coordLbl);coordFg.appendChild(coordInp);coordFg.appendChild(coordHint);
+      coordInp.addEventListener("input",()=>{
+        const parts=coordInp.value.split(",").map(s=>s.trim());
+        if(parts.length>=2){iLocLat.value=parts[0];iLocLng.value=parts[1];}
+      });
+
+      const addLocBtn=h("button",{className:"btn btn-primary",style:{marginTop:".3rem"}},"✚ Add Location");
+      addLocBtn.addEventListener("click",()=>{
+        errLoc.classList.add("hidden");sucLoc.classList.add("hidden");
+        const nm=iLocName.value.trim(),lat=parseFloat(iLocLat.value),lng=parseFloat(iLocLng.value),r=parseInt(iLocR.value)||100;
+        if(!nm){errLoc.textContent="Location name is required.";errLoc.classList.remove("hidden");return}
+        if(isNaN(lat)||lat<-90||lat>90){errLoc.textContent="Invalid coordinates.";errLoc.classList.remove("hidden");return}
+        if(isNaN(lng)||lng<-180||lng>180){errLoc.textContent="Invalid coordinates.";errLoc.classList.remove("hidden");return}
+        if(DB.officeLocations.find(l=>l.name.toLowerCase()===nm.toLowerCase())){errLoc.textContent=`"${nm}" already exists.`;errLoc.classList.remove("hidden");return}
+        DB.officeLocations.push({id:Date.now(),name:nm,lat,lng,radius:r});
+        save(DB);syncToSheet();
+        sucLoc.textContent=`✅ "${nm}" added. Total: ${DB.officeLocations.length} locations.`;sucLoc.classList.remove("hidden");
+        iLocName.value="";iLocLat.value="";iLocLng.value="";iLocR.value="100";coordInp.value="";
+        renderLocList();
+      });
+      [lfn,coordFg,lfLat,lfLng,lfR,addLocBtn].forEach(x=>lc.appendChild(x));
+
+      // ── DELETE ALL ──
+      const dangerSec=h("div",{style:{marginTop:"1.2rem",paddingTop:"1rem",borderTop:"1px solid var(--border)",display:"flex",justifyContent:"flex-end"}});
+      const clearAllBtn=h("button",{className:"btn btn-danger btn-sm"},"🗑 Remove All Locations");
+      clearAllBtn.addEventListener("click",()=>{
+        if(!confirm(`Remove ALL ${DB.officeLocations.length} office locations?`))return;
+        DB.officeLocations=[];save(DB);syncToSheet();renderLocList();
+        sucLoc.textContent="All locations removed.";sucLoc.classList.remove("hidden");
+      });
+      dangerSec.appendChild(clearAllBtn);lc.appendChild(dangerSec);
+      content.appendChild(lc);
+
+      // ── LOCATION LIST WITH SEARCH ──
+      const listHeader=h("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",gap:"1rem",marginBottom:".8rem",flexWrap:"wrap"}});
+      const listTitle=h("div",{style:{fontSize:".75rem",fontWeight:"700",letterSpacing:".1em",textTransform:"uppercase",color:"var(--muted)"}},"");
+      const searchInp=h("input",{type:"text",placeholder:"🔍 Search locations…"});
+      searchInp.style.cssText="width:220px;padding:.5rem .9rem;background:var(--surface);border:1.5px solid var(--border);border-radius:8px;color:var(--text);font-family:var(--font);font-size:.82rem;outline:none;margin-bottom:0";
+      listHeader.appendChild(listTitle);listHeader.appendChild(searchInp);
+      content.appendChild(listHeader);
+
+      const listWrap=h("div",{style:{maxHeight:"480px",overflowY:"auto",display:"flex",flexDirection:"column",gap:".5rem"}});
+      content.appendChild(listWrap);
+
+      function renderLocList(){
+        listTitle.textContent=`Configured Locations (${DB.officeLocations.length})`;
+        const q=searchInp.value.trim().toLowerCase();
+        const filtered=DB.officeLocations.filter(l=>!q||l.name.toLowerCase().includes(q));
+        listWrap.innerHTML="";
+        if(!filtered.length){
+          listWrap.appendChild(el("div","empty",DB.officeLocations.length?"No locations match your search.":"No office locations yet. Add one above."));
+          return;
+        }
+        filtered.forEach((loc,idx)=>{
+          const row=el("div","loc-entry");
+          const numBadge=h("div",{style:{background:"var(--surface)",border:"1px solid var(--border)",borderRadius:"6px",padding:".1rem .45rem",fontSize:".7rem",fontFamily:"var(--mono)",color:"var(--muted)",flexShrink:0}},String(DB.officeLocations.indexOf(loc)+1));
+          const info=h("div",{style:{flex:1,minWidth:0}});
+          info.appendChild(el("div","loc-name",loc.name));
+          info.appendChild(el("div","loc-coords",`${loc.lat.toFixed(6)}, ${loc.lng.toFixed(6)} · ${loc.radius}m`));
+          const mapLink=h("a",{href:`https://maps.google.com/?q=${loc.lat},${loc.lng}`,target:"_blank",style:{fontSize:".73rem",color:"var(--accent)",textDecoration:"none",marginTop:".15rem",display:"inline-block"}},"🗺 Map");
+          info.appendChild(mapLink);
+          const delBtn2=h("button",{className:"btn btn-danger btn-sm"},"🗑");
+          delBtn2.title="Remove this location";
+          delBtn2.addEventListener("click",()=>{
+            if(!confirm(`Remove "${loc.name}"?`))return;
+            DB.officeLocations=DB.officeLocations.filter(l=>l.id!==loc.id);
+            save(DB);syncToSheet();renderLocList();
+            listTitle.textContent=`Configured Locations (${DB.officeLocations.length})`;
+          });
+          row.appendChild(numBadge);row.appendChild(info);row.appendChild(delBtn2);
+          listWrap.appendChild(row);
+        });
+      }
+      searchInp.addEventListener("input",renderLocList);
+      renderLocList();
+    }
+  }
   function openEditModal(u){
     const ov=el("div","modal-overlay");
     const mo=el("div","modal",null,{maxWidth:"440px"});
@@ -1070,6 +1531,18 @@ function renderAdmin(){
 // ── START ─────────────────────────────────────────────────────────────────────
 markAbsences();
 
+// If before 9 AM, clear any today's absences that were wrongly pre-marked
+(function cleanEarlyAbsences(){
+  const now = new Date();
+  const nowMin = now.getHours() * 60 + now.getMinutes();
+  const startMin = WORK_START_H * 60 + WORK_START_M;
+  if (nowMin < startMin) {
+    const todayStr = localDateStr(now);
+    DB.absences = (DB.absences || []).filter(a => a.date !== todayStr);
+    save(DB);
+  }
+})();
+
 const loadDiv=document.createElement("div");
 loadDiv.style.cssText="min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;font-family:'Sora',sans-serif;color:#e8eaf6;background:#0b0f1a;gap:1rem";
 loadDiv.innerHTML=`
@@ -1087,6 +1560,20 @@ loadDiv.innerHTML=`
 document.getElementById("app").appendChild(loadDiv);
 const timeout=setTimeout(()=>{route();},5000);
 loadFromSheet().then(()=>{clearTimeout(timeout);route();}).catch(()=>{clearTimeout(timeout);route();});
+
+// ── PWA SERVICE WORKER ────────────────────────────────────────────────────────
+if('serviceWorker' in navigator){
+  window.addEventListener('load',()=>{
+    navigator.serviceWorker.register('./sw.js')
+      .then(reg=>{
+        console.log('✅ VIBE SW registered');
+        navigator.serviceWorker.addEventListener('message',e=>{
+          if(e.data?.type==='FLUSH_QUEUE') flushQueue();
+        });
+      })
+      .catch(e=>console.log('SW error:',e));
+  });
+}
 </script>
 </body>
 </html>
