@@ -1036,10 +1036,14 @@ function renderAdmin(){
       const userListHeader=h("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:".6rem",marginBottom:".8rem",marginTop:"1.5rem"}});
       const userTitle=el("div","section-title",`All Users (${regularUsers.length})`);
       userTitle.style.margin="0";
-      const searchInp=h("input",{type:"text",placeholder:"🔍 Search by name or ID…"});
-      searchInp.style.cssText="width:220px;padding:.4rem .85rem;border-radius:8px;border:1.5px solid var(--border);background:var(--surface);color:var(--text);font-family:var(--font);font-size:.82rem;outline:none;max-width:100%";
+      const searchWrap=h("div",{style:{position:"relative",flex:"1",maxWidth:"260px",minWidth:"160px"}});
+      const searchInp=h("input",{type:"text",placeholder:"Search name or ID…"});
+      searchInp.style.cssText="width:100%;padding:.45rem .9rem .45rem 2rem;border-radius:8px;border:1.5px solid var(--border);background:var(--surface);color:var(--text);font-family:var(--font);font-size:.82rem;outline:none;box-sizing:border-box";
+      const searchIcon=h("span",{style:{position:"absolute",left:".6rem",top:"50%",transform:"translateY(-50%)",pointerEvents:"none",fontSize:".9rem"}},"🔍");
+      searchWrap.appendChild(searchIcon);
+      searchWrap.appendChild(searchInp);
       userListHeader.appendChild(userTitle);
-      userListHeader.appendChild(searchInp);
+      userListHeader.appendChild(searchWrap);
       content.appendChild(userListHeader);
 
       const userListWrap=h("div",{});
@@ -1251,6 +1255,8 @@ function renderAdmin(){
       content.appendChild(el("div","section-title","Today's Counts — "+todayFull));
       const todayAttendCount=allAttend.filter(r=>new Date(r.timestamp).toDateString()===new Date().toDateString()).length;
       const cg=h("div",{style:{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:".8rem",marginBottom:".8rem"}});
+      cg.style.cssText+="";
+      if(window.innerWidth<600) cg.style.gridTemplateColumns="repeat(2,1fr)";
       [["policy",todayPolicy,"📜 Today Policy"],["rsa",todayRsa,"🔐 Today RSA"],["gpa",todayGpa,"🎓 Today GPA"],["",todayAttendCount,"📋 Today Attend"]].forEach(([cls,v,l])=>{
         const b=el("div","stat-box "+(cls||""),null,{padding:".8rem"});
         b.innerHTML=`<div class="num" style="font-size:1.5rem">${v}</div><div class="lbl">${l}</div>`;cg.appendChild(b);
@@ -1264,6 +1270,7 @@ function renderAdmin(){
       const monthAttend=[...new Set(allAttend.filter(r=>r.type==="in"&&localMonthStr(new Date(r.timestamp))===curMK2).map(r=>r.username+new Date(r.timestamp).toDateString()))].length;
       const monthLbl=nowM.toLocaleString("default",{month:"long",year:"numeric"});
       const cg2=h("div",{style:{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:".8rem",marginBottom:"1rem"}});
+      if(window.innerWidth<600) cg2.style.gridTemplateColumns="repeat(2,1fr)";
       [["policy",monthPolicy,"📜 "+monthLbl+" Policy"],["rsa",monthRsa,"🔐 "+monthLbl+" RSA"],["gpa",monthGpa,"🎓 "+monthLbl+" GPA"],["",monthAttend,"📋 "+monthLbl+" Attend"]].forEach(([cls,v,l])=>{
         const b=el("div","stat-box "+(cls||""),null,{padding:".8rem",borderStyle:"dashed",opacity:".9"});
         b.innerHTML=`<div class="num" style="font-size:1.5rem">${v}</div><div class="lbl" style="font-size:.72rem">${l}</div>`;cg2.appendChild(b);
@@ -1377,7 +1384,6 @@ function renderAdmin(){
     // ── OFFICE LOCATIONS TAB ──
     if(curTab==="locations"){
       if(!DB.officeLocations)DB.officeLocations=[];
-      if(!DB.officeLocations) DB.officeLocations=[];
       const lc=el("div","loc-settings-card");
       lc.appendChild(h("h2",{},"📍 Office Locations & Geofence"));
 
@@ -1563,16 +1569,20 @@ loadFromSheet().then(()=>{clearTimeout(timeout);route();}).catch(()=>{clearTimeo
 
 // ── PWA SERVICE WORKER ────────────────────────────────────────────────────────
 if('serviceWorker' in navigator){
-  window.addEventListener('load',()=>{
-    navigator.serviceWorker.register('./sw.js')
-      .then(reg=>{
-        console.log('✅ VIBE SW registered');
-        navigator.serviceWorker.addEventListener('message',e=>{
-          if(e.data?.type==='FLUSH_QUEUE') flushQueue();
-        });
-      })
-      .catch(e=>console.log('SW error:',e));
-  });
+  const host = window.location.hostname;
+  const isRealHost = host !== 'www.claudeusercontent.com' && host !== '' && host !== 'localhost' || window.location.protocol === 'https:' && host.includes('github.io');
+  if(isRealHost){
+    window.addEventListener('load',()=>{
+      navigator.serviceWorker.register('./sw.js')
+        .then(reg=>{
+          console.log('✅ VIBE SW registered');
+          navigator.serviceWorker.addEventListener('message',e=>{
+            if(e.data?.type==='FLUSH_QUEUE') flushQueue();
+          });
+        })
+        .catch(e=>console.log('SW error:',e));
+    });
+  }
 }
 </script>
 </body>
