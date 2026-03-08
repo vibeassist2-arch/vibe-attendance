@@ -993,7 +993,6 @@ function renderUser(){
   updateSyncBadge();
   const _syncBadgeTimer = setInterval(()=>{ updateSyncBadge(); }, 5000);
   // Clean up timer when user signs out
-  const _origSignOut = soBtn.onclick;
   soBtn.addEventListener("click", ()=>clearInterval(_syncBadgeTimer));
   tbR.appendChild(syncStatusBadge);
   tb.appendChild(tbR);dash.appendChild(tb);
@@ -1072,7 +1071,6 @@ function renderUser(){
       const todayIn=todayRecs().find(r=>r.type==="in");
       const meUserForBanner=DB.users.find(u=>u.username===SESSION.username);
       const desig=(meUserForBanner?.designation||"").trim().toLowerCase();
-      const isFreeRoamBanner=desig==="team leader"||desig==="trainee";
       const assignedOfficeName=meUserForBanner?.officeName||"";
       // Only show location banner when user is currently checked IN
       if(todayIn && isIn()){
@@ -1327,12 +1325,17 @@ function renderUser(){
       else{
         const tw=h("div",{style:{overflowX:"auto",background:"var(--card)",borderRadius:"12px",border:"1px solid var(--border)"}});
         const tbl=el("table","month-table");
-        tbl.innerHTML=`<thead><tr><th>Date</th><th>Check In</th><th>Check Out</th><th>⏰ Arrival</th><th>🚪 Departure</th><th>📍 In Location</th><th>📍 Out Location</th></tr></thead>`;
+        tbl.innerHTML=`<thead><tr><th>Date</th><th>Check In</th><th>Check Out</th><th>⏱ Hours</th><th>⏰ Arrival</th><th>🚪 Departure</th><th>📍 In Location</th><th>📍 Out Location</th></tr></thead>`;
         const tb2=document.createElement("tbody");
         days.forEach(d=>{
           const tr2=document.createElement("tr");
           const mins=d.in&&d.out?Math.round((d.out-d.in)/60000):null;
           const hrs=mins?`${Math.floor(mins/60)}h ${mins%60}m`:"—";
+          const hrsVal=mins?mins/60:null;
+          const hrsColor=hrsVal>=8?"var(--gpa)":hrsVal>=4?"var(--warn)":"var(--danger)";
+          const hrsBg=hrsVal>=8?"#38d9a922":hrsVal>=4?"#ffd16622":"#ff5f6d22";
+          const hrsBorder=hrsVal>=8?"#38d9a944":hrsVal>=4?"#ffd16644":"#ff5f6d44";
+          const hrsCell=mins?`<span style="font-size:.72rem;padding:.15rem .45rem;border-radius:6px;background:${hrsBg};color:${hrsColor};border:1px solid ${hrsBorder};font-family:var(--mono);font-weight:700">${hrs}</span>`:`<span style="color:var(--muted);font-size:.75rem">—</span>`;
           const arr=getArrivalStatus(d.in);
           const dep=getDepartureStatus(d.out, d.in);
           const arrCell=arr?`<span class="timing-pill tp-${arr.type}">${arr.label}</span>`:"—";
@@ -1365,6 +1368,7 @@ function renderUser(){
           tr2.innerHTML=`<td style="font-family:var(--mono);font-size:.8rem">${d.date.toLocaleDateString("en-GB",{weekday:"short",day:"2-digit",month:"short"})}</td>
             <td style="color:var(--accent2);font-family:var(--mono);font-size:.82rem">${d.in?new Date(d.in).toLocaleTimeString([],({"hour":"2-digit","minute":"2-digit"})):"—"}</td>
             <td style="color:var(--danger);font-family:var(--mono);font-size:.82rem">${d.out?new Date(d.out).toLocaleTimeString([],({"hour":"2-digit","minute":"2-digit"})):"—"}</td>
+            <td>${hrsCell}</td>
             <td>${arrCell}</td>
             <td>${depCell}</td>
             <td>${inGeoCell}</td>
@@ -2280,14 +2284,14 @@ function renderAdmin(){
 
       function getFullName(username){ const u=regularUsers.find(u=>u.username===username); return(u&&u.fullName)?u.fullName:username; }
 
-      const totalPolicy=fS.reduce((s,r)=>s+(parseInt(r.policy)||0),0);
-      const totalRsa=fS.reduce((s,r)=>s+(parseInt(r.rsa)||0),0);
-      const totalGpa=fS.reduce((s,r)=>s+(parseInt(r.gpa)||0),0);
+      const dlTotalPolicy=fS.reduce((s,r)=>s+(parseInt(r.policy)||0),0);
+      const dlTotalRsa=fS.reduce((s,r)=>s+(parseInt(r.rsa)||0),0);
+      const dlTotalGpa=fS.reduce((s,r)=>s+(parseInt(r.gpa)||0),0);
 
       [
-        ["#a78bfa44","var(--policy)","📜 Policy Data",totalPolicy,"Policy",()=>exportCSV(fS.map(s=>({Name:getFullName(s.username),UserID:s.username,Date:s.date,Time:new Date(s.timestamp).toLocaleTimeString(),Policy_Count:s.policy||""})),`Policy_${dlMonth||"All"}.csv`),"btn-policy"],
-        ["#fb923c44","var(--rsa)","🔐 RSA Data",totalRsa,"RSA",()=>exportCSV(fS.map(s=>({Name:getFullName(s.username),UserID:s.username,Date:s.date,Time:new Date(s.timestamp).toLocaleTimeString(),RSA_Count:s.rsa||""})),`RSA_${dlMonth||"All"}.csv`),"btn-rsa"],
-        ["#34d39944","var(--gpa)","🎓 GPA Data",totalGpa,"GPA",()=>exportCSV(fS.map(s=>({Name:getFullName(s.username),UserID:s.username,Date:s.date,Time:new Date(s.timestamp).toLocaleTimeString(),GPA_Count:s.gpa||""})),`GPA_${dlMonth||"All"}.csv`),"btn-gpa"],
+        ["#a78bfa44","var(--policy)","📜 Policy Data",dlTotalPolicy,"Policy",()=>exportCSV(fS.map(s=>({Name:getFullName(s.username),UserID:s.username,Date:s.date,Time:new Date(s.timestamp).toLocaleTimeString(),Policy_Count:s.policy||""})),`Policy_${dlMonth||"All"}.csv`),"btn-policy"],
+        ["#fb923c44","var(--rsa)","🔐 RSA Data",dlTotalRsa,"RSA",()=>exportCSV(fS.map(s=>({Name:getFullName(s.username),UserID:s.username,Date:s.date,Time:new Date(s.timestamp).toLocaleTimeString(),RSA_Count:s.rsa||""})),`RSA_${dlMonth||"All"}.csv`),"btn-rsa"],
+        ["#34d39944","var(--gpa)","🎓 GPA Data",dlTotalGpa,"GPA",()=>exportCSV(fS.map(s=>({Name:getFullName(s.username),UserID:s.username,Date:s.date,Time:new Date(s.timestamp).toLocaleTimeString(),GPA_Count:s.gpa||""})),`GPA_${dlMonth||"All"}.csv`),"btn-gpa"],
         ["var(--border)","var(--accent)","📋 Attendance",fA.length,"records",()=>{
           const dm={};
           fA.forEach(r=>{const k=r.username+"__"+new Date(r.timestamp).toDateString();if(!dm[k])dm[k]={Name:getFullName(r.username),UserID:r.username,Date:new Date(r.timestamp).toLocaleDateString(),CheckIn:"",CheckOut:"",Hours:"",InLat:"",InLng:"",OutLat:"",OutLng:""};
