@@ -248,7 +248,10 @@ localStorage.setItem("vibeScriptUrl", SCRIPT_URL);
 async function gsFetch(params) {
   if (!SCRIPT_URL) return null;
   try {
-    const res = await fetch(SCRIPT_URL + "?" + new URLSearchParams(params), { method: "GET", redirect: "follow" });
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000); // 8s timeout
+    const res = await fetch(SCRIPT_URL + "?" + new URLSearchParams(params), { method: "GET", redirect: "follow", signal: controller.signal });
+    clearTimeout(timer);
     return JSON.parse(await res.text());
   } catch(e) { console.error("GS GET error", e); return null; }
 }
@@ -263,15 +266,31 @@ async function flushQueue(){
   if(_queueRunning || !SCRIPT_URL) return;
   _queueRunning = true;
   let q = loadQueue();
-  while(q.length > 0){
+  let failCount = 0;
+  while(q.length > 0 && failCount < 3){
     const item = q[0];
     try{
-      const res = await fetch(SCRIPT_URL, { method:"POST", redirect:"follow", headers:{"Content-Type":"text/plain"}, body: JSON.stringify(item) });
-      await res.text();
-      q.shift();
-      saveQueue(q);
+      const _ctrl = new AbortController();
+      const _timer = setTimeout(() => _ctrl.abort(), 8000);
+      const res = await fetch(SCRIPT_URL, { method:"POST", redirect:"follow", headers:{"Content-Type":"text/plain"}, body: JSON.stringify(item), signal: _ctrl.signal });
+      clearTimeout(_timer);
+      const text = await res.text();
+      // Only remove from queue if server confirmed success
+      let parsed = null;
+      try { parsed = JSON.parse(text); } catch(e){}
+      if(res.ok || (parsed && parsed.ok !== false)){
+        q.shift();
+        saveQueue(q);
+        failCount = 0;
+      } else {
+        failCount++;
+        if(failCount >= 3) break; // give up after 3 consecutive failures
+        await new Promise(r=>setTimeout(r,1000)); // wait 1s before retry
+      }
     } catch(e){
-      break; // stop on failure, retry later
+      failCount++;
+      if(failCount >= 3) break;
+      await new Promise(r=>setTimeout(r,1000));
     }
   }
   _queueRunning = false;
@@ -281,7 +300,7 @@ async function gsPost(body) {
   if (!SCRIPT_URL) return null;
   // Add to queue first — guarantees no data loss
   const q = loadQueue();
-  q.push(body);
+  q.push(body); // don't add extra fields that may confuse Apps Script
   saveQueue(q);
   flushQueue(); // try immediately, non-blocking
   return { ok: true };
@@ -300,7 +319,7 @@ function markAbsences() {
   const today = new Date();
   const todayStr = localDateStr(today);
   const day = today.getDay();
-  if (day === 0) return; // Skip Sunday only
+  if (day === 0) return; // Skip Sunday only (Saturday is a working day)
 
   // Only mark absent AFTER work start time (9:00 AM)
   const nowMin = today.getHours() * 60 + today.getMinutes();
@@ -339,7 +358,8 @@ let autoSyncInterval = null;
 function startAutoSync() {
   if (autoSyncInterval) clearInterval(autoSyncInterval);
   autoSyncInterval = setInterval(async () => {
-    if (SESSION && SCRIPT_URL) {
+    if (SESSION && SCRIPT_URL && !document.hidden) { // skip if tab is hidden
+      await flushQueue(); // push pending records before pulling
       await loadFromSheet();
       if(!SESSION)return; // signed out during async load
       if (typeof window._adminRefresh === "function") window._adminRefresh();
@@ -355,7 +375,10 @@ async function syncToSheet() {
   // Send directly (not via queue) to avoid ordering issues with queued attendance records
   const payload = { action:"fullSync", data: { users: DB.users, surveys: DB.surveys, attendance: DB.attendance, absences: DB.absences, officeLocations: DB.officeLocations } };
   try {
-    const res = await fetch(SCRIPT_URL, { method:"POST", redirect:"follow", headers:{"Content-Type":"text/plain"}, body: JSON.stringify(payload) });
+    const _sc = new AbortController();
+    const _st = setTimeout(() => _sc.abort(), 8000);
+    const res = await fetch(SCRIPT_URL, { method:"POST", redirect:"follow", headers:{"Content-Type":"text/plain"}, body: JSON.stringify(payload), signal: _sc.signal });
+    clearTimeout(_st);
     const text = await res.text();
     try { return JSON.parse(text); } catch { return { ok: true }; }
   } catch(e) {
@@ -414,7 +437,7 @@ async function loadFromSheet() {
       const validLoc = (r.lat && r.lng && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) ? {lat, lng, workLocation: r.workLocation||""} : null;
       const validOutLoc = (r.outLat && r.outLng && outLat >= -90 && outLat <= 90 && outLng >= -180 && outLng <= 180) ? {lat: outLat, lng: outLng} : null;
       const rType = (r.type||"").toString().trim().toLowerCase();
-      const inferredType = rType || (r.outLat ? "in" : (r.lat ? "in" : "out"));
+      const inferredType = rType || (r.lat ? "in" : "out");
       // Parse geoOk correctly — sheet stores it as string "true"/"false"
       const geoOk = r.geoOk === true || r.geoOk === "true" || r.geoOk === 1 || r.geoOk === "1";
       return {
@@ -431,20 +454,81 @@ async function loadFromSheet() {
       };
     }).filter(r => r.username && r.timestamp);
 
-    // Merge sheet attendance with any locally queued records not yet on sheet
-    // Local records that exist in queue are newer — don't overwrite with sheet data
-    const queuedIds = new Set(loadQueue().flatMap(item => {
-      if (item.action === "addAttendance" && item.data?.id) return [String(item.data.id)];
-      return [];
-    }));
-    const localOnlyRecs = DB.attendance.filter(r => r.id && queuedIds.has(String(r.id)) && !sheetAttend.find(s => String(s.id) === String(r.id)));
-    // Deduplicate by id — sheet is source of truth, local queued records fill the gap
-    const allAttendById = {};
-    [...sheetAttend, ...localOnlyRecs].forEach(r => {
+    // Merge sheet attendance with local records
+    const _queue = loadQueue();
+    // All IDs currently in the retry queue (pending upload)
+    const queuedIds = new Set(_queue
+      .filter(item => (item.action === "addAttendance" || item.action === "addSurvey") && item.data?.id)
+      .map(item => String(item.data.id)));
+    const todayDateStr = new Date().toDateString();
+
+    // Build a map of ALL local attendance by ID for fast lookup
+    const localById = {};
+    DB.attendance.forEach(r => {
       const key = r.id ? String(r.id) : (r.username + r.timestamp);
-      if (!allAttendById[key]) allAttendById[key] = r;
+      localById[key] = r;
     });
-    DB.attendance = Object.values(allAttendById);
+
+    // Start with sheet data as base
+    const allAttendById = {};
+    sheetAttend.forEach(r => {
+      const key = r.id ? String(r.id) : (r.username + r.timestamp);
+      // Only use sheet record if local doesn't have a newer version
+      const local = localById[key];
+      if(local && local.timestamp >= r.timestamp){
+        allAttendById[key] = local; // local is same age or newer — keep local
+      } else {
+        allAttendById[key] = r;
+      }
+    });
+
+    // Add ALL local records not on sheet at all (new records pending upload)
+    DB.attendance.forEach(r => {
+      const key = r.id ? String(r.id) : (r.username + r.timestamp);
+      if(!allAttendById[key]) allAttendById[key] = r;
+    });
+
+    // Also pull directly from queue in case DB was cleared/reloaded
+    _queue.filter(item => item.action === "addAttendance" && item.data?.username && item.data?.timestamp)
+      .forEach(item => {
+        const r = item.data;
+        const key = r.id ? String(r.id) : (r.username + r.timestamp);
+        const existing = allAttendById[key];
+        if(!existing || r.timestamp >= (existing.timestamp||0)){
+          allAttendById[key] = {...r, type: r.type||(r.lat?"in":"out")};
+        }
+      });
+
+    let mergedAttend = Object.values(allAttendById);
+
+    // ── DEDUPLICATE: remove ghost check-ins that appear after a checkout ──
+    // Rule: only drop check-in records that appear AFTER a checkout (ghost records from sheet echo)
+    // NEVER drop checkout records themselves
+    const byUserDay = {};
+    mergedAttend.forEach(r => {
+      const key = r.username + "__" + new Date(r.timestamp).toDateString();
+      if(!byUserDay[key]) byUserDay[key] = [];
+      byUserDay[key].push(r);
+    });
+    const cleanedAttend = [];
+    Object.values(byUserDay).forEach(recs => {
+      const outs = recs.filter(r => r.type === "out");
+      // Always keep all checkout records
+      outs.forEach(r => cleanedAttend.push(r));
+      const ins = recs.filter(r => r.type === "in");
+      if(!outs.length){ ins.forEach(r => cleanedAttend.push(r)); return; }
+      const lastOutTs = Math.max(...outs.map(r => r.timestamp));
+      ins.forEach(r => {
+        // Keep check-in if it came BEFORE the last checkout (original check-in)
+        if(r.timestamp <= lastOutTs){
+          cleanedAttend.push(r);
+        } else if(r.timestamp - lastOutTs > 30*60*1000){
+          cleanedAttend.push(r); // legitimate re-checkin 30+ min later
+        }
+        // else: ghost check-in within 30 min after checkout — drop it
+      });
+    });
+    DB.attendance = cleanedAttend;
 
     const sheetSurveys = (result.surveys||[]).map(s => {
       const ts = parseInt(s.timestamp)||0;
@@ -463,18 +547,45 @@ async function loadFromSheet() {
         if (newTotal > existTotal || (newTotal === existTotal && s.timestamp > existing.timestamp)) surveyMap[key] = s;
       }
     });
+    // Also preserve local today's surveys not yet on sheet
+    const localTodaySurveys = SESSION
+      ? (DB.surveys||[]).filter(s => s.username === SESSION.username && s.date === localDateStr(new Date()))
+      : [];
+    localTodaySurveys.forEach(s => {
+      const key = s.username + "__" + s.date;
+      const existing = surveyMap[key];
+      // Prefer local if it's more recent or has more data than sheet version
+      if(!existing) { surveyMap[key] = s; return; }
+      const localTotal = (parseInt(s.policy)||0)+(parseInt(s.rsa)||0)+(parseInt(s.gpa)||0);
+      const existTotal = (parseInt(existing.policy)||0)+(parseInt(existing.rsa)||0)+(parseInt(existing.gpa)||0);
+      if(s.timestamp > existing.timestamp || localTotal > existTotal) surveyMap[key] = s;
+    });
     DB.surveys = Object.values(surveyMap);
     save(DB);
 
     // Load absences from sheet — merge with local so no device loses absence data
-    if (result.absences && result.absences.length) {
-      const sheetAbsences = result.absences.map(a => ({
-        id: a.id, username: String(a.username||"").trim(), date: String(a.date||"").slice(0,10), auto: a.auto||false
-      })).filter(a => a.username && a.date);
-      const absMap = {};
-      [...(DB.absences||[]), ...sheetAbsences].forEach(a => { absMap[a.username+"__"+a.date] = a; });
-      DB.absences = Object.values(absMap);
-    }
+    // Always sync absences from sheet — sheet is source of truth for absences
+    // Local absences are only kept if not yet confirmed on sheet
+    const sheetAbsences = (result.absences||[]).map(a => ({
+      id: a.id, username: String(a.username||"").trim(), date: String(a.date||"").slice(0,10), auto: a.auto||false
+    })).filter(a => a.username && a.date);
+    const absMap = {};
+    // Sheet data first
+    sheetAbsences.forEach(a => { absMap[a.username+"__"+a.date] = a; });
+    // Add any local absences not yet on sheet (queued addAbsence items)
+    const queuedAbsKeys = new Set(_queue
+      .filter(item => item.action === "addAbsence" && item.data)
+      .map(item => String(item.data.username||"")+"__"+String(item.data.date||"")));
+    (DB.absences||[]).forEach(a => {
+      const k = a.username+"__"+a.date;
+      if(queuedAbsKeys.has(k) && !absMap[k]) absMap[k] = a; // only keep if queued and not yet on sheet
+    });
+    // Remove absences that were queued for removal
+    const removedAbsKeys = new Set(_queue
+      .filter(item => item.action === "removeAbsence" && item.data)
+      .map(item => String(item.data.username||"")+"__"+String(item.data.date||"")));
+    removedAbsKeys.forEach(k => delete absMap[k]);
+    DB.absences = Object.values(absMap);
 
     // Clean up orphan records for deleted users
     const activeUsernames = new Set(DB.users.map(u => u.username));
@@ -600,12 +711,20 @@ function getArrivalStatus(tsMs){
   const h=Math.floor(lateMin/60),m=lateMin%60;
   return{type:"late",label:h>0?(m>0?`${h}h ${m}m Late`:`${h}h Late`):`${m}m Late`};
 }
-function getDepartureStatus(tsMs){
+function getDepartureStatus(tsMs, checkInTs){
   if(!tsMs)return null;
   const d=new Date(tsMs);
   const outMin=d.getHours()*60+d.getMinutes();
   const endMin=WORK_END_H*60+WORK_END_M;
-  if(outMin<endMin)return{type:"permission",label:"Permission"};
+  // If check-in time is provided, also verify they worked enough hours
+  if(checkInTs){
+    const workedMs=tsMs-checkInTs;
+    const workedHours=workedMs/(1000*60*60);
+    const fullDayHours=WORK_END_H-WORK_START_H; // 7PM-9AM = 10 hours, but we use 4h min
+    if(outMin<endMin||workedHours<4) return{type:"permission",label:"Permission"};
+  } else {
+    if(outMin<endMin)return{type:"permission",label:"Permission"};
+  }
   return{type:"full",label:"Full Day"};
 }
 function localMonthStr(date){const d=date||new Date();return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`}
@@ -631,7 +750,9 @@ function exportCSV(rows,filename){
   const keys=Object.keys(rows[0]);
   const body=rows.map(r=>keys.map(k=>{const v=r[k]==null?"":String(r[k]);return v.includes(",")||v.includes('"')?`"${v.replace(/"/g,'""')}"`:`${v}`}).join(",")).join("\n");
   const blob=new Blob([keys.join(",")+"\n"+body],{type:"text/csv"});
-  const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=filename;a.click();
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement("a");a.href=url;a.download=filename;a.click();
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
 }
 function h(tag,attrs,children){
   const el=document.createElement(tag);
@@ -654,8 +775,6 @@ function render(node){const app=document.getElementById("app");app.innerHTML="";
 function route(){
   if(!SESSION){if(autoSyncInterval){clearInterval(autoSyncInterval);autoSyncInterval=null;}renderLogin();return;}
   startAutoSync();
-  requestNotifPermission();
-  if(SESSION.role!=="admin") scheduleCheckoutReminder();
   if(SESSION.role==="admin"){renderAdmin();return}
   renderUser();
 }
@@ -703,17 +822,32 @@ function renderLogin(){
     proceedLogin(localFound,u,p);
   }
 
+  function withLoginTimeout(promise, ms=6000){
+    // Resolves when promise resolves OR after ms — never hangs
+    return Promise.race([promise, new Promise(res=>setTimeout(res, ms))]);
+  }
+
   function proceedLogin(found, u, p){
     if(found.role==="admin"){
       btn.disabled=true;btn.textContent="Syncing data…";
-      loadFromSheet().finally(()=>{const u2=DB.users.find(x=>x.username===found.username)||found;SESSION={username:u2.username,fullName:u2.fullName&&u2.fullName.trim()?u2.fullName.trim():u2.username,role:"admin"};route();});
+      withLoginTimeout(loadFromSheet()).finally(()=>{
+        const u2=DB.users.find(x=>x.username===found.username)||found;
+        SESSION={username:u2.username,fullName:u2.fullName&&u2.fullName.trim()?u2.fullName.trim():u2.username,role:"admin"};
+        route();
+      });
       return;
     }
     btn.disabled=true;btn.textContent="Syncing data…";locWarn.classList.remove("hidden");
-    loadFromSheet().finally(()=>{
+    withLoginTimeout(loadFromSheet()).finally(()=>{
       btn.textContent="Getting location…";
-      getLocation().then(loc=>{const u2=DB.users.find(x=>x.username===found.username)||found;const fn=u2.fullName&&u2.fullName.trim()?u2.fullName.trim():u2.username.charAt(0).toUpperCase()+u2.username.slice(1).toLowerCase();SESSION={username:u2.username,fullName:fn,role:"user",location:loc};route();})
-        .catch(msg=>{errBox.textContent=msg;errBox.classList.remove("hidden");btn.disabled=false;btn.textContent="Sign In";locWarn.classList.add("hidden");});
+      getLocation().then(loc=>{
+        const u2=DB.users.find(x=>x.username===found.username)||found;
+        const fn=u2.fullName&&u2.fullName.trim()?u2.fullName.trim():u2.username.charAt(0).toUpperCase()+u2.username.slice(1).toLowerCase();
+        SESSION={username:u2.username,fullName:fn,role:"user",location:loc};
+        // Clear any stale checkout flag from previous session
+        sessionStorage.removeItem("vibeLastCheckout_"+SESSION.username);
+        route();
+      }).catch(msg=>{errBox.textContent=msg;errBox.classList.remove("hidden");btn.disabled=false;btn.textContent="Sign In";locWarn.classList.add("hidden");});
     });
   }
   btn.addEventListener("click",doLogin);
@@ -757,17 +891,43 @@ function showSurvey(onSubmit, onCancel){
 // ── USER DASH ─────────────────────────────────────────────────────────────────
 function renderUser(){
   const myRecs=()=>DB.attendance.filter(r=>r.username===SESSION.username).sort((a,b)=>b.timestamp-a.timestamp);
-  const todayStr=new Date().toDateString();
-  const todayRecs=()=>myRecs().filter(r=>new Date(r.timestamp).toDateString()===todayStr);
+  const todayRecs=()=>{
+    const s=new Date().toDateString();
+    const recs=myRecs().filter(r=>new Date(r.timestamp).toDateString()===s);
+    // Remove ghost check-ins: any check-in that appears AFTER the latest checkout
+    const sessionCheckoutTs=parseInt(sessionStorage.getItem("vibeLastCheckout_"+SESSION.username)||"0");
+    const outs=recs.filter(r=>r.type==="out");
+    const lastOutTs=outs.length?Math.max(...outs.map(r=>r.timestamp)):0;
+    const cutoff=Math.max(sessionCheckoutTs,lastOutTs);
+    if(!cutoff)return recs;
+    // Keep: all outs, and all ins that are NOT after the last checkout (i.e. valid earlier check-ins)
+    // Also keep any ins that came AFTER cutoff only if they are genuinely new (future re-checkins)
+    // Since this is "today" and user has checked out, drop any in record created suspiciously close after checkout
+    return recs.filter(r=>{
+      if(r.type==="out")return true;
+      // Keep check-in if it came BEFORE the last checkout (it's the original check-in)
+      if(r.timestamp<=cutoff)return true;
+      // Drop ghost check-ins that appeared after checkout (from sheet sync artifacts)
+      return false;
+    });
+  };
   const isIn=()=>{
     const t=todayRecs();
+    // Check sessionStorage first — most reliable ground truth
+    const sessionCheckoutTs=parseInt(sessionStorage.getItem("vibeLastCheckout_"+SESSION.username)||"0");
+    if(sessionCheckoutTs){
+      // User checked out this session — only IN if there's a check-in strictly AFTER that checkout
+      const ins=t.filter(r=>r.type==="in"&&r.timestamp>sessionCheckoutTs);
+      return ins.length>0;
+    }
     if(!t.length)return false;
-    // Find latest in and latest out
-    const lastIn=t.find(r=>r.type==="in");
-    const lastOut=t.find(r=>r.type==="out");
-    if(!lastIn)return false;
-    if(!lastOut)return true;
-    return lastIn.timestamp>lastOut.timestamp;
+    const outs=t.filter(r=>r.type==="out");
+    const ins=t.filter(r=>r.type==="in");
+    if(!ins.length)return false;
+    if(!outs.length)return true;
+    const lastOutTs=Math.max(...outs.map(r=>r.timestamp));
+    const lastInTs=Math.max(...ins.map(r=>r.timestamp));
+    return lastInTs>lastOutTs;
   };
   const dash=el("div","dash");
   const tb=el("div","topbar");
@@ -785,12 +945,14 @@ function renderUser(){
     // Clear all stale state so next login starts fresh
     delete window._recQuick;delete window._recUser;delete window._recMonth;
     delete window._userSearch;delete window._geoWarn;
+    if(SESSION) sessionStorage.removeItem("vibeLastCheckout_"+SESSION.username);
     SESSION=null;route();
   });
   const refBtn=h("button",{className:"btn btn-ghost btn-sm"},"🔄 Refresh");
   refBtn.addEventListener("click",async()=>{
     refBtn.disabled=true;refBtn.textContent="⏳ Syncing…";
-    await loadFromSheet();
+    await flushQueue(); // push any pending records first
+    await loadFromSheet(); // then pull latest from sheet
     const u2r=DB.users.find(x=>x.username===SESSION.username);if(u2r&&u2r.fullName&&u2r.fullName.trim())SESSION.fullName=u2r.fullName.trim();
     refBtn.textContent="✅ Done";
     setTimeout(()=>{refBtn.textContent="🔄 Refresh";refBtn.disabled=false;},2000);
@@ -806,13 +968,33 @@ function renderUser(){
     localStorage.setItem("vibeTheme",isLight?"light":"dark");
   });
   tbR.appendChild(themeBtn);
-  // Pending queue badge
-  const qCount = loadQueue().length;
-  if(qCount > 0){
-    const qBadge = h("span",{style:{fontSize:".7rem",padding:".2rem .5rem",borderRadius:"20px",background:"#ffd16622",color:"var(--warn)",border:"1px solid #ffd16644",fontWeight:"700"}},`⏳ ${qCount} pending`);
-    qBadge.title = `${qCount} record(s) waiting to sync to Google Sheets`;
-    tbR.appendChild(qBadge);
+  // Live sync status badge — updates every 5s
+  const syncStatusBadge = h("span",{style:{fontSize:".7rem",padding:".2rem .5rem",borderRadius:"20px",fontWeight:"700",display:"none"}});
+  function updateSyncBadge(){
+    const qc = loadQueue().length;
+    if(qc > 0){
+      syncStatusBadge.textContent = `⏳ ${qc} syncing…`;
+      syncStatusBadge.style.background = "#ffd16622";
+      syncStatusBadge.style.color = "var(--warn)";
+      syncStatusBadge.style.border = "1px solid #ffd16644";
+      syncStatusBadge.style.display = "inline-block";
+      syncStatusBadge.title = `${qc} record(s) waiting to sync. Click to retry.`;
+      syncStatusBadge.style.cursor = "pointer";
+    } else {
+      syncStatusBadge.style.display = "none";
+    }
   }
+  syncStatusBadge.addEventListener("click", async()=>{
+    syncStatusBadge.textContent = "⏳ Retrying…";
+    await flushQueue();
+    updateSyncBadge();
+  });
+  updateSyncBadge();
+  const _syncBadgeTimer = setInterval(()=>{ updateSyncBadge(); }, 5000);
+  // Clean up timer when user signs out
+  const _origSignOut = soBtn.onclick;
+  soBtn.addEventListener("click", ()=>clearInterval(_syncBadgeTimer));
+  tbR.appendChild(syncStatusBadge);
   tb.appendChild(tbR);dash.appendChild(tb);
 
   // ── USER PROFILE CARD ──────────────────────────────────────────────────────
@@ -843,6 +1025,7 @@ function renderUser(){
   const now=new Date();
   const curMonthKey=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}`;
   let selMonth=curMonthKey;
+  let _checkoutInProgress=false; // survives refresh() calls within same session
 
   function refresh(){
     window._userRefresh=refresh;
@@ -884,25 +1067,33 @@ function renderUser(){
     content.appendChild(tabs);
 
     if(curTab==="today"){
-      // ── OFFICE BANNER — only for Team Leader and Trainee ──
+      // ── LOCATION BANNER ──
       const todayIn=todayRecs().find(r=>r.type==="in");
       const meUserForBanner=DB.users.find(u=>u.username===SESSION.username);
       const desig=(meUserForBanner?.designation||"").trim().toLowerCase();
-      const showOfficeBanner=desig==="team leader"||desig==="trainee";
+      const isFreeRoamBanner=desig==="team leader"||desig==="trainee";
       const assignedOfficeName=meUserForBanner?.officeName||"";
-      if(todayIn&&showOfficeBanner){
+      // Only show location banner when user is currently checked IN
+      if(todayIn && isIn()){
         const officeLbl=todayIn.geoName&&todayIn.geoName!=="No office location set"
           ?todayIn.geoName
           :(assignedOfficeName||meUserForBanner?.location||"");
         if(officeLbl){
-          const banner=el("div","geo-banner "+(todayIn.geoOk?"geo-ok":"geo-fail"));
-          const desigBadge=meUserForBanner?.designation?`<span style="font-size:.72rem;background:#4f8ef722;color:var(--accent);border:1px solid #4f8ef744;border-radius:5px;padding:.1rem .4rem;margin-left:.4rem;font-weight:700">${meUserForBanner.designation}</span>`:"";
-          banner.innerHTML=`<span class="geo-icon">${todayIn.geoOk?"✅":"⚠️"}</span><div><strong>🏢 ${officeLbl}</strong>${desigBadge}<br><span style="font-size:.8rem;color:var(--muted)">${todayIn.geoOk?"Within range":"Outside range"}${todayIn.geoDist?" · "+todayIn.geoDist+"m away":""}</span></div>`;
-          content.appendChild(banner);
+          if(todayIn.geoOk){
+            const banner=el("div","geo-banner geo-ok");
+            const desigBadge=meUserForBanner?.designation?`<span style="font-size:.72rem;background:#4f8ef722;color:var(--accent);border:1px solid #4f8ef744;border-radius:5px;padding:.1rem .4rem;margin-left:.4rem;font-weight:700">${meUserForBanner.designation}</span>`:"";
+            banner.innerHTML=`<span class="geo-icon">✅</span><div><strong>🏢 ${officeLbl}</strong>${desigBadge}<br><span style="font-size:.8rem;color:var(--muted)">Within range${todayIn.geoDist?" · "+todayIn.geoDist+"m":""}</span></div>`;
+            content.appendChild(banner);
+          } else {
+            // Outside range — show warning only while checked in, hidden after checkout (isIn() guard above handles this)
+            const banner=el("div","geo-banner geo-fail");
+            const desigBadge=meUserForBanner?.designation?`<span style="font-size:.72rem;background:#4f8ef722;color:var(--accent);border:1px solid #4f8ef744;border-radius:5px;padding:.1rem .4rem;margin-left:.4rem;font-weight:700">${meUserForBanner.designation}</span>`:"";
+            banner.innerHTML=`<span class="geo-icon">⚠️</span><div><strong>🏢 ${officeLbl}</strong>${desigBadge}<br><span style="font-size:.8rem;color:var(--muted)">Outside range${todayIn.geoDist?" · "+todayIn.geoDist+"m away":""}</span></div>`;
+            content.appendChild(banner);
+          }
         }
       }
 
-      let _checkoutInProgress=false;
       const checkedIn=isIn();
       const mainBtn=h("button",{className:"btn "+(checkedIn?"btn-danger":"btn-success")},checkedIn?"⏹ Check Out":"▶ Check In");
       mainBtn.addEventListener("click",()=>{
@@ -912,33 +1103,41 @@ function renderUser(){
           mainBtn.disabled=true;mainBtn.textContent="Opening survey…";
           showSurvey(answers=>{
             mainBtn.textContent="Checking out…";
-            const todayCheckins=DB.attendance.filter(r=>r.username===SESSION.username&&r.type==="in"&&new Date(r.timestamp).toDateString()===new Date().toDateString());
-            const checkInTs=todayCheckins.length?Math.min(...todayCheckins.map(r=>r.timestamp)):Date.now();
-            const surveyDate=localDateStr(new Date(checkInTs));
-            const sur={id:Date.now(),username:SESSION.username,timestamp:Date.now(),date:surveyDate,...answers};
-            DB.surveys.push(sur);gsPost({action:"addSurvey",data:sur});save(DB);
             getLocation().then(loc=>{
+              const todayCheckins2=DB.attendance.filter(r=>r.username===SESSION.username&&r.type==="in"&&new Date(r.timestamp).toDateString()===new Date().toDateString());
+              const checkInTs2=todayCheckins2.length?Math.min(...todayCheckins2.map(r=>r.timestamp)):Date.now();
+              const surveyDate2=localDateStr(new Date(checkInTs2));
+              const _tsNow=Date.now();
+              const sur={id:_tsNow,username:SESSION.username,timestamp:_tsNow,date:surveyDate2,...answers};
+              DB.surveys.push(sur);gsPost({action:"addSurvey",data:sur});save(DB);
               const meUserRec2=DB.users.find(u=>u.username===SESSION.username);
               const geo2=checkUserGeofence(loc.lat,loc.lng,SESSION.username);
               const hasPersonalGeo2=meUserRec2?.geoLat&&meUserRec2?.geoLng;
               const desig2=(meUserRec2?.designation||"").trim().toLowerCase();
               const isFreeRoam2=desig2==="team leader"||desig2==="trainee";
-              let checkoutWarn=null;
-              if(!isFreeRoam2&&hasPersonalGeo2&&geo2.dist!=null&&geo2.dist>200){
-                checkoutWarn=`⚠️ You are ${geo2.dist}m away from "${geo2.name}". Check-out recorded.`;
-              }
-              if(isFreeRoam2&&geo2.name&&geo2.name!=="No office location set"&&geo2.dist!=null&&geo2.dist>200){
-                checkoutWarn=`⚠️ You are ${geo2.dist}m away from "${geo2.name}". Check-out recorded.`;
-              }
-              const rec_out={id:Date.now(),username:SESSION.username,type:"out",timestamp:Date.now(),location:loc,geoOk:geo2.ok,geoName:geo2.name||"",geoDist:geo2.dist??null};
+              const checkoutWarn=null; // no location warning on checkout
+              const _tsOut=_tsNow+1;
+              const rec_out={id:_tsOut,username:SESSION.username,type:"out",timestamp:_tsOut,location:loc,geoOk:geo2.ok,geoName:geo2.name||"",geoDist:geo2.dist??null};
               DB.attendance.push(rec_out);save(DB);
               gsPost({action:"addAttendance",data:{...rec_out,lat:loc?.lat||"",lng:loc?.lng||""}});
-              if(checkoutWarn) window._geoWarn=checkoutWarn; else delete window._geoWarn;
+              // Store checkout timestamp in sessionStorage so isIn() can trust it over ghost sheet records
+              sessionStorage.setItem("vibeLastCheckout_"+SESSION.username, String(_tsOut));
+              delete window._geoWarn;
+              _checkoutInProgress=false;
               refresh();
             }).catch(()=>{
-              const rec_outn={id:Date.now(),username:SESSION.username,type:"out",timestamp:Date.now(),location:null};
+              // Location failed — still save survey and check out without location
+              const todayCheckins3=DB.attendance.filter(r=>r.username===SESSION.username&&r.type==="in"&&new Date(r.timestamp).toDateString()===new Date().toDateString());
+              const checkInTs3=todayCheckins3.length?Math.min(...todayCheckins3.map(r=>r.timestamp)):Date.now();
+              const sur2={id:Date.now(),username:SESSION.username,timestamp:Date.now(),date:localDateStr(new Date(checkInTs3)),...answers};
+              DB.surveys.push(sur2);gsPost({action:"addSurvey",data:sur2});save(DB);
+              const _tsOutN=Date.now()+1;
+              const rec_outn={id:_tsOutN,username:SESSION.username,type:"out",timestamp:_tsOutN,location:null};
               DB.attendance.push(rec_outn);save(DB);
-              gsPost({action:"addAttendance",data:{...rec_outn,lat:"",lng:""}});refresh();
+              gsPost({action:"addAttendance",data:{...rec_outn,lat:"",lng:""}});
+              sessionStorage.setItem("vibeLastCheckout_"+SESSION.username, String(_tsOutN));
+              _checkoutInProgress=false;
+              refresh();
             });
           }, ()=>{
             // Survey cancelled — reset so user can try again
@@ -957,14 +1156,13 @@ function renderUser(){
             const isFreeRoam=desig==="team leader"||desig==="trainee";
 
             let geoWarning=null;
-            if(!isFreeRoam&&hasPersonalGeo&&geo.dist!=null&&geo.dist>200){
-              geoWarning=`⚠️ You are ${geo.dist}m away from "${geo.name}". Check-in recorded.`;
-            }
-            if(isFreeRoam&&geo.name&&geo.name!=="No office location set"&&geo.dist!=null&&geo.dist>200){
+            // Only warn if geo check FAILED (outside their assigned radius)
+            if(!geo.ok&&geo.name&&geo.name!=="No office location set"&&geo.dist!=null){
               geoWarning=`⚠️ You are ${geo.dist}m away from "${geo.name}". Check-in recorded.`;
             }
 
-            const rec_in={id:Date.now(),username:SESSION.username,type:"in",timestamp:Date.now(),location:{...loc,workLocation:userWorkLoc},geoOk:geo.ok,geoName:geo.name,geoDist:geo.dist??null};
+            const _tsIn=Date.now();
+            const rec_in={id:_tsIn,username:SESSION.username,type:"in",timestamp:_tsIn,location:{...loc,workLocation:userWorkLoc},geoOk:geo.ok,geoName:geo.name,geoDist:geo.dist??null};
             DB.attendance.push(rec_in);save(DB);
             gsPost({action:"addAttendance",data:{...rec_in,lat:loc?.lat||"",lng:loc?.lng||"",workLocation:userWorkLoc}});
             if(geoWarning) window._geoWarn=geoWarning; else delete window._geoWarn;
@@ -983,13 +1181,13 @@ function renderUser(){
       });
       content.appendChild(mainBtn);
 
-      // ── GEO WARNING BANNER (replaces alert popup) ─────────────────────────
-      if(window._geoWarn){
-        const warnBanner=el("div","geo-banner geo-warn",null,{marginTop:".8rem"});
-        warnBanner.innerHTML=`<span class="geo-icon">⚠️</span><div>${window._geoWarn}</div>`;
+      // Show geo warning only when currently checked in (stale warning after checkout = hide it)
+      if(window._geoWarn && isIn()){
+        const warnBanner=el("div","geo-banner geo-warn",null,{marginTop:".5rem"});
+        warnBanner.innerHTML=`<span class="geo-icon">⚠️</span><div style="font-size:.88rem">${window._geoWarn}</div>`;
         content.appendChild(warnBanner);
-        if(window._geoWarnTimer)clearTimeout(window._geoWarnTimer);
-        window._geoWarnTimer=setTimeout(()=>{ delete window._geoWarn; delete window._geoWarnTimer; },8000);
+      } else if(!isIn()){
+        delete window._geoWarn; // clear stale warning once checked out
       }
 
       const st=el("div","section-title","Today's Activity",{marginTop:"1.5rem"});
@@ -999,12 +1197,24 @@ function renderUser(){
       else{
         // Build today's day summary
         const todayDayMap={in:null,out:null,inRec:null,outRec:null,outLoc:null};
-        tr.forEach(r=>{
-          if(r.type==="in"&&(!todayDayMap.in||r.timestamp<todayDayMap.in)){todayDayMap.in=r.timestamp;todayDayMap.inRec=r;}
-          if(r.type==="out"&&(!todayDayMap.out||r.timestamp>todayDayMap.out)){todayDayMap.out=r.timestamp;todayDayMap.outRec=r;todayDayMap.outLoc=r.location||null;}
+        // First pass: earliest check-in
+        tr.filter(r=>r.type==="in").forEach(r=>{
+          if(!todayDayMap.in||r.timestamp<todayDayMap.in){todayDayMap.in=r.timestamp;todayDayMap.inRec=r;}
         });
+        // Second pass: latest checkout from DB records
+        tr.filter(r=>r.type==="out").forEach(r=>{
+          if(!todayDayMap.out||r.timestamp>todayDayMap.out){todayDayMap.out=r.timestamp;todayDayMap.outRec=r;todayDayMap.outLoc=r.location||null;}
+        });
+        // Also check sessionStorage — if user checked out this session and it's more recent, use it
+        const _sessionOut=parseInt(sessionStorage.getItem("vibeLastCheckout_"+SESSION.username)||"0");
+        if(_sessionOut&&_sessionOut>(todayDayMap.out||0)){
+          // Find the actual record in DB for this timestamp
+          const _sessionOutRec=myRecs().find(r=>r.type==="out"&&r.timestamp===_sessionOut)||myRecs().find(r=>r.type==="out"&&Math.abs(r.timestamp-_sessionOut)<2000);
+          todayDayMap.out=_sessionOut;
+          if(_sessionOutRec){todayDayMap.outRec=_sessionOutRec;todayDayMap.outLoc=_sessionOutRec.location||null;}
+        }
         const arr=getArrivalStatus(todayDayMap.in);
-        const dep=getDepartureStatus(todayDayMap.out);
+        const dep=getDepartureStatus(todayDayMap.out, todayDayMap.in);
         const inRec=todayDayMap.inRec;
         const outRec=todayDayMap.outRec;
         const inLoc=inRec?.location||null;
@@ -1091,20 +1301,23 @@ function renderUser(){
       content.appendChild(g3);
 
       const dayMap={};
-      mRecs.forEach(r=>{
+      // First pass: check-ins
+      mRecs.filter(r=>r.type==="in").forEach(r=>{
         const k=new Date(r.timestamp).toDateString();
         if(!dayMap[k])dayMap[k]={date:new Date(r.timestamp),in:null,out:null,loc:null,outLoc:null,inRec:null,outRec:null};
-        if(r.type==="in"&&(!dayMap[k].in||r.timestamp<dayMap[k].in)){
+        if(!dayMap[k].in||r.timestamp<dayMap[k].in){
           dayMap[k].in=r.timestamp;dayMap[k].loc=r.location;dayMap[k].inRec=r;
           if(r.outLocation&&!dayMap[k].outLoc)dayMap[k].outLoc=r.outLocation;
           if(r.outTimestamp&&!dayMap[k].out)dayMap[k].out=r.outTimestamp;
         }
-        if(r.type==="out"){
-          const outDate=new Date(r.timestamp).toDateString();
-          const matchKey=Object.keys(dayMap).find(k2=>dayMap[k2].in&&new Date(dayMap[k2].in).toDateString()===outDate&&(!dayMap[k2].out||r.timestamp>dayMap[k2].out));
-          const target=matchKey?dayMap[matchKey]:dayMap[k];
-          if(!target.out||r.timestamp>target.out){target.out=r.timestamp;target.outLoc=r.location||r.outLocation||null;target.outRec=r;}
-        }
+      });
+      // Second pass: always apply the LATEST checkout per day
+      mRecs.filter(r=>r.type==="out").forEach(r=>{
+        const outDate=new Date(r.timestamp).toDateString();
+        const matchKey=Object.keys(dayMap).find(k2=>new Date(dayMap[k2].date).toDateString()===outDate);
+        const target=matchKey?dayMap[matchKey]:null;
+        if(!target)return;
+        if(!target.out||r.timestamp>target.out){target.out=r.timestamp;target.outLoc=r.location||r.outLocation||null;target.outRec=r;}
       });
       const days=Object.values(dayMap).sort((a,b)=>b.date-a.date);
       const st1=el("div","section-title",`Attendance — ${new Date(selMonth+"-01").toLocaleString("default",{month:"long",year:"numeric"})}`);
@@ -1120,16 +1333,34 @@ function renderUser(){
           const mins=d.in&&d.out?Math.round((d.out-d.in)/60000):null;
           const hrs=mins?`${Math.floor(mins/60)}h ${mins%60}m`:"—";
           const arr=getArrivalStatus(d.in);
-          const dep=getDepartureStatus(d.out);
+          const dep=getDepartureStatus(d.out, d.in);
           const arrCell=arr?`<span class="timing-pill tp-${arr.type}">${arr.label}</span>`:"—";
           const depCell=dep?`<span class="timing-pill tp-${dep.type==="full"?"ontime":dep.type}">${dep.label}</span>`:"—";
           const geoRec=d.inRec||myRecs().find(r=>r.type==="in"&&r.timestamp===d.in);
           const inLoc=d.loc||(geoRec?.location)||null;
-          const inGeoCell=geoRec?.geoName
-            ?`<span style="font-size:.75rem;color:${geoRec.geoOk?"var(--gpa)":"var(--danger)"}">${geoRec.geoOk?"✅":"❌"} ${geoRec.geoName}</span>${inLoc?.lat?`<br><a href="https://maps.google.com/?q=${inLoc.lat},${inLoc.lng}" target="_blank" style="font-size:.72rem;color:var(--muted);text-decoration:none;font-family:var(--mono)">📍 ${inLoc.lat.toFixed(4)}, ${inLoc.lng.toFixed(4)}</a>`:""}`
+          // Build in-location cell with office badge — fallback to live check if no stored geoName
+          let inGeoName=geoRec?.geoName&&geoRec.geoName!=="No office location set"?geoRec.geoName:"";
+          let inGeoOk=!!geoRec?.geoOk, inGeoDist=geoRec?.geoDist??null;
+          if(!inGeoName&&inLoc?.lat){
+            const gLive=checkUserGeofence(inLoc.lat,inLoc.lng,SESSION.username);
+            if(gLive&&gLive.name&&gLive.name!=="No office location set"){inGeoName=gLive.name;inGeoOk=!!gLive.ok;inGeoDist=gLive.dist??null;}
+          }
+          const inDistStr=inGeoDist!=null?` · ${inGeoDist}m`:"";
+          const inGeoCell=inGeoName
+            ?`<div style="display:inline-flex;align-items:center;gap:3px;padding:2px 7px;border-radius:8px;font-size:.72rem;font-weight:700;background:${inGeoOk?"#38d9a922":"#ff5f6d22"};color:${inGeoOk?"var(--gpa)":"var(--danger)"};border:1px solid ${inGeoOk?"#38d9a955":"#ff5f6d55"};margin-bottom:2px">${inGeoOk?"✅":"❌"} ${inGeoName}${inDistStr}</div>${inLoc?.lat?`<br><a href="https://maps.google.com/?q=${inLoc.lat},${inLoc.lng}" target="_blank" style="font-size:.7rem;color:var(--muted);text-decoration:none;font-family:var(--mono)">📍 ${inLoc.lat.toFixed(4)}, ${inLoc.lng.toFixed(4)}</a>`:""}`
             :(inLoc?.lat?`<a href="https://maps.google.com/?q=${inLoc.lat},${inLoc.lng}" target="_blank" style="font-size:.75rem;color:var(--accent2);text-decoration:none;font-family:var(--mono)">📍 ${inLoc.lat.toFixed(4)}, ${inLoc.lng.toFixed(4)}</a>`:`<span style="color:var(--muted);font-size:.75rem">—</span>`);
           const outLoc=d.outLoc||(d.outRec?.location)||null;
-          const outGeoCell=outLoc?.lat?`<a href="https://maps.google.com/?q=${outLoc.lat},${outLoc.lng}" target="_blank" style="font-size:.75rem;color:var(--danger);text-decoration:none;font-family:var(--mono)">📍 ${outLoc.lat.toFixed(4)}, ${outLoc.lng.toFixed(4)}</a>`:`<span style="color:var(--muted);font-size:.75rem">—</span>`;
+          // Build out-location cell with office badge
+          let outGeoName=d.outRec?.geoName&&d.outRec.geoName!=="No office location set"?d.outRec.geoName:"";
+          let outGeoOk=!!d.outRec?.geoOk, outGeoDist=d.outRec?.geoDist??null;
+          if(!outGeoName&&outLoc?.lat){
+            const gLive2=checkUserGeofence(outLoc.lat,outLoc.lng,SESSION.username);
+            if(gLive2&&gLive2.name&&gLive2.name!=="No office location set"){outGeoName=gLive2.name;outGeoOk=!!gLive2.ok;outGeoDist=gLive2.dist??null;}
+          }
+          const outDistStr=outGeoDist!=null?` · ${outGeoDist}m`:"";
+          const outGeoCell=outGeoName
+            ?`<div style="display:inline-flex;align-items:center;gap:3px;padding:2px 7px;border-radius:8px;font-size:.72rem;font-weight:700;background:${outGeoOk?"#38d9a922":"#ff5f6d22"};color:${outGeoOk?"var(--gpa)":"var(--danger)"};border:1px solid ${outGeoOk?"#38d9a955":"#ff5f6d55"};margin-bottom:2px">${outGeoOk?"✅":"❌"} ${outGeoName}${outDistStr}</div>${outLoc?.lat?`<br><a href="https://maps.google.com/?q=${outLoc.lat},${outLoc.lng}" target="_blank" style="font-size:.7rem;color:var(--muted);text-decoration:none;font-family:var(--mono)">📍 ${outLoc.lat.toFixed(4)}, ${outLoc.lng.toFixed(4)}</a>`:""}`
+            :(outLoc?.lat?`<a href="https://maps.google.com/?q=${outLoc.lat},${outLoc.lng}" target="_blank" style="font-size:.75rem;color:var(--danger);text-decoration:none;font-family:var(--mono)">📍 ${outLoc.lat.toFixed(4)}, ${outLoc.lng.toFixed(4)}</a>`:`<span style="color:var(--muted);font-size:.75rem">—</span>`);
           tr2.innerHTML=`<td style="font-family:var(--mono);font-size:.8rem">${d.date.toLocaleDateString("en-GB",{weekday:"short",day:"2-digit",month:"short"})}</td>
             <td style="color:var(--accent2);font-family:var(--mono);font-size:.82rem">${d.in?new Date(d.in).toLocaleTimeString([],({"hour":"2-digit","minute":"2-digit"})):"—"}</td>
             <td style="color:var(--danger);font-family:var(--mono);font-size:.82rem">${d.out?new Date(d.out).toLocaleTimeString([],({"hour":"2-digit","minute":"2-digit"})):"—"}</td>
@@ -1215,7 +1446,7 @@ function renderUser(){
         const dayData=calDayMap[dateStr];
         const isAbsent=calAbsent.has(dateStr);
         const isToday=dateStr===todayDateStr;
-        const isWeekend=new Date(calYear,calMonthIdx,day).getDay()===0||new Date(calYear,calMonthIdx,day).getDay()===6;
+        const isWeekend=new Date(calYear,calMonthIdx,day).getDay()===0;
         const isFuture=dateStr>todayDateStr;
 
         let bg="transparent",color="var(--text)",border="1px solid transparent",dot=null;
@@ -1383,11 +1614,11 @@ function renderAdmin(){
 
   const content=el("div","content");dash.appendChild(content);
 
-  // Smart poll — slower during 9AM rush (8:45–9:30), normal otherwise
-  function getAdminPollMs(){ const h=new Date().getHours(),m=new Date().getMinutes(),t=h*60+m; return(t>=525&&t<=570)?120000:30000; }
+  // Smart poll — 15s normally, 60s during 9AM rush (8:45–9:30)
+  function getAdminPollMs(){ const h=new Date().getHours(),m=new Date().getMinutes(),t=h*60+m; return(t>=525&&t<=570)?60000:15000; }
   let adminPollInterval=null;
   if(window._adminPollTimeout)clearTimeout(window._adminPollTimeout);
-  function scheduleAdminPoll(){ adminPollInterval=window._adminPollTimeout=setTimeout(async()=>{ if(!SESSION)return; await loadFromSheet(); const u2=DB.users.find(x=>x.username===SESSION.username); if(u2&&u2.fullName&&u2.fullName.trim())SESSION.fullName=u2.fullName.trim(); refresh(); scheduleAdminPoll(); }, getAdminPollMs()); }
+  function scheduleAdminPoll(){ adminPollInterval=window._adminPollTimeout=setTimeout(async()=>{ if(!SESSION)return; await flushQueue(); await loadFromSheet(); const u2=DB.users.find(x=>x.username===SESSION.username); if(u2&&u2.fullName&&u2.fullName.trim())SESSION.fullName=u2.fullName.trim(); refresh(); scheduleAdminPoll(); }, getAdminPollMs()); }
   scheduleAdminPoll();
   soBtn.addEventListener("click",()=>{
     clearTimeout(adminPollInterval);window._adminRefresh=null;
@@ -1400,8 +1631,22 @@ function renderAdmin(){
     window._adminRefresh=refresh;
     content.innerHTML="";
     const regularUsers=DB.users.filter(u=>u.role!=="admin");
-    const allSurveys=DB.surveys||[];
-    const allAttend=DB.attendance.slice().sort((a,b)=>b.timestamp-a.timestamp);
+    // Merge queued (not-yet-synced) records so admin sees them immediately
+    const _adminQueue = loadQueue();
+    const _queuedAttend = _adminQueue
+      .filter(item => item.action === "addAttendance" && item.data)
+      .map(item => item.data)
+      .filter(r => r.username && r.timestamp);
+    const _queuedSurveys = _adminQueue
+      .filter(item => item.action === "addSurvey" && item.data)
+      .map(item => item.data)
+      .filter(s => s.username);
+    const _queuedIds = new Set(_queuedAttend.map(r => String(r.id||"")));
+    const _queuedSurveyIds = new Set(_queuedSurveys.map(s => String(s.id||"")));
+    const _baseAttend = DB.attendance.filter(r => !_queuedIds.has(String(r.id||"")));
+    const _baseSurveys = (DB.surveys||[]).filter(s => !_queuedSurveyIds.has(String(s.id||"")));
+    const allAttend = [..._baseAttend, ..._queuedAttend].sort((a,b)=>b.timestamp-a.timestamp);
+    const allSurveys = [..._baseSurveys, ..._queuedSurveys];
     const todayStr=localDateStr();
     function normDate(d){if(!d)return"";const s=String(d);return s.includes("T")?s.slice(0,10):s.slice(0,10);}
     const todaySurveys=allSurveys.filter(s=>normDate(s.date)===todayStr);
@@ -1515,8 +1760,8 @@ function renderAdmin(){
     content.appendChild(ds);
 
     // NAV TABS
-    const navRow=h("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:".6rem",marginBottom:"1.5rem"}});
-    [["users","👥 Users"],["records","📋 Attendance"],["export","📜 Policy Details"]].forEach(([key,lbl])=>{
+    const navRow=h("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:".6rem",marginBottom:"1.5rem"}});
+    [["users","👥 Users"],["records","📋 Attendance"],["export","📜 Policy Details"],["locations","📍 Locations"]].forEach(([key,lbl])=>{
       const btn=h("button",{className:"home-nav-btn",style:{background:curTab===key?"#2563eb":"#fff",color:curTab===key?"#fff":"#374151",boxShadow:curTab===key?"0 4px 14px #2563eb44":"0 1px 4px #0000001a",width:"100%",textAlign:"center"}},lbl);
       btn.addEventListener("click",()=>{curTab=key;if(key==="records")window._recQuick="today";refresh();});
       navRow.appendChild(btn);
@@ -1738,26 +1983,44 @@ function renderAdmin(){
         const d=new Date(ts);const m=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;return m===window._recMonth;
       }
 
-      const filtered=allAttend.filter(r=>inQuickRange(r.timestamp)&&(window._recUser==="all"||r.username===window._recUser));
+      const filteredIn=allAttend.filter(r=>r.type==="in"&&inQuickRange(r.timestamp)&&(window._recUser==="all"||r.username===window._recUser));
+      // Build a set of username+date keys (and also username+nextDay for overnight shifts)
+      const filteredInKeys=new Set();
+      filteredIn.forEach(r=>{
+        const d=new Date(r.timestamp);
+        filteredInKeys.add(r.username+"__"+d.toDateString());
+        // Also include next calendar day in case checkout crosses midnight
+        const next=new Date(d); next.setDate(next.getDate()+1);
+        filteredInKeys.add(r.username+"__"+next.toDateString());
+      });
+      // Grab checkout records for any matching day
+      const filteredOut=allAttend.filter(r=>r.type==="out"&&(window._recUser==="all"||r.username===window._recUser)&&filteredInKeys.has(r.username+"__"+new Date(r.timestamp).toDateString()));
+      const filtered=[...filteredIn,...filteredOut];
+
       const dayMap2={};
-      filtered.forEach(r=>{
+      // First pass: build entries from check-in records
+      filteredIn.forEach(r=>{
         const k=r.username+"__"+new Date(r.timestamp).toDateString();
         if(!dayMap2[k])dayMap2[k]={username:r.username,date:new Date(r.timestamp),in:null,out:null,loc:null,outLoc:null,inRec:null,outRec:null};
-        if(r.type==="in"&&(!dayMap2[k].in||r.timestamp<dayMap2[k].in)){
+        if(!dayMap2[k].in||r.timestamp<dayMap2[k].in){
           dayMap2[k].in=r.timestamp;dayMap2[k].loc=r.location;dayMap2[k].inRec=r;
           if(r.outLocation&&!dayMap2[k].outLoc){dayMap2[k].outLoc=r.outLocation;}
-          if(r.outTimestamp&&!dayMap2[k].out){dayMap2[k].out=r.outTimestamp;dayMap2[k].outRec=r;}
+          if(r.outTimestamp&&!dayMap2[k].out){dayMap2[k].out=r.outTimestamp;}
         }
-        if(r.type==="out"){
-          // Use the same-day key as the in-record if it exists, so checkout merges with check-in row
-          const outDate=new Date(r.timestamp).toDateString();
-          const matchKey=Object.keys(dayMap2).find(k2=>k2.startsWith(r.username+"__")&&dayMap2[k2].in&&new Date(dayMap2[k2].in).toDateString()===outDate&&(!dayMap2[k2].out||r.timestamp>dayMap2[k2].out));
-          const target=matchKey?dayMap2[matchKey]:dayMap2[k];
-          if(!target.out||r.timestamp>target.out){
-            target.out=r.timestamp;
-            target.outLoc=r.location||r.outLocation||null;
-            target.outRec=r;
-          }
+      });
+      // Second pass: apply checkout records — always take the LATEST checkout per day
+      filteredOut.forEach(r=>{
+        const outDate=new Date(r.timestamp).toDateString();
+        const matchKey=Object.keys(dayMap2).find(k2=>
+          k2.startsWith(r.username+"__")&&
+          new Date(dayMap2[k2].date).toDateString()===outDate
+        );
+        const target=matchKey?dayMap2[matchKey]:null;
+        if(!target)return; // no matching check-in, skip orphan checkout
+        if(!target.out||r.timestamp>target.out){
+          target.out=r.timestamp;
+          target.outLoc=r.location||r.outLocation||null;
+          target.outRec=r;
         }
       });
       const rows=Object.values(dayMap2).sort((a,b)=>b.date-a.date);
@@ -1826,7 +2089,7 @@ function renderAdmin(){
             const uInfo=regularUsers.find(u=>u.username===r.username);
             const displayN=(uInfo&&uInfo.fullName)?uInfo.fullName:r.username;
             const arr=getArrivalStatus(r.in);
-            const dep=getDepartureStatus(r.out);
+            const dep=getDepartureStatus(r.out, r.in);
             const arrCell=arr?`<span class="timing-pill tp-${arr.type}">${arr.label}</span>`:"—";
             const depCell=dep?`<span class="timing-pill tp-${dep.type==="full"?"ontime":dep.type}">${dep.label}</span>`:"—";
             const inRec=r.inRec||allAttend.find(x=>x.username===r.username&&x.type==="in"&&x.timestamp===r.in);
@@ -1843,15 +2106,19 @@ function renderAdmin(){
               const mapsUrl=`https://maps.google.com/?q=${lat},${lng}`;
               const coordStr=`${lat.toFixed(4)}, ${lng.toFixed(4)}`;
 
-              // Get geofence info — prefer stored geoName, else compute live
+              // Get geofence info — prefer stored geoName on record, else compute live via user's personal geofence
               let officeName="", dist=null, ok=false;
               if(rec?.geoName&&rec.geoName!=="No office location set"){
                 officeName=rec.geoName; dist=rec.geoDist??null; ok=!!rec.geoOk;
-              } else if((DB.officeLocations||[]).length){
-                const g=checkGeofence(lat,lng);
-                if(g.name&&g.name!=="No office location set"){ officeName=g.name; dist=g.dist; ok=g.ok; }
+              } else {
+                // Live fallback: use user's personal geofence (checkUserGeofence covers both personal + office locations)
+                const recUsername=rec?.username||r.username;
+                const g=checkUserGeofence(lat,lng,recUsername);
+                if(g&&g.name&&g.name!=="No office location set"){
+                  officeName=g.name; dist=g.dist??null; ok=!!g.ok;
+                }
               }
-              // Also try user's assigned office for checkout records
+              // Last resort: show user's officeName label (no distance badge)
               if(!officeName){
                 const uRec=DB.users.find(u=>u.username===(rec?.username||r.username));
                 if(uRec?.officeName) officeName=uRec.officeName;
@@ -1859,13 +2126,10 @@ function renderAdmin(){
 
               const workLoc=rawLoc?.workLocation||rec?.location?.workLocation||"";
               const workLocHtml=workLoc?`<div style="font-size:.7rem;font-weight:700;color:#a78bfa;margin-bottom:2px">🏢 ${workLoc}</div>`:"";
-              const tick=ok?"✅":"❌";
-              const tickColor=ok?"var(--gpa)":"var(--danger)";
-              const tickBg=ok?"#38d9a922":"#ff5f6d22";
-              const tickBorder=ok?"#38d9a955":"#ff5f6d55";
+              // Show office name + distance — neutral color, no red/green tick
               const distStr=dist!=null?` · ${dist}m`:"";
               const nameBadge=officeName
-                ?`<div style="display:inline-flex;align-items:center;gap:4px;margin-bottom:3px;padding:2px 8px;border-radius:10px;font-size:.72rem;font-weight:700;background:${tickBg};color:${tickColor};border:1px solid ${tickBorder}">${tick} ${officeName}${distStr}</div>`
+                ?`<div style="display:inline-flex;align-items:center;gap:4px;margin-bottom:3px;padding:2px 8px;border-radius:10px;font-size:.72rem;font-weight:700;background:#4f8ef711;color:var(--accent);border:1px solid #4f8ef733">🏢 ${officeName}${distStr}</div>`
                 :"";
               const coordHtml=`<a href="${mapsUrl}" target="_blank" style="color:var(--muted);font-size:.7rem;font-family:var(--mono);text-decoration:none;display:block;margin-top:2px">📍 ${coordStr}</a>`;
               return `${workLocHtml}${nameBadge}${coordHtml}`;
@@ -1907,8 +2171,6 @@ function renderAdmin(){
         renderPage();
       }
     }
-
-    // ── EXPORT / POLICY TAB ──
     if(curTab==="export"){
       const todayFull=new Date().toLocaleDateString("en-GB",{weekday:"long",day:"2-digit",month:"long",year:"numeric"});
       content.appendChild(el("div","section-title","Today's Counts — "+todayFull));
@@ -2034,7 +2296,7 @@ function renderAdmin(){
           Object.values(dm).forEach(d=>{
             if(d._inTs&&d._outTs){const m=Math.round((d._outTs-d._inTs)/60000);d.Hours=`${Math.floor(m/60)}h ${m%60}m`;}
             const arr=getArrivalStatus(d._inTs);
-            const dep=getDepartureStatus(d._outTs);
+            const dep=getDepartureStatus(d._outTs, d._inTs);
             d.Late_Arrival=arr?arr.label:"";
             d.Departure=dep?dep.label:"";
             delete d._inTs;delete d._outTs;
@@ -2241,12 +2503,13 @@ function renderAdmin(){
 // Run BEFORE markAbsences to avoid conflicting state
 (function cleanEarlyAbsences(){
   const now = new Date();
-  if (now.getDay() === 0) return; // Skip Sunday
+  if (now.getDay() === 0) return; // Skip Sunday only (Saturday is a working day)
   const nowMin = now.getHours() * 60 + now.getMinutes();
   const startMin = WORK_START_H * 60 + WORK_START_M;
   if (nowMin < startMin) {
     const todayStr = localDateStr(now);
-    DB.absences = (DB.absences || []).filter(a => a.date !== todayStr);
+    // Only remove auto-marked absences, not manually-added ones
+    DB.absences = (DB.absences || []).filter(a => !(a.date === todayStr && a.auto === true));
     save(DB);
   }
 })();
@@ -2292,49 +2555,8 @@ document.getElementById("app").appendChild(loadDiv);
 const timeout=setTimeout(()=>{route();},5000);
 loadFromSheet().then(()=>{clearTimeout(timeout);route();}).catch(()=>{clearTimeout(timeout);route();});
 
-// ── CHECKOUT REMINDER NOTIFICATION ───────────────────────────────────────────
-function scheduleCheckoutReminder(){
-  if(!('Notification' in window))return;
-  const now=new Date();
-  const reminderH=20,reminderM=0; // 8:00 PM
-  let remind=new Date(now.getFullYear(),now.getMonth(),now.getDate(),reminderH,reminderM,0,0);
-  if(now>=remind)return; // already past 8 PM today
-  const msUntil=remind-now;
-  setTimeout(()=>{
-    // Only notify if user is logged in and still checked in
-    if(!SESSION||SESSION.role==="admin")return;
-    const todayStr=new Date().toDateString();
-    const todayRecs=DB.attendance.filter(r=>r.username===SESSION.username&&new Date(r.timestamp).toDateString()===todayStr).sort((a,b)=>b.timestamp-a.timestamp);
-    const lastIn=todayRecs.find(r=>r.type==="in");
-    const lastOut=todayRecs.find(r=>r.type==="out");
-    const stillIn=lastIn&&(!lastOut||lastIn.timestamp>lastOut.timestamp);
-    if(!stillIn)return;
-    const name=SESSION.fullName||SESSION.username;
-    if(Notification.permission==="granted"){
-      new Notification("⏰ VIBE Attendance — Checkout Reminder",{
-        body:`Hi ${name}, it's 8:00 PM! Please check out before leaving.`,
-        icon:"favicon-96x96.png",
-        badge:"favicon-96x96.png",
-        tag:"checkout-reminder",
-        requireInteraction:true
-      });
-    } else if(Notification.permission==="default"){
-      Notification.requestPermission().then(p=>{
-        if(p==="granted") new Notification("⏰ VIBE Attendance — Checkout Reminder",{
-          body:`Hi ${name}, it's 8:00 PM! Please check out before leaving.`,
-          icon:"favicon-96x96.png",tag:"checkout-reminder",requireInteraction:true
-        });
-      });
-    }
-  },msUntil);
-}
 
-// Request notification permission early (on first user interaction)
-function requestNotifPermission(){
-  if('Notification' in window && Notification.permission==="default"){
-    Notification.requestPermission();
-  }
-}
+
 
 
 if('serviceWorker' in navigator){
