@@ -1,4 +1,5 @@
 <!DOCTYPE html>
+<!-- VIBE v202603081615 -->
 <html lang="en">
 <head>
 <meta charset="UTF-8"/>
@@ -2569,6 +2570,37 @@ if('serviceWorker' in navigator){
           console.log('✅ VIBE SW registered');
           navigator.serviceWorker.addEventListener('message',e=>{
             if(e.data?.type==='FLUSH_QUEUE') flushQueue();
+          });
+
+          // ── Force update check every time the page loads ──────────────────
+          reg.update();
+
+          // If a new SW is waiting (update already downloaded), activate it immediately
+          if(reg.waiting){
+            reg.waiting.postMessage({type:'SKIP_WAITING'});
+          }
+
+          // Listen for a new SW installing — when it finishes, activate + reload
+          reg.addEventListener('updatefound',()=>{
+            const newSW=reg.installing;
+            if(!newSW) return;
+            newSW.addEventListener('statechange',()=>{
+              if(newSW.state==='installed'&&navigator.serviceWorker.controller){
+                // New version ready — show a toast then reload
+                const toast=document.createElement('div');
+                toast.style.cssText='position:fixed;bottom:1.5rem;left:50%;transform:translateX(-50%);background:#4f8ef7;color:#fff;padding:.75rem 1.4rem;border-radius:12px;font-weight:700;font-size:.9rem;z-index:9999;box-shadow:0 4px 20px #00000044;display:flex;align-items:center;gap:.6rem;font-family:Sora,sans-serif';
+                toast.innerHTML='🔄 New version available — updating…';
+                document.body.appendChild(toast);
+                newSW.postMessage({type:'SKIP_WAITING'});
+                setTimeout(()=>window.location.reload(),1500);
+              }
+            });
+          });
+
+          // When controller changes (new SW took over), reload to get fresh assets
+          let refreshing=false;
+          navigator.serviceWorker.addEventListener('controllerchange',()=>{
+            if(!refreshing){ refreshing=true; window.location.reload(); }
           });
         })
         .catch(e=>console.log('SW error:',e));
