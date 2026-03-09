@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- VIBE v202603091500 checkin-fix: 7 more bugs fixed -->
+<!-- VIBE v202603091800 stability+integrity patch: security, timer leak, absence IDs, GPA pill, autoSync cleanup -->
 <html lang="en">
 <head>
 <meta charset="UTF-8"/>
@@ -242,70 +242,105 @@ select option{background:var(--surface);color:var(--text)}
 <div id="app"></div>
 
 <script>
+// ── VIBE v202603091800 — Final Stability & Data Integrity Patch ───────────────
 const KEY = "vibeAttendanceData";
-let SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwvX9h3XDveEw0zpwDvhru7j8dlaQx5VGAGOayx1tnn7GuohDq-H7UTZdBLx9o9N3Yh/exec";
-localStorage.setItem("vibeScriptUrl", SCRIPT_URL);
+const DEFAULT_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwvX9h3XDveEw0zpwDvhru7j8dlaQx5VGAGOayx1tnn7GuohDq-H7UTZdBLx9o9N3Yh/exec";
+
+// Securely get the script URL — never accept arbitrary URLs from localStorage
+function getScriptUrl() {
+  const stored = localStorage.getItem("vibeScriptUrl");
+  return (stored && stored.startsWith("https://script.google.com")) ? stored : DEFAULT_SCRIPT_URL;
+}
+let SCRIPT_URL = getScriptUrl();
 
 async function gsFetch(params) {
-  if (!SCRIPT_URL) return null;
+  const url = getScriptUrl();
+  if (!url) return null;
   try {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 8000); // 8s timeout
-    const res = await fetch(SCRIPT_URL + "?" + new URLSearchParams(params), { method: "GET", redirect: "follow", signal: controller.signal });
+    const timer = setTimeout(() => controller.abort(), 8000);
+    const res = await fetch(url + "?" + new URLSearchParams(params), { method: "GET", redirect: "follow", signal: controller.signal });
     clearTimeout(timer);
-    return JSON.parse(await res.text());
+    const text = await res.text();
+    try {
+      return JSON.parse(text);
+    } catch(e) {
+      console.error("GS GET: server returned non-JSON response");
+      return null;
+    }
   } catch(e) { console.error("GS GET error", e); return null; }
 }
 
 // ── RETRY QUEUE — never lose a check-in even if network fails ─────────────────
 const QUEUE_KEY = "vibePostQueue";
 function loadQueue(){ try{ return JSON.parse(localStorage.getItem(QUEUE_KEY)||"[]"); }catch{ return []; } }
-function saveQueue(q){ try{ localStorage.setItem(QUEUE_KEY, JSON.stringify(q)); }catch(e){} }
+
+// FIX: saveQueue now returns boolean so callers can detect storage failure
+function saveQueue(q){
+  try {
+    localStorage.setItem(QUEUE_KEY, JSON.stringify(q));
+    return true;
+  } catch(e) {
+    console.error("LocalStorage full — queue not saved!", e);
+    // Show a non-blocking toast warning (never use alert() in utility functions)
+    try {
+      const t = document.createElement("div");
+      t.style.cssText = "position:fixed;bottom:1.5rem;left:50%;transform:translateX(-50%);background:#ff5f6d;color:#fff;padding:.75rem 1.4rem;border-radius:12px;font-weight:700;font-size:.88rem;z-index:9999;box-shadow:0 4px 20px #00000044;font-family:Sora,sans-serif";
+      t.textContent = "⚠️ Storage full — attendance may not save. Clear browser cache.";
+      document.body.appendChild(t);
+      setTimeout(() => t.remove(), 6000);
+    } catch(_) {}
+    return false;
+  }
+}
 
 let _queueRunning = false;
 async function flushQueue(){
-  if(_queueRunning || !SCRIPT_URL) return;
+  const url = getScriptUrl();
+  // FIX: guard both _queueRunning and missing URL
+  if(_queueRunning || !url) return;
   _queueRunning = true;
   try {
-  let q = loadQueue();
-  let failCount = 0;
-  while(q.length > 0 && failCount < 3){
-    const item = q[0];
-    try{
-      const _ctrl = new AbortController();
-      const _timer = setTimeout(() => _ctrl.abort(), 8000);
-      const res = await fetch(SCRIPT_URL, { method:"POST", redirect:"follow", headers:{"Content-Type":"text/plain"}, body: JSON.stringify(item), signal: _ctrl.signal });
-      clearTimeout(_timer);
-      const text = await res.text();
-      // Only remove from queue if server confirmed success
-      let parsed = null;
-      try { parsed = JSON.parse(text); } catch(e){}
-      if(res.ok || (parsed && parsed.ok !== false)){
-        q.shift();
-        saveQueue(q);
-        failCount = 0;
-      } else {
+    let q = loadQueue();
+    let failCount = 0;
+    while(q.length > 0 && failCount < 3){
+      const item = q[0];
+      try{
+        const _ctrl = new AbortController();
+        const _timer = setTimeout(() => _ctrl.abort(), 8000);
+        const res = await fetch(url, { method:"POST", redirect:"follow", headers:{"Content-Type":"text/plain"}, body: JSON.stringify(item), signal: _ctrl.signal });
+        clearTimeout(_timer);
+        const text = await res.text();
+        let parsed = null;
+        try { parsed = JSON.parse(text); } catch(e){}
+        if(res.ok || (parsed && parsed.ok !== false)){
+          q.shift();
+          saveQueue(q);
+          failCount = 0;
+        } else {
+          failCount++;
+          if(failCount >= 3) break;
+          await new Promise(r=>setTimeout(r,1000)); // back-off 1s before retry
+        }
+      } catch(e){
         failCount++;
-        if(failCount >= 3) break; // give up after 3 consecutive failures
-        await new Promise(r=>setTimeout(r,1000)); // wait 1s before retry
+        if(failCount >= 3) break;
+        await new Promise(r=>setTimeout(r,1000));
       }
-    } catch(e){
-      failCount++;
-      if(failCount >= 3) break;
-      await new Promise(r=>setTimeout(r,1000));
     }
-  }
   } finally {
-  _queueRunning = false;
+    _queueRunning = false;
   }
 }
 
 async function gsPost(body) {
-  if (!SCRIPT_URL) return null;
-  // Add to queue first — guarantees no data loss
+  const url = getScriptUrl();
+  if (!url) return { ok: false, error: "No Script URL" };
   const q = loadQueue();
-  q.push(body); // don't add extra fields that may confuse Apps Script
-  saveQueue(q);
+  q.push(body);
+  const saved = saveQueue(q);
+  // FIX: propagate storage failure to caller so UI can show error
+  if (!saved) return { ok: false, error: "Storage Full" };
   flushQueue(); // try immediately, non-blocking
   return { ok: true };
 }
@@ -326,39 +361,36 @@ function stampCheckOut(){ _lastCheckOut = Date.now(); }
 function markAbsences() {
   const today = new Date();
   const todayStr = localDateStr(today);
-  const day = today.getDay();
-  if (day === 0) return; // Skip Sunday only (Saturday is a working day)
+  if (today.getDay() === 0) return; // Skip Sunday only
 
-  // Only mark absent AFTER work start time (9:00 AM)
   const nowMin = today.getHours() * 60 + today.getMinutes();
-  const startMin = WORK_START_H * 60 + WORK_START_M; // 9:00 AM
-  if (nowMin < startMin) return;
+  if (nowMin < 540) return; // Only after 9:00 AM
 
   if (!DB.absences) DB.absences = [];
-  const regularUsers = DB.users.filter(u => u.role !== "admin");
+
+  // Build set of users present today — check both DB and pending queue
+  const queue = loadQueue();
+  const pendingIns = new Set(queue
+    .filter(i => i.action === "addAttendance" && i.data?.type === "in" && localDateStr(new Date(i.data.timestamp)) === todayStr)
+    .map(i => i.data.username));
   const checkedInToday = new Set(
     DB.attendance
       .filter(r => r.type === "in" && localDateStr(new Date(r.timestamp)) === todayStr)
       .map(r => r.username)
   );
-  // Also check queue — pending check-ins must not result in absence marks
-  loadQueue()
-    .filter(item => item.action === "addAttendance" && item.data?.type === "in" && localDateStr(new Date(item.data.timestamp)) === todayStr)
-    .forEach(item => checkedInToday.add(item.data.username));
-  regularUsers.forEach(u => {
-    if (checkedInToday.has(u.username)) {
-      const hadAbsence = DB.absences.find(a => a.username === u.username && a.date === todayStr);
-      if (hadAbsence) {
-        DB.absences = DB.absences.filter(a => !(a.username === u.username && a.date === todayStr));
-        // Tell sheet to remove this absence now that user has checked in
-        gsPost({ action: "removeAbsence", data: { username: u.username, date: todayStr } });
-      }
-    } else {
-      if (!DB.absences.find(a => a.username === u.username && a.date === todayStr)) {
-        const newAbs = { id: Date.now() + Math.floor(Math.random()*1000), username: u.username, date: todayStr, auto: true };
-        DB.absences.push(newAbs);
-        gsPost({ action: "addAbsence", data: newAbs });
-      }
+
+  // FIX: use index-based unique IDs to avoid collisions in forEach
+  DB.users.filter(u => u.role !== "admin").forEach((u, idx) => {
+    const isPresent = checkedInToday.has(u.username) || pendingIns.has(u.username);
+    const existingAbs = DB.absences.find(a => a.username === u.username && a.date === todayStr);
+    if (isPresent && existingAbs) {
+      DB.absences = DB.absences.filter(a => !(a.username === u.username && a.date === todayStr));
+      gsPost({ action: "removeAbsence", data: { username: u.username, date: todayStr } });
+    } else if (!isPresent && !existingAbs) {
+      // FIX: unique ID using timestamp + index to prevent collision across users
+      const newAbs = { id: Date.now() * 1000 + idx, username: u.username, date: todayStr, auto: true };
+      DB.absences.push(newAbs);
+      gsPost({ action: "addAbsence", data: newAbs });
     }
   });
   save(DB);
@@ -416,7 +448,7 @@ async function loadFromSheet() {
       role: u.role||"user",
       geoLat: u.geoLat||"",
       geoLng: u.geoLng||"",
-      geoRadius: parseInt(u.geoRadius)||200,
+      geoRadius: (u.geoRadius !== undefined && u.geoRadius !== "") ? parseInt(u.geoRadius) || 200 : 200,
       officeName: u.officeName||""
     })).filter(u => u.username);
 
@@ -579,7 +611,7 @@ async function loadFromSheet() {
       const lastOutTs = Math.max(...outs.map(r => r.timestamp));
       ins.forEach(r => {
         // Keep check-in if it came BEFORE the last checkout (original check-in)
-        if(r.timestamp <= lastOutTs){
+        if(r.timestamp < lastOutTs){
           cleanedAttend.push(r);
         } else if(r.timestamp - lastOutTs > 5*60*1000){
           cleanedAttend.push(r); // legitimate re-checkin 5+ min later
@@ -845,7 +877,6 @@ function renderLogin(){
   let pwVisible=false;
   eyeBtn.addEventListener("click",()=>{pwVisible=!pwVisible;inP.type=pwVisible?"text":"password";eyeBtn.textContent=pwVisible?"🙈":"👁"});
   pwWrap.appendChild(inP);pwWrap.appendChild(eyeBtn);
-  const locWarn=el("div","alert alert-warn hidden",""); // kept for layout, no longer used at login
   const btn=h("button",{className:"btn btn-primary"},"Sign In");
 
   function doLogin(){
@@ -866,8 +897,8 @@ function renderLogin(){
   }
 
   function withLoginTimeout(promise, ms=6000){
-    // Resolves when promise resolves OR after ms — never hangs
-    return Promise.race([promise, new Promise(res=>setTimeout(res, ms))]);
+    // FIX: resolve with false on timeout so callers can distinguish timeout from success
+    return Promise.race([promise, new Promise(res=>setTimeout(()=>res(false), ms))]);
   }
 
   function proceedLogin(found, u, p){
@@ -892,7 +923,8 @@ function renderLogin(){
   }
   btn.addEventListener("click",doLogin);
   [inU,inP].forEach(i=>i.addEventListener("keydown",e=>{if(e.key==="Enter")doLogin()}));
-  [logo,sub,errBox,lbU,inU,lbP,pwWrap,btn,locWarn].forEach(x=>card.appendChild(x));
+  // FIX: removed unused locWarn element (was always hidden, never used)
+  [logo,sub,errBox,lbU,inU,lbP,pwWrap,btn].forEach(x=>card.appendChild(x));
   wrap.appendChild(card);render(wrap);
 }
 
@@ -1004,6 +1036,8 @@ function renderUser(){
     delete window._recQuick;delete window._recUser;delete window._recMonth;
     delete window._userSearch;delete window._geoWarn;
     if(window._syncBadgeTimerRef){clearInterval(window._syncBadgeTimerRef);window._syncBadgeTimerRef=null;}
+    // FIX: also clear autoSyncInterval on user sign-out (was only cleared on admin sign-out)
+    if(autoSyncInterval){clearInterval(autoSyncInterval);autoSyncInterval=null;}
     if(SESSION) sessionStorage.removeItem("vibeLastCheckout_"+SESSION.username);
     SESSION=null;route();
   });
@@ -1049,9 +1083,11 @@ function renderUser(){
     updateSyncBadge();
   });
   updateSyncBadge();
-  const _syncBadgeTimer = window._syncBadgeTimerRef = setInterval(()=>{ updateSyncBadge(); }, 5000);
+  // FIX: only track via window._syncBadgeTimerRef so refresh() can reliably clear it
+  // The separate const was leaking — each renderUser() call left an orphaned interval
+  window._syncBadgeTimerRef = setInterval(()=>{ updateSyncBadge(); }, 5000);
   // Clean up timer when user signs out
-  soBtn.addEventListener("click", ()=>clearInterval(_syncBadgeTimer));
+  soBtn.addEventListener("click", ()=>{ if(window._syncBadgeTimerRef){clearInterval(window._syncBadgeTimerRef);window._syncBadgeTimerRef=null;} });
   tbR.appendChild(syncStatusBadge);
   tb.appendChild(tbR);dash.appendChild(tb);
 
@@ -1320,9 +1356,10 @@ function renderUser(){
           const dot=el("span","status-dot "+(r.type==="in"?"dot-in":"dot-out"));
           const info=h("div",{style:{flex:1}});
           const label=h("div",{style:{fontWeight:"600",fontSize:".88rem"}},r.type==="in"?"✅ Checked In":"🔴 Checked Out");
+          // FIX: use optional chaining to prevent crash when location is null
           const locLbl=r.geoName&&r.geoName!=="No office location set"
             ?`📍 ${r.geoName}`
-            :(r.location?`📍 ${r.location.lat.toFixed(4)}, ${r.location.lng.toFixed(4)}`:"No location");
+            :(r.location?.lat!=null?`📍 ${r.location.lat.toFixed(4)}, ${r.location.lng.toFixed(4)}`:"No location");
           const locEl=el("div","rec-loc",locLbl);
           info.appendChild(label);info.appendChild(locEl);
           const time=el("div","rec-time",new Date(r.timestamp).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"}));
@@ -1383,9 +1420,9 @@ function renderUser(){
           const mins=d.in&&d.out?Math.round((d.out-d.in)/60000):null;
           const hrs=mins?`${Math.floor(mins/60)}h ${mins%60}m`:"—";
           const hrsVal=mins?mins/60:null;
-          const hrsColor=hrsVal>=8?"var(--gpa)":hrsVal>=4?"var(--warn)":"var(--danger)";
-          const hrsBg=hrsVal>=8?"#38d9a922":hrsVal>=4?"#ffd16622":"#ff5f6d22";
-          const hrsBorder=hrsVal>=8?"#38d9a944":hrsVal>=4?"#ffd16644":"#ff5f6d44";
+          const hrsColor=!mins?"var(--muted)":hrsVal>=8?"var(--gpa)":hrsVal>=4?"var(--warn)":"var(--danger)";
+          const hrsBg=!mins?"transparent":hrsVal>=8?"#38d9a922":hrsVal>=4?"#ffd16622":"#ff5f6d22";
+          const hrsBorder=!mins?"transparent":hrsVal>=8?"#38d9a944":hrsVal>=4?"#ffd16644":"#ff5f6d44";
           const hrsCell=mins?`<span style="font-size:.72rem;padding:.15rem .45rem;border-radius:6px;background:${hrsBg};color:${hrsColor};border:1px solid ${hrsBorder};font-family:var(--mono);font-weight:700">${hrs}</span>`:`<span style="color:var(--muted);font-size:.75rem">—</span>`;
           const arr=getArrivalStatus(d.in);
           const dep=getDepartureStatus(d.out, d.in);
@@ -1461,6 +1498,8 @@ function renderUser(){
       nextBtn.addEventListener("click",()=>{
         const d=new Date(window._calMonth+"-01");d.setMonth(d.getMonth()+1);
         window._calMonth=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;refresh();});
+      // FIX: disable next button when already at current month — no future navigation
+      if(window._calMonth>=curMKS) nextBtn.disabled=true;
       calNav.appendChild(prevBtn);calNav.appendChild(calTitle);calNav.appendChild(nextBtn);
       content.appendChild(calNav);
 
@@ -1795,9 +1834,11 @@ function renderAdmin(){
     homeGrid.appendChild(c2);
 
     const c3=el("div","home-card");
-    c3.innerHTML=`<div class="big-num" style="color:#7c3aed">${todayPolicy}</div><div class="card-label">Today Policy</div>`;
+    c3.innerHTML=`<div class="big-num" style="color:#7c3aed">${totalPolicy}</div><div class="card-label">Month Total Policy</div>`;
     const p3=h("div",{style:{marginTop:".6rem",display:"flex",gap:".5rem",flexWrap:"wrap"}});
-    [["RSA: "+todayRsa,"#fef3c7","#92400e"],["GPA: "+todayGpa,"#d1fae5","#065f46"]].forEach(([txt,bg,col])=>{
+    const totalRsa=allSurveys.reduce((s,r)=>s+(parseInt(r.rsa)||0),0);
+    const totalGpa=allSurveys.reduce((s,r)=>s+(parseInt(r.gpa)||0),0);
+    [["RSA: "+totalRsa,"#fef3c7","#92400e"],["GPA: "+totalGpa,"#d1fae5","#065f46"]].forEach(([txt,bg,col])=>{
       p3.appendChild(h("span",{style:{background:bg,color:col,fontSize:".72rem",padding:".2rem .55rem",borderRadius:"8px",fontWeight:"600"}},txt));
     });
     c3.appendChild(p3);homeGrid.appendChild(c3);
@@ -2370,7 +2411,7 @@ function renderAdmin(){
         tr3.innerHTML=`<td><span style="font-weight:600">${displayN}</span><br><span style="font-size:.72rem;color:var(--muted);font-family:var(--mono)">${u.username}${u.designation?" · "+u.designation:""}${u.location?" · 📍 "+u.location:""}</span></td>
           <td><span class="pill pill-pend">${uS.reduce((s,r)=>s+(parseInt(r.policy)||0),0)}</span></td>
           <td><span class="pill pill-yes">${uS.reduce((s,r)=>s+(parseInt(r.rsa)||0),0)}</span></td>
-          <td><span class="pill pill-pend">${uS.reduce((s,r)=>s+(parseInt(r.gpa)||0),0)}</span></td>
+          <td><span class="pill pill-gpa">${uS.reduce((s,r)=>s+(parseInt(r.gpa)||0),0)}</span></td>
           <td><span class="pill" style="background:#4f8ef722;color:var(--accent);border:1px solid #4f8ef744">${uD}</span></td>`;
         tb3.appendChild(tr3);
       });
@@ -2528,9 +2569,11 @@ function renderAdmin(){
   const startMin = WORK_START_H * 60 + WORK_START_M;
   if (nowMin < startMin) {
     const todayStr = localDateStr(now);
+    const before = (DB.absences||[]).length;
     // Only remove auto-marked absences, not manually-added ones
     DB.absences = (DB.absences || []).filter(a => !(a.date === todayStr && a.auto === true));
-    save(DB);
+    // FIX: only save if something actually changed — avoids unnecessary write on every page load
+    if(DB.absences.length !== before) save(DB);
   }
 })();
 
