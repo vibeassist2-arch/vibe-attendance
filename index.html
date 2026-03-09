@@ -439,13 +439,19 @@ async function loadFromSheet() {
       }
     }
 
+    // Pre-build local type map — if local DB knows a record is type:"out", trust it
+    const _localTypeMap = {};
+    DB.attendance.forEach(r => { if(r.id) _localTypeMap[String(r.id)] = r.type; });
+
     const sheetAttend = (result.attendance||[]).map(r => {
       const lat = parseFloat(r.lat), lng = parseFloat(r.lng);
       const outLat = parseFloat(r.outLat), outLng = parseFloat(r.outLng);
       const validLoc = (r.lat && r.lng && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) ? {lat, lng, workLocation: r.workLocation||""} : null;
       const validOutLoc = (r.outLat && r.outLng && outLat >= -90 && outLat <= 90 && outLng >= -180 && outLng <= 180) ? {lat: outLat, lng: outLng} : null;
       const rType = (r.type||"").toString().trim().toLowerCase();
-      const inferredType = rType || (r.lat ? "in" : "out");
+      // If sheet doesn't have type, check local DB first (avoids checkout-with-lat being inferred as "in")
+      const localType = r.id ? (_localTypeMap[String(r.id)] || "") : "";
+      const inferredType = rType || localType || (r.lat ? "in" : "out");
       // Parse geoOk correctly — sheet stores it as string "true"/"false"
       const geoOk = r.geoOk === true || r.geoOk === "true" || r.geoOk === 1 || r.geoOk === "1";
       return {
@@ -518,6 +524,32 @@ async function loadFromSheet() {
       });
 
     let mergedAttend = Object.values(allAttendById);
+
+    // ── TYPE CORRECTION PASS: fix checkout rows that were parsed as "in" ──
+    // If a user has 2+ "in" records on same day and local DB says one is "out", correct it
+    // Also: if user has no "out" record but has 2+ "in" records, the later one is likely the checkout
+    const _byUserDay2 = {};
+    mergedAttend.forEach(r => {
+      const dk = r.username + "__" + new Date(r.timestamp).toDateString();
+      if(!_byUserDay2[dk]) _byUserDay2[dk] = [];
+      _byUserDay2[dk].push(r);
+    });
+    mergedAttend = mergedAttend.map(r => {
+      if(r.type !== "in") return r; // only fix "in" records that might be mistyped
+      const dk = r.username + "__" + new Date(r.timestamp).toDateString();
+      const dayRecs = _byUserDay2[dk] || [];
+      const hasRealOut = dayRecs.some(x => x.type === "out");
+      if(hasRealOut) return r; // already have a proper out record, no correction needed
+      const allIns = dayRecs.filter(x => x.type === "in").sort((a,b) => a.timestamp - b.timestamp);
+      if(allIns.length < 2) return r; // only one check-in, nothing to correct
+      // Multiple "in" records, no "out" — check if local DB has the later one as "out"
+      const localRec = r.id ? DB.attendance.find(x => String(x.id) === String(r.id)) : null;
+      if(localRec && localRec.type === "out") return {...r, type: "out"};
+      // Also check queue
+      const queueRec = _queue.find(item => item.action === "addAttendance" && item.data?.id && String(item.data.id) === String(r.id));
+      if(queueRec && queueRec.data.type === "out") return {...r, type: "out"};
+      return r;
+    });
 
     // ── DEDUPLICATE: remove ghost check-ins that appear after a checkout ──
     // Rule: only drop check-in records that appear AFTER a checkout (ghost records from sheet echo)
@@ -1660,7 +1692,29 @@ function renderAdmin(){
     const _queuedSurveyIds = new Set(_queuedSurveys.map(s => String(s.id||"")));
     const _baseAttend = DB.attendance.filter(r => !_queuedIds.has(String(r.id||"")));
     const _baseSurveys = (DB.surveys||[]).filter(s => !_queuedSurveyIds.has(String(s.id||"")));
-    const allAttend = [..._baseAttend, ..._queuedAttend].sort((a,b)=>b.timestamp-a.timestamp);
+    // Build raw merged list
+    let allAttend = [..._baseAttend, ..._queuedAttend].sort((a,b)=>b.timestamp-a.timestamp);
+
+    // ── ADMIN TYPE-CORRECTION: fix checkout rows mistyped as "in" by sheet ──
+    // If user has 2+ "in" records on same day and no "out", the later one is the checkout
+    const _adByUD = {};
+    allAttend.forEach(r => {
+      const dk = r.username+"__"+new Date(r.timestamp).toDateString();
+      if(!_adByUD[dk]) _adByUD[dk] = [];
+      _adByUD[dk].push(r);
+    });
+    allAttend = allAttend.map(r => {
+      if(r.type !== "in") return r;
+      const dk = r.username+"__"+new Date(r.timestamp).toDateString();
+      const dayRecs = _adByUD[dk] || [];
+      if(dayRecs.some(x => x.type === "out")) return r; // already have an out record
+      const allIns = dayRecs.filter(x => x.type === "in").sort((a,b) => a.timestamp - b.timestamp);
+      if(allIns.length < 2) return r; // only one check-in, nothing to fix
+      // Multiple "in" records, no "out" record — latest one is the checkout
+      const latestInTs = Math.max(...allIns.map(x => x.timestamp));
+      if(r.timestamp === latestInTs) return {...r, type: "out"}; // correct the latest "in" to "out"
+      return r;
+    });
     const allSurveys = [..._baseSurveys, ..._queuedSurveys];
     const todayStr=localDateStr();
     function normDate(d){if(!d)return"";const s=String(d);return s.includes("T")?s.slice(0,10):s.slice(0,10);}
