@@ -294,6 +294,23 @@ function saveQueue(q){
   }
 }
 
+// Register background sync so the SW retries when connectivity returns
+async function requestBackgroundSync() {
+  if (!('serviceWorker' in navigator)) return;
+  if (!('SyncManager' in window)) {
+    // Fallback for Safari/Firefox: flush immediately if online
+    if (navigator.onLine) flushQueue();
+    return;
+  }
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    await reg.sync.register('vibe-sync');
+  } catch (err) {
+    console.warn('Background sync registration failed:', err);
+    if (navigator.onLine) flushQueue();
+  }
+}
+
 let _queueRunning = false;
 async function flushQueue(){
   const url = getScriptUrl();
@@ -319,12 +336,12 @@ async function flushQueue(){
           failCount = 0;
         } else {
           failCount++;
-          if(failCount >= 3) break;
+          if(failCount >= 3) { requestBackgroundSync(); break; }
           await new Promise(r=>setTimeout(r,1000)); // back-off 1s before retry
         }
       } catch(e){
         failCount++;
-        if(failCount >= 3) break;
+        if(failCount >= 3) { requestBackgroundSync(); break; }
         await new Promise(r=>setTimeout(r,1000));
       }
     }
