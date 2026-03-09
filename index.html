@@ -722,7 +722,7 @@ function checkUserGeofence(userLat,userLng,username){
   if(u&&u.geoLat&&u.geoLng){
     const d=haversineDistance(userLat,userLng,parseFloat(u.geoLat),parseFloat(u.geoLng));
     const radius=parseInt(u.geoRadius)||200;
-    const name=u.officeName||u.location||"Assigned Location";
+    const name=u.officeName||u.location||"";
     return{ok:d<=radius,name,dist:Math.round(d),radius};
   }
   // No location assigned — allow check-in freely, no geofence applied
@@ -1191,17 +1191,11 @@ function renderUser(){
           const userWorkLoc=meUserRec?.location||"";
           getLocation().then(loc=>{
             const geo=checkUserGeofence(loc.lat,loc.lng,SESSION.username);
-            let geoWarning=null;
-            // Only warn if geo check FAILED (outside their assigned radius)
-            if(!geo.ok&&geo.name&&geo.name!=="No office location set"&&geo.dist!=null){
-              geoWarning=`⚠️ You are ${geo.dist}m away from "${geo.name}". Check-in recorded.`;
-            }
-
             const _tsIn=Date.now();
             const rec_in={id:_tsIn,username:SESSION.username,type:"in",timestamp:_tsIn,location:{...loc,workLocation:userWorkLoc},geoOk:geo.ok,geoName:geo.name||"",geoDist:geo.dist??null,noLocationSet:geo.noLocationSet||false};
             DB.attendance.push(rec_in);save(DB);
             gsPost({action:"addAttendance",data:{...rec_in,lat:loc?.lat||"",lng:loc?.lng||"",workLocation:userWorkLoc}});
-            if(geoWarning) window._geoWarn=geoWarning; else delete window._geoWarn;
+            delete window._geoWarn;
             refresh();
           }).catch(msg=>{_lastCheckIn=0;mainBtn.disabled=false;mainBtn.textContent="▶ Check In"; // reset debounce so user can retry after error
             // Show inline error instead of alert()
@@ -2438,8 +2432,12 @@ function renderAdmin(){
     const iGeoLng=h("input",{type:"hidden",value:u.geoLng||""});
     geoSec.appendChild(iGeoLat);geoSec.appendChild(iGeoLng);
     coordPasteInp.addEventListener("input",()=>{
-      const p=coordPasteInp.value.split(",").map(s=>s.trim());
-      if(p.length>=2&&!isNaN(p[0])&&!isNaN(p[1])){iGeoLat.value=p[0];iGeoLng.value=p[1];}
+      const raw=coordPasteInp.value.trim();
+      if(!raw){iGeoLat.value="";iGeoLng.value="";return;} // cleared — wipe hidden fields
+      const p=raw.split(",").map(s=>s.trim());
+      if(p.length>=2&&!isNaN(parseFloat(p[0]))&&!isNaN(parseFloat(p[1]))){
+        iGeoLat.value=parseFloat(p[0]);iGeoLng.value=parseFloat(p[1]);
+      }
     });
     coordPasteFg.appendChild(coordPasteLbl);coordPasteFg.appendChild(coordPasteInp);
 
@@ -2457,8 +2455,14 @@ function renderAdmin(){
       if(!name){showModalErr("Full name is required.");return}
       if(!uid||!pw){showModalErr("User ID and password required.");return}
       if(uid!==u.username&&DB.users.find(x=>x.username===uid)){showModalErr("User ID already exists.");return}
+      // Validate geo coords if provided
+      if(geoLat||geoLng){
+        const gLat=parseFloat(geoLat),gLng=parseFloat(geoLng);
+        if(isNaN(gLat)||isNaN(gLng)||gLat<-90||gLat>90||gLng<-180||gLng>180){showModalErr("Invalid coordinates. Paste from Google Maps (e.g. 13.0827, 80.2707).");return}
+      }
+      const validRadius=Math.min(2000,Math.max(50,parseInt(geoRadius)||200));
       const idx=DB.users.findIndex(x=>x.username===u.username);
-      DB.users[idx]={...DB.users[idx],username:uid,password:pw,fullName:name,userId:uid,designation:des,location:loc,geoLat:geoLat||"",geoLng:geoLng||"",geoRadius:parseInt(geoRadius)||200,officeName:officeName||""};
+      DB.users[idx]={...DB.users[idx],username:uid,password:pw,fullName:name,userId:uid,designation:des,location:loc,geoLat:geoLat||"",geoLng:geoLng||"",geoRadius:validRadius,officeName:officeName||""};
       if(uid!==u.username){
         DB.attendance=DB.attendance.map(r=>r.username===u.username?{...r,username:uid}:r);
         DB.surveys=(DB.surveys||[]).map(s=>s.username===u.username?{...s,username:uid}:s);
