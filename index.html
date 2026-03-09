@@ -351,7 +351,7 @@ function markAbsences() {
       }
     } else {
       if (!DB.absences.find(a => a.username === u.username && a.date === todayStr)) {
-        const newAbs = { id: Date.now() + Math.random(), username: u.username, date: todayStr, auto: true };
+        const newAbs = { id: Date.now() + Math.floor(Math.random()*1000), username: u.username, date: todayStr, auto: true };
         DB.absences.push(newAbs);
         gsPost({ action: "addAbsence", data: newAbs });
       }
@@ -542,12 +542,17 @@ async function loadFromSheet() {
       if(hasRealOut) return r; // already have a proper out record, no correction needed
       const allIns = dayRecs.filter(x => x.type === "in").sort((a,b) => a.timestamp - b.timestamp);
       if(allIns.length < 2) return r; // only one check-in, nothing to correct
-      // Multiple "in" records, no "out" — check if local DB has the later one as "out"
+      // Only trust local DB / queue — not guesswork
       const localRec = r.id ? DB.attendance.find(x => String(x.id) === String(r.id)) : null;
       if(localRec && localRec.type === "out") return {...r, type: "out"};
-      // Also check queue
       const queueRec = _queue.find(item => item.action === "addAttendance" && item.data?.id && String(item.data.id) === String(r.id));
       if(queueRec && queueRec.data.type === "out") return {...r, type: "out"};
+      // Safe time-based correction: earliest in <= 10AM AND this record >= 1PM → checkout
+      const earliestIn2 = allIns[0];
+      const earliestH2 = new Date(earliestIn2.timestamp).getHours();
+      const thisH = new Date(r.timestamp).getHours();
+      const latestInTs2 = Math.max(...allIns.map(x => x.timestamp));
+      if(earliestH2 <= 10 && thisH >= 13 && r.timestamp === latestInTs2) return {...r, type: "out"};
       return r;
     });
 
@@ -831,7 +836,7 @@ function renderLogin(){
   let pwVisible=false;
   eyeBtn.addEventListener("click",()=>{pwVisible=!pwVisible;inP.type=pwVisible?"text":"password";eyeBtn.textContent=pwVisible?"🙈":"👁"});
   pwWrap.appendChild(inP);pwWrap.appendChild(eyeBtn);
-  const locWarn=el("div","alert alert-warn hidden","📍 Please click Allow when location permission appears.");
+  const locWarn=el("div","alert alert-warn hidden",""); // kept for layout, no longer used at login
   const btn=h("button",{className:"btn btn-primary"},"Sign In");
 
   function doLogin(){
@@ -866,17 +871,14 @@ function renderLogin(){
       });
       return;
     }
-    btn.disabled=true;btn.textContent="Syncing data…";locWarn.classList.remove("hidden");
+    btn.disabled=true;btn.textContent="Syncing data…";
     withLoginTimeout(loadFromSheet()).finally(()=>{
-      btn.textContent="Getting location…";
-      getLocation().then(loc=>{
-        const u2=DB.users.find(x=>x.username===found.username)||found;
-        const fn=u2.fullName&&u2.fullName.trim()?u2.fullName.trim():u2.username.charAt(0).toUpperCase()+u2.username.slice(1).toLowerCase();
-        SESSION={username:u2.username,fullName:fn,role:"user",location:loc};
-        // Clear any stale checkout flag from previous session
-        sessionStorage.removeItem("vibeLastCheckout_"+SESSION.username);
-        route();
-      }).catch(msg=>{errBox.textContent=msg;errBox.classList.remove("hidden");btn.disabled=false;btn.textContent="Sign In";locWarn.classList.add("hidden");});
+      const u2=DB.users.find(x=>x.username===found.username)||found;
+      const fn=u2.fullName&&u2.fullName.trim()?u2.fullName.trim():u2.username.charAt(0).toUpperCase()+u2.username.slice(1).toLowerCase();
+      SESSION={username:u2.username,fullName:fn,role:"user"};
+      // Clear any stale checkout flag from previous session
+      sessionStorage.removeItem("vibeLastCheckout_"+SESSION.username);
+      route();
     });
   }
   btn.addEventListener("click",doLogin);
@@ -1696,7 +1698,8 @@ function renderAdmin(){
     let allAttend = [..._baseAttend, ..._queuedAttend].sort((a,b)=>b.timestamp-a.timestamp);
 
     // ── ADMIN TYPE-CORRECTION: fix checkout rows mistyped as "in" by sheet ──
-    // If user has 2+ "in" records on same day and no "out", the later one is the checkout
+    // SAFE RULE: only promote latest "in" to "out" if it looks like end-of-day
+    // (earliest in <= 10AM AND latest in >= 3PM) — avoids promoting a legitimate re-check-in
     const _adByUD = {};
     allAttend.forEach(r => {
       const dk = r.username+"__"+new Date(r.timestamp).toDateString();
@@ -1707,12 +1710,18 @@ function renderAdmin(){
       if(r.type !== "in") return r;
       const dk = r.username+"__"+new Date(r.timestamp).toDateString();
       const dayRecs = _adByUD[dk] || [];
-      if(dayRecs.some(x => x.type === "out")) return r; // already have an out record
+      if(dayRecs.some(x => x.type === "out")) return r; // already have a real out record
       const allIns = dayRecs.filter(x => x.type === "in").sort((a,b) => a.timestamp - b.timestamp);
       if(allIns.length < 2) return r; // only one check-in, nothing to fix
-      // Multiple "in" records, no "out" record — latest one is the checkout
-      const latestInTs = Math.max(...allIns.map(x => x.timestamp));
-      if(r.timestamp === latestInTs) return {...r, type: "out"}; // correct the latest "in" to "out"
+      const earliestIn = allIns[0];
+      const latestIn   = allIns[allIns.length - 1];
+      const earliestH = new Date(earliestIn.timestamp).getHours();
+      const latestH   = new Date(latestIn.timestamp).getHours();
+      // Only correct if pattern looks like check-in/checkout (morning in, afternoon/evening out)
+      // Earliest in before 11AM AND latest in at or after 1PM — safe to treat latest as checkout
+      if(earliestH <= 10 && latestH >= 13 && r.timestamp === latestIn.timestamp){
+        return {...r, type: "out"};
+      }
       return r;
     });
     const allSurveys = [..._baseSurveys, ..._queuedSurveys];
