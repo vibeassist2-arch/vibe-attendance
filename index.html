@@ -481,12 +481,22 @@ async function loadFromSheet() {
     const allAttendById = {};
     sheetAttend.forEach(r => {
       const key = r.id ? String(r.id) : (r.username + r.timestamp);
-      // Only use sheet record if local doesn't have a newer version
+      // Prefer whichever record has more data (sheet may have outTimestamp local doesn't)
       const local = localById[key];
-      if(local && local.timestamp >= r.timestamp){
-        allAttendById[key] = local; // local is same age or newer — keep local
+      if(local && local.timestamp > r.timestamp){
+        allAttendById[key] = local; // local is strictly newer — keep local
+      } else if(local && local.timestamp === r.timestamp){
+        // Same check-in time — merge both: keep local fields but adopt sheet's outTimestamp/outLocation if local is missing them
+        allAttendById[key] = {
+          ...r,
+          ...local,
+          outTimestamp: local.outTimestamp || r.outTimestamp || 0,
+          outLocation:  local.outLocation  || r.outLocation  || null,
+          geoName:      local.geoName      || r.geoName      || "",
+          geoDist:      local.geoDist      ?? r.geoDist      ?? null,
+        };
       } else {
-        allAttendById[key] = r;
+        allAttendById[key] = r; // sheet is newer — use sheet record
       }
     });
 
