@@ -1624,9 +1624,14 @@ function renderAdmin(){
       .filter(s => s.username);
     const _queuedIds = new Set(_queuedAttend.map(r => String(r.id||"")));
     const _queuedSurveyIds = new Set(_queuedSurveys.map(s => String(s.id||"")));
+    // Also pull queued checkouts so they show in admin table before sheet confirms
+    const _queuedOut = _adminQueue
+      .filter(item => item.action === "addAttendance" && item.data?.type === "out" && item.data?.username && item.data?.timestamp)
+      .map(item => ({...item.data, type:"out"}));
+    _queuedOut.forEach(r => _queuedIds.add(String(r.id||"")));
     const _baseAttend = DB.attendance.filter(r => !_queuedIds.has(String(r.id||"")));
     const _baseSurveys = (DB.surveys||[]).filter(s => !_queuedSurveyIds.has(String(s.id||"")));
-    const allAttend = [..._baseAttend, ..._queuedAttend].sort((a,b)=>b.timestamp-a.timestamp);
+    const allAttend = [..._baseAttend, ..._queuedAttend, ..._queuedOut].sort((a,b)=>b.timestamp-a.timestamp);
     const allSurveys = [..._baseSurveys, ..._queuedSurveys];
     const todayStr=localDateStr();
     function normDate(d){if(!d)return"";const s=String(d);return s.includes("T")?s.slice(0,10):s.slice(0,10);}
