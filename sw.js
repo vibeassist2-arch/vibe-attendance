@@ -1,11 +1,11 @@
-const CACHE = "vibe-v202603091400"; // ← bump this string every time you deploy
+const CACHE = "vibe-v202603091600"; // bumped — forces all users to get latest version
 const FILES = ["./index.html", "./manifest.json"];
 
 // Install — cache core files, activate immediately
 self.addEventListener("install", e => {
-  // Do NOT call skipWaiting() here — let the controller in index.html
-  // send SKIP_WAITING so users see the update toast first.
-  // But if no controller exists yet (first install), skip immediately.
+  // Always skip waiting — activate new SW immediately on install.
+  // The cache version bump above forces a full reload for all users.
+  self.skipWaiting();
   e.waitUntil(
     caches.open(CACHE).then(c => c.addAll(FILES))
   );
