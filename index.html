@@ -591,9 +591,12 @@ async function loadFromSheet() {
 
     const sheetSurveys = (result.surveys||[]).map(s => {
       const ts = parseInt(s.timestamp)||0;
+      // Derive date from timestamp first, then fall back to date field
       let d = ts ? localDateStr(new Date(ts)) : (s.date || "").slice(0,10);
-      return { id: s.id, username: s.username, date: d, timestamp: ts, policy: s.policy||0, rsa: s.rsa||0, gpa: s.gpa||0 };
-    }).filter(s => s.username);
+      // If date is still empty, skip this record — can't reliably dedup without a date
+      if(!d) return null;
+      return { id: String(s.id||""), username: String(s.username||"").trim(), date: d, timestamp: ts, policy: parseInt(s.policy)||0, rsa: parseInt(s.rsa)||0, gpa: parseInt(s.gpa)||0 };
+    }).filter(s => s && s.username && s.date);
 
     const surveyMap = {};
     sheetSurveys.forEach(s => {
@@ -601,23 +604,24 @@ async function loadFromSheet() {
       const existing = surveyMap[key];
       if (!existing) { surveyMap[key] = s; }
       else {
-        const existTotal = (parseInt(existing.policy)||0) + (parseInt(existing.rsa)||0) + (parseInt(existing.gpa)||0);
-        const newTotal = (parseInt(s.policy)||0) + (parseInt(s.rsa)||0) + (parseInt(s.gpa)||0);
+        const existTotal = existing.policy + existing.rsa + existing.gpa;
+        const newTotal = s.policy + s.rsa + s.gpa;
+        // Prefer higher total; on tie, prefer newer timestamp
         if (newTotal > existTotal || (newTotal === existTotal && s.timestamp > existing.timestamp)) surveyMap[key] = s;
       }
     });
-    // Also preserve local today's surveys not yet on sheet
-    const localTodaySurveys = SESSION
-      ? (DB.surveys||[]).filter(s => s.username === SESSION.username && s.date === localDateStr(new Date()))
-      : [];
-    localTodaySurveys.forEach(s => {
+    // Preserve ALL local surveys that aren't yet confirmed on sheet
+    // (not just SESSION user — protects against wiping during sync)
+    const localTodayStr = localDateStr(new Date());
+    (DB.surveys||[]).forEach(s => {
+      if(!s.username || !s.date) return;
       const key = s.username + "__" + s.date;
       const existing = surveyMap[key];
-      // Prefer local if it's more recent or has more data than sheet version
-      if(!existing) { surveyMap[key] = s; return; }
       const localTotal = (parseInt(s.policy)||0)+(parseInt(s.rsa)||0)+(parseInt(s.gpa)||0);
-      const existTotal = (parseInt(existing.policy)||0)+(parseInt(existing.rsa)||0)+(parseInt(existing.gpa)||0);
-      if(s.timestamp > existing.timestamp || localTotal > existTotal) surveyMap[key] = s;
+      const existTotal = existing ? existing.policy + existing.rsa + existing.gpa : -1;
+      // Keep local if: not on sheet yet, more recent, or has more data
+      if(!existing) { surveyMap[key] = {...s, policy:parseInt(s.policy)||0, rsa:parseInt(s.rsa)||0, gpa:parseInt(s.gpa)||0}; return; }
+      if(s.timestamp > existing.timestamp || localTotal > existTotal) surveyMap[key] = {...s, policy:parseInt(s.policy)||0, rsa:parseInt(s.rsa)||0, gpa:parseInt(s.gpa)||0};
     });
     DB.surveys = Object.values(surveyMap);
     save(DB);
@@ -999,6 +1003,7 @@ function renderUser(){
     // Clear all stale state so next login starts fresh
     delete window._recQuick;delete window._recUser;delete window._recMonth;
     delete window._userSearch;delete window._geoWarn;
+    if(window._syncBadgeTimerRef){clearInterval(window._syncBadgeTimerRef);window._syncBadgeTimerRef=null;}
     if(SESSION) sessionStorage.removeItem("vibeLastCheckout_"+SESSION.username);
     SESSION=null;route();
   });
@@ -1151,13 +1156,16 @@ function renderUser(){
           mainBtn.disabled=true;mainBtn.textContent="Opening survey…";
           showSurvey(answers=>{
             mainBtn.textContent="Checking out…";
-            getLocation().then(loc=>{
+            getLocation().then(async loc=>{
               const todayCheckins2=DB.attendance.filter(r=>r.username===SESSION.username&&r.type==="in"&&new Date(r.timestamp).toDateString()===new Date().toDateString());
               const checkInTs2=todayCheckins2.length?Math.min(...todayCheckins2.map(r=>r.timestamp)):Date.now();
               const surveyDate2=localDateStr(new Date(checkInTs2));
               const _tsNow=Date.now();
               const sur={id:_tsNow,username:SESSION.username,timestamp:_tsNow,date:surveyDate2,...answers};
-              DB.surveys.push(sur);gsPost({action:"addSurvey",data:sur});save(DB);
+              DB.surveys.push(sur);save(DB);
+              // Flush survey to sheet first (awaited) so admin sees it before checkout record arrives
+              const _sq=loadQueue();_sq.push({action:"addSurvey",data:sur});saveQueue(_sq);
+              await flushQueue();
               const meUserRec2=DB.users.find(u=>u.username===SESSION.username);
               const geo2=checkUserGeofence(loc.lat,loc.lng,SESSION.username);
               const checkoutWarn=null; // no location warning on checkout
@@ -1170,13 +1178,16 @@ function renderUser(){
               delete window._geoWarn;
               _checkoutInProgress=false;
               refresh();
-            }).catch(()=>{
+            }).catch(async ()=>{
               // Location failed — still save survey and check out without location
               const todayCheckins3=DB.attendance.filter(r=>r.username===SESSION.username&&r.type==="in"&&new Date(r.timestamp).toDateString()===new Date().toDateString());
               const checkInTs3=todayCheckins3.length?Math.min(...todayCheckins3.map(r=>r.timestamp)):Date.now();
               const _tsNowN=Date.now();
               const sur2={id:_tsNowN,username:SESSION.username,timestamp:_tsNowN,date:localDateStr(new Date(checkInTs3)),...answers};
-              DB.surveys.push(sur2);gsPost({action:"addSurvey",data:sur2});save(DB);
+              DB.surveys.push(sur2);save(DB);
+              // Flush survey first (awaited) then checkout
+              const _sq2=loadQueue();_sq2.push({action:"addSurvey",data:sur2});saveQueue(_sq2);
+              await flushQueue();
               const _tsOutN=_tsNowN+1;
               const rec_outn={id:_tsOutN,username:SESSION.username,type:"out",timestamp:_tsOutN,location:null,geoOk:false,geoName:"",geoDist:null,noLocationSet:true};
               DB.attendance.push(rec_outn);save(DB);
@@ -1784,9 +1795,9 @@ function renderAdmin(){
     homeGrid.appendChild(c2);
 
     const c3=el("div","home-card");
-    c3.innerHTML=`<div class="big-num" style="color:#7c3aed">${totalPolicy}</div><div class="card-label">Total Policy</div>`;
+    c3.innerHTML=`<div class="big-num" style="color:#7c3aed">${todayPolicy}</div><div class="card-label">Today Policy</div>`;
     const p3=h("div",{style:{marginTop:".6rem",display:"flex",gap:".5rem",flexWrap:"wrap"}});
-    [["Today: "+todayPolicy,"#ede9fe","#6d28d9"],["RSA: "+todayRsa,"#fef3c7","#92400e"],["GPA: "+todayGpa,"#d1fae5","#065f46"]].forEach(([txt,bg,col])=>{
+    [["RSA: "+todayRsa,"#fef3c7","#92400e"],["GPA: "+todayGpa,"#d1fae5","#065f46"]].forEach(([txt,bg,col])=>{
       p3.appendChild(h("span",{style:{background:bg,color:col,fontSize:".72rem",padding:".2rem .55rem",borderRadius:"8px",fontWeight:"600"}},txt));
     });
     c3.appendChild(p3);homeGrid.appendChild(c3);
@@ -2288,13 +2299,25 @@ function renderAdmin(){
       });
       content.appendChild(cg2);
 
-      content.appendChild(el("div","section-title","All Survey Entries — ✏️ Click Edit to fix wrong counts"));
+      // Survey entries — default to today only, toggle to show all
+      if(typeof window._surveyShowAll === "undefined") window._surveyShowAll = false;
       const allSurveysSorted=[...allSurveys].sort((a,b)=>b.timestamp-a.timestamp);
-      if(!allSurveysSorted.length){content.appendChild(el("div","empty","No survey entries yet."));}
+      const todaySurveysSorted=allSurveysSorted.filter(s=>normDate(s.date)===todayStr);
+      const surveysToShow=window._surveyShowAll?allSurveysSorted:todaySurveysSorted;
+
+      const surveyTitleRow=h("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:".5rem",marginBottom:".6rem",marginTop:"1rem"}});
+      const surveyTitle=el("div","section-title","Today's Survey Entries — ✏️ Click Edit to fix wrong counts");
+      surveyTitle.style.margin="0";
+      const toggleAllBtn=h("button",{style:{fontSize:".75rem",padding:".25rem .7rem",borderRadius:"8px",border:"1.5px solid var(--border)",background:"transparent",color:"var(--muted)",fontFamily:"var(--font)",fontWeight:"600",cursor:"pointer"}},window._surveyShowAll?"📅 Show Today Only":"📋 Show All Entries");
+      toggleAllBtn.addEventListener("click",()=>{window._surveyShowAll=!window._surveyShowAll;refresh();});
+      surveyTitleRow.appendChild(surveyTitle);surveyTitleRow.appendChild(toggleAllBtn);
+      content.appendChild(surveyTitleRow);
+
+      if(!surveysToShow.length){content.appendChild(el("div","empty",window._surveyShowAll?"No survey entries yet.":"No survey entries today yet."));}
       else{
         const tw=h("div",{style:{background:"var(--card)",borderRadius:"12px",border:"1px solid var(--border)",overflow:"hidden",marginBottom:"1.2rem"}});
         const cardList=h("div",{style:{display:"flex",flexDirection:"column",gap:".6rem"}});
-        allSurveysSorted.forEach(s=>{
+        surveysToShow.forEach(s=>{
           const uInfo=regularUsers.find(u=>u.username===s.username);
           const displayN=(uInfo&&uInfo.fullName)?uInfo.fullName:s.username;
           const card=h("div",{style:{background:"var(--card)",border:"1px solid var(--border)",borderRadius:"12px",padding:".75rem 1rem"}});
@@ -2571,35 +2594,37 @@ if('serviceWorker' in navigator){
             if(e.data?.type==='FLUSH_QUEUE') flushQueue();
           });
 
-          // ── Force update check every time the page loads ──────────────────
+          // ── Force update check in background — never interrupt active session ──
           reg.update();
 
-          // If a new SW is waiting (update already downloaded), activate it immediately
-          if(reg.waiting){
-            reg.waiting.postMessage({type:'SKIP_WAITING'});
-          }
+          // Track whether a controller existed BEFORE this page load
+          // controllerchange on first install = no previous controller = skip reload
+          const hadControllerOnLoad = !!navigator.serviceWorker.controller;
 
-          // Listen for a new SW installing — when it finishes, activate + reload
+          // Do NOT activate waiting SW immediately — would fire controllerchange and reload mid-session
+          // It activates on next page open naturally
+
+          // Listen for a new SW installing — notify user, let THEM tap to reload
           reg.addEventListener('updatefound',()=>{
             const newSW=reg.installing;
             if(!newSW) return;
             newSW.addEventListener('statechange',()=>{
               if(newSW.state==='installed'&&navigator.serviceWorker.controller){
-                // New version ready — show a toast then reload
                 const toast=document.createElement('div');
-                toast.style.cssText='position:fixed;bottom:1.5rem;left:50%;transform:translateX(-50%);background:#4f8ef7;color:#fff;padding:.75rem 1.4rem;border-radius:12px;font-weight:700;font-size:.9rem;z-index:9999;box-shadow:0 4px 20px #00000044;display:flex;align-items:center;gap:.6rem;font-family:Sora,sans-serif';
-                toast.innerHTML='🔄 New version available — updating…';
+                toast.style.cssText='position:fixed;bottom:1.5rem;left:50%;transform:translateX(-50%);background:#4f8ef7;color:#fff;padding:.75rem 1.4rem;border-radius:12px;font-weight:700;font-size:.9rem;z-index:9999;box-shadow:0 4px 20px #00000044;display:flex;align-items:center;gap:.6rem;font-family:Sora,sans-serif;cursor:pointer';
+                toast.innerHTML='🔄 Update ready — tap to refresh';
+                toast.addEventListener('click',()=>{ newSW.postMessage({type:'SKIP_WAITING'}); });
                 document.body.appendChild(toast);
-                newSW.postMessage({type:'SKIP_WAITING'});
-                setTimeout(()=>window.location.reload(),1500);
+                setTimeout(()=>toast.remove(),8000);
               }
             });
           });
 
-          // When controller changes (new SW took over), reload to get fresh assets
+          // Only reload on controllerchange if there was already a controller on load
+          // Prevents first-install activation from kicking logged-in users to login screen
           let refreshing=false;
           navigator.serviceWorker.addEventListener('controllerchange',()=>{
-            if(!refreshing){ refreshing=true; window.location.reload(); }
+            if(!refreshing&&hadControllerOnLoad){ refreshing=true; window.location.reload(); }
           });
         })
         .catch(e=>console.log('SW error:',e));
