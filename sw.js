@@ -1,4 +1,4 @@
-const CACHE = "vibe-v2026030801"; // ← bump this string every time you deploy
+const CACHE = "vibe-v202603091400"; // ← bump this string every time you deploy
 const FILES = ["./index.html", "./manifest.json"];
 
 // Install — cache core files, activate immediately
