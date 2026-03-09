@@ -1428,7 +1428,7 @@ function renderUser(){
           tr3.innerHTML=`<td style="font-family:var(--mono);font-size:.8rem">${s.date}</td>
             <td><span class="pill pill-pend">${s.policy||"—"}</span></td>
             <td><span class="pill pill-yes">${s.rsa||"—"}</span></td>
-            <td><span class="pill" style="background:#34d39922;color:#34d399;border:1px solid #34d39944">${s.gpa||"—"}</span></td>`;
+            <td><span class="pill pill-gpa">${s.gpa||"—"}</span></td>`;
           tb3.appendChild(tr3);
         });
         tbl2.appendChild(tb3);tw2.appendChild(tbl2);content.appendChild(tw2);
@@ -1572,6 +1572,8 @@ function renderUser(){
       calWrap.appendChild(legend);
       content.appendChild(calWrap);
     }
+    // Restart sync badge timer after every refresh (it was cleared at the top of refresh())
+    window._syncBadgeTimerRef = setInterval(()=>{ updateSyncBadge(); }, 5000);
   }
   refresh();render(dash);
 }
@@ -1600,7 +1602,14 @@ function openSurveyEditModal(survey, onSave) {
   const saveBtn=h("button",{className:"btn btn-primary",style:{marginTop:".5rem"}},"💾 Save Changes");
   saveBtn.addEventListener("click",()=>{
     const idx=DB.surveys.findIndex(s=>s.id===survey.id);
-    if(idx>=0){DB.surveys[idx]={...DB.surveys[idx],policy:parseInt(i1.value)||0,rsa:parseInt(i2.value)||0,gpa:parseInt(i3.value)||0};save(DB);syncToSheet();}
+    if(idx>=0){
+      DB.surveys[idx]={...DB.surveys[idx],policy:parseInt(i1.value)||0,rsa:parseInt(i2.value)||0,gpa:parseInt(i3.value)||0};
+      save(DB);syncToSheet();
+      // Also update the queued copy if it hasn't been flushed yet, so admin view reflects the edit immediately
+      const q=loadQueue();
+      const qi=q.findIndex(item=>item.action==="addSurvey"&&item.data?.id===survey.id);
+      if(qi>=0){q[qi].data={...q[qi].data,policy:DB.surveys[idx].policy,rsa:DB.surveys[idx].rsa,gpa:DB.surveys[idx].gpa};saveQueue(q);}
+    }
     ov.remove();onSave();
   });
   const delBtn=h("button",{className:"btn btn-danger",style:{marginTop:".6rem"}},"🗑 Delete This Entry");
@@ -2549,7 +2558,10 @@ loadFromSheet().then(()=>{clearTimeout(timeout);markAbsences();route();}).catch(
 
 if('serviceWorker' in navigator){
   const host = window.location.hostname;
-  const isRealHost = host !== 'www.claudeusercontent.com' && host !== '' && host !== 'localhost' || window.location.protocol === 'https:' && host.includes('github.io');
+  const isRealHost = window.location.protocol === 'https:'
+    && host !== 'www.claudeusercontent.com'
+    && host !== ''
+    && host !== 'localhost';
   if(isRealHost){
     window.addEventListener('load',()=>{
       navigator.serviceWorker.register('./sw.js')
