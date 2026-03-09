@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- VIBE v202603091800 stability+integrity patch: security, timer leak, absence IDs, GPA pill, autoSync cleanup -->
+<!-- VIBE v20260310.final — survey status card, show-all tables, absent/present format update -->
 <html lang="en">
 <head>
 <meta charset="UTF-8"/>
@@ -242,7 +242,7 @@ select option{background:var(--surface);color:var(--text)}
 <div id="app"></div>
 
 <script>
-// ── VIBE v202603091800 — Final Stability & Data Integrity Patch ───────────────
+// ── VIBE v20260310.final — Survey Status Card + Show All Tables ─────────────────
 const KEY = "vibeAttendanceData";
 const DEFAULT_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwvX9h3XDveEw0zpwDvhru7j8dlaQx5VGAGOayx1tnn7GuohDq-H7UTZdBLx9o9N3Yh/exec";
 
@@ -1841,14 +1841,103 @@ function renderAdmin(){
     const c1=el("div","home-card");
     c1.innerHTML=`<div class="big-num" style="color:#16a34a">${todayInUsers.length}</div><div class="card-label">Today Present</div>`;
     const presentNames=todayInUsers.map(uname=>{ const u=regularUsers.find(x=>x.username===uname); return (u&&u.fullName&&u.fullName.trim())?u.fullName.trim():(uname.charAt(0).toUpperCase()+uname.slice(1).toLowerCase()); });
-    c1.appendChild(makePillList(presentNames,"#dcfce7","#15803d","No check-ins yet"));
+    if(todayInUsers.length===0){
+      c1.appendChild(h("div",{style:{color:"#9ca3af",fontSize:".75rem",marginTop:".4rem"}},"No check-ins yet"));
+    } else {
+      const presTblWrap=h("div",{style:{borderRadius:"10px",overflow:"hidden",border:"1px solid #bbf7d0",display:"none",marginTop:".4rem"}});
+      const presTbl=h("table",{style:{width:"100%",borderCollapse:"collapse",fontSize:".83rem"}});
+      const presThead=h("thead",{});
+      presThead.innerHTML="<tr><th style='padding:.5rem .9rem;background:#dcfce7;color:#15803d;text-align:left;font-size:.72rem;letter-spacing:.06em;text-transform:uppercase;'>Name</th></tr>";
+      presTbl.appendChild(presThead);
+      const presTbody=h("tbody",{});
+      presentNames.forEach((nm,i)=>{
+        const tr=h("tr",{style:{borderTop:i>0?"1px solid #bbf7d0":"none",background:i%2===0?"#f0fdf4":"#fff"}});
+        tr.innerHTML="<td style='padding:.5rem .9rem;font-weight:600;color:#1a2236'>"+nm+"</td>";
+        presTbody.appendChild(tr);
+      });
+      presTbl.appendChild(presTbody);presTblWrap.appendChild(presTbl);
+      c1.appendChild(presTblWrap);
+      const presBtn=h("button",{style:{marginTop:".5rem",background:"none",border:"1.5px solid #bbf7d0",borderRadius:"8px",color:"#15803d",fontFamily:"var(--font)",fontSize:".78rem",fontWeight:"700",cursor:"pointer",padding:".3rem .9rem"}},"Show All ("+todayInUsers.length+")");
+      presBtn.addEventListener("click",()=>{
+        const vis=presTblWrap.style.display==="none";
+        presTblWrap.style.display=vis?"block":"none";
+        presBtn.textContent=vis?"Show Less":"Show All ("+todayInUsers.length+")";
+      });
+      c1.appendChild(presBtn);
+    }
     homeGrid.appendChild(c1);
 
     const c2=el("div","home-card");
     c2.innerHTML=`<div class="big-num" style="color:#dc2626">${todayAbsent.length}</div><div class="card-label">Today Absent</div>`;
     const absentNames=todayAbsent.map(u=>(u.fullName&&u.fullName.trim())?u.fullName.trim():(u.username.charAt(0).toUpperCase()+u.username.slice(1).toLowerCase()));
-    c2.appendChild(makePillList(absentNames,"#fee2e2","#b91c1c","All present! 🎉"));
+    if(todayAbsent.length===0){
+      c2.appendChild(h("div",{style:{color:"#9ca3af",fontSize:".75rem",marginTop:".4rem"}},"All present! 🎉"));
+    } else {
+      const absTblWrap=h("div",{style:{borderRadius:"10px",overflow:"hidden",border:"1px solid #fecaca",display:"none",marginTop:".4rem"}});
+      const absTbl=h("table",{style:{width:"100%",borderCollapse:"collapse",fontSize:".83rem"}});
+      const absThead=h("thead",{});
+      absThead.innerHTML="<tr><th style='padding:.5rem .9rem;background:#fee2e2;color:#b91c1c;text-align:left;font-size:.72rem;letter-spacing:.06em;text-transform:uppercase;'>Name</th></tr>";
+      absTbl.appendChild(absThead);
+      const absTbody=h("tbody",{});
+      absentNames.forEach((nm,i)=>{
+        const tr=h("tr",{style:{borderTop:i>0?"1px solid #fecaca":"none",background:i%2===0?"#fff5f5":"#fff"}});
+        tr.innerHTML="<td style='padding:.5rem .9rem;font-weight:600;color:#1a2236'>"+nm+"</td>";
+        absTbody.appendChild(tr);
+      });
+      absTbl.appendChild(absTbody);absTblWrap.appendChild(absTbl);
+      c2.appendChild(absTblWrap);
+      const absBtn=h("button",{style:{marginTop:".5rem",background:"none",border:"1.5px solid #fecaca",borderRadius:"8px",color:"#b91c1c",fontFamily:"var(--font)",fontSize:".78rem",fontWeight:"700",cursor:"pointer",padding:".3rem .9rem"}},"Show All ("+todayAbsent.length+")");
+      absBtn.addEventListener("click",()=>{
+        const vis=absTblWrap.style.display==="none";
+        absTblWrap.style.display=vis?"block":"none";
+        absBtn.textContent=vis?"Show Less":"Show All ("+todayAbsent.length+")";
+      });
+      c2.appendChild(absBtn);
+    }
     homeGrid.appendChild(c2);
+
+    // ── Today: Present vs Survey Submitted ──
+    const todaySurveyUsers=new Set((allSurveys||[]).filter(s=>normDate(s.date)===todayStr).map(s=>s.username));
+    const todaySurveyCount=todayInUsers.filter(u=>todaySurveyUsers.has(u)).length;
+    const todayMissingUsers=todayInUsers.filter(u=>!todaySurveyUsers.has(u));
+    const cSurvStat=el("div","home-card");
+    cSurvStat.style.gridColumn="1/-1";
+    cSurvStat.appendChild(h("div",{style:{fontSize:".72rem",fontWeight:"700",color:"#64748b",letterSpacing:".08em",textTransform:"uppercase",marginBottom:".6rem"}},"📋 Today's Survey Status"));
+    const survTopRow=h("div",{style:{display:"flex",alignItems:"flex-end",gap:"1rem",flexWrap:"wrap",marginBottom:".5rem"}});
+    const survStat2=h("div",{});
+    survStat2.innerHTML=`<div class="big-num" style="color:#f59e0b">${todaySurveyCount}</div><div class="card-label">Survey Submitted</div>`;
+    const survBadge=h("div",{style:{marginLeft:"auto",padding:".3rem .8rem",borderRadius:"20px",fontSize:".78rem",fontWeight:"700",background:todayMissingUsers.length===0?"#dcfce7":"#fee2e2",color:todayMissingUsers.length===0?"#15803d":"#b91c1c"}},
+      todayMissingUsers.length===0?"✅ All submitted":`❌ ${todayMissingUsers.length} not submitted`);
+    [survStat2,survBadge].forEach(x=>survTopRow.appendChild(x));
+    cSurvStat.appendChild(survTopRow);
+    if(todayMissingUsers.length>0){
+      const missingLabel=h("div",{style:{fontSize:".72rem",fontWeight:"700",color:"#b91c1c",letterSpacing:".05em",textTransform:"uppercase",margin:".7rem 0 .4rem"}},"⚠️ Not Yet Submitted ("+todayMissingUsers.length+")");
+      cSurvStat.appendChild(missingLabel);
+
+      const tblWrap=h("div",{style:{borderRadius:"10px",overflow:"hidden",border:"1px solid #fecaca",display:"none",marginTop:".4rem"}});
+      const tbl=h("table",{style:{width:"100%",borderCollapse:"collapse",fontSize:".83rem"}});
+      const thead=h("thead",{});
+      thead.innerHTML="<tr><th style='padding:.5rem .9rem;background:#fee2e2;color:#b91c1c;text-align:left;font-size:.72rem;letter-spacing:.06em;text-transform:uppercase;'>Name</th></tr>";
+      tbl.appendChild(thead);
+      const tbody=h("tbody",{});
+      todayMissingUsers.forEach((uname,i)=>{
+        const u=regularUsers.find(x=>x.username===uname);
+        const nm=(u&&u.fullName&&u.fullName.trim())?u.fullName.trim():(uname.charAt(0).toUpperCase()+uname.slice(1).toLowerCase());
+        const tr=h("tr",{style:{borderTop:i>0?"1px solid #fecaca":"none",background:i%2===0?"#fff5f5":"#fff"}});
+        tr.innerHTML="<td style='padding:.5rem .9rem;font-weight:600;color:#1a2236'>"+nm+"</td>";
+        tbody.appendChild(tr);
+      });
+      tbl.appendChild(tbody);tblWrap.appendChild(tbl);
+      cSurvStat.appendChild(tblWrap);
+      const showBtn=h("button",{style:{marginTop:".5rem",background:"none",border:"1.5px solid #fecaca",borderRadius:"8px",color:"#b91c1c",fontFamily:"var(--font)",fontSize:".78rem",fontWeight:"700",cursor:"pointer",padding:".3rem .9rem"}},"Show All ("+todayMissingUsers.length+")");
+      showBtn.addEventListener("click",()=>{
+        const visible=tblWrap.style.display==="none";
+        tblWrap.style.display=visible?"block":"none";
+        showBtn.textContent=visible?"Show Less":"Show All ("+todayMissingUsers.length+")";
+      });
+      cSurvStat.appendChild(showBtn);
+    }
+    homeGrid.appendChild(cSurvStat);
 
     const c3=el("div","home-card");
     c3.innerHTML=`<div class="big-num" style="color:#7c3aed">${totalPolicy}</div><div class="card-label">Month Total Policy</div>`;
