@@ -895,7 +895,11 @@ function renderUser(){
     const sessionCheckoutTs=parseInt(sessionStorage.getItem("vibeLastCheckout_"+SESSION.username)||"0");
     const outs=recs.filter(r=>r.type==="out");
     const lastOutTs=outs.length?Math.max(...outs.map(r=>r.timestamp)):0;
-    const cutoff=Math.max(sessionCheckoutTs,lastOutTs);
+    // Also check queue for a pending checkout timestamp
+    const queuedOutTs=Math.max(0,...loadQueue()
+      .filter(item=>item.action==="addAttendance"&&item.data?.type==="out"&&item.data?.username===SESSION.username&&new Date(item.data.timestamp).toDateString()===s)
+      .map(item=>item.data.timestamp));
+    const cutoff=Math.max(sessionCheckoutTs,lastOutTs,queuedOutTs);
     if(!cutoff)return recs;
     // Keep: all outs, and all ins that are NOT after the last checkout (i.e. valid earlier check-ins)
     // Also keep any ins that came AFTER cutoff only if they are genuinely new (future re-checkins)
@@ -921,9 +925,23 @@ function renderUser(){
     const outs=t.filter(r=>r.type==="out");
     const ins=t.filter(r=>r.type==="in");
     if(!ins.length)return false;
-    if(!outs.length)return true;
-    const lastOutTs=Math.max(...outs.map(r=>r.timestamp));
+    // Check queue for a pending checkout FIRST — most reliable after SW reload wipes sessionStorage
+    const todayDs=new Date().toDateString();
+    const queuedOut=loadQueue().filter(item=>
+      item.action==="addAttendance"&&
+      item.data?.type==="out"&&
+      item.data?.username===SESSION.username&&
+      new Date(item.data.timestamp).toDateString()===todayDs
+    );
+    // Combine DB outs + queued outs for a complete picture
+    const allOutTs=[
+      ...outs.map(r=>r.timestamp),
+      ...queuedOut.map(item=>item.data.timestamp)
+    ];
+    if(!allOutTs.length)return true;
+    const lastOutTs=Math.max(...allOutTs);
     const lastInTs=Math.max(...ins.map(r=>r.timestamp));
+    // Only checked in if latest check-in is AFTER latest checkout (DB or queued)
     return lastInTs>lastOutTs;
   };
   const dash=el("div","dash");
@@ -1183,6 +1201,14 @@ function renderUser(){
         tr.filter(r=>r.type==="out").forEach(r=>{
           if(!todayDayMap.out||r.timestamp>todayDayMap.out){todayDayMap.out=r.timestamp;todayDayMap.outRec=r;todayDayMap.outLoc=r.location||null;}
         });
+        // Also check queue for pending checkout
+        const _queuedOutRec=loadQueue()
+          .filter(item=>item.action==="addAttendance"&&item.data?.type==="out"&&item.data?.username===SESSION.username&&new Date(item.data.timestamp).toDateString()===new Date().toDateString())
+          .sort((a,b)=>b.data.timestamp-a.data.timestamp)[0];
+        if(_queuedOutRec&&_queuedOutRec.data.timestamp>(todayDayMap.out||0)){
+          todayDayMap.out=_queuedOutRec.data.timestamp;
+          todayDayMap.outLoc=_queuedOutRec.data.location||null;
+        }
         // Also check sessionStorage — if user checked out this session and it's more recent, use it
         const _sessionOut=parseInt(sessionStorage.getItem("vibeLastCheckout_"+SESSION.username)||"0");
         if(_sessionOut&&_sessionOut>(todayDayMap.out||0)){
