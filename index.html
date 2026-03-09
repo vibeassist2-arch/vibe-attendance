@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- VIBE v202603091400 deep-fix: 15 bugs fixed -->
+<!-- VIBE v202603091500 checkin-fix: 7 more bugs fixed -->
 <html lang="en">
 <head>
 <meta charset="UTF-8"/>
@@ -314,7 +314,10 @@ setInterval(flushQueue, 30000);
 
 // ── DEBOUNCE — prevent double check-in on rapid taps ─────────────────────────
 let _lastCheckIn = 0;
-function canCheckIn(){ const now = Date.now(); if(now - _lastCheckIn < 5000) return false; _lastCheckIn = now; return true; }
+function canCheckIn(){ const now = Date.now(); if(now - _lastCheckIn < 5000) return false; return true; }
+function stampCheckIn(){ _lastCheckIn = Date.now(); }
+let _lastCheckOut = 0;
+function canCheckOut(){ const now = Date.now(); if(now - _lastCheckOut < 5000) return false; _lastCheckOut = now; return true; }
 
 function markAbsences() {
   const today = new Date();
@@ -334,6 +337,10 @@ function markAbsences() {
       .filter(r => r.type === "in" && localDateStr(new Date(r.timestamp)) === todayStr)
       .map(r => r.username)
   );
+  // Also check queue — pending check-ins must not result in absence marks
+  loadQueue()
+    .filter(item => item.action === "addAttendance" && item.data?.type === "in" && localDateStr(new Date(item.data.timestamp)) === todayStr)
+    .forEach(item => checkedInToday.add(item.data.username));
   regularUsers.forEach(u => {
     if (checkedInToday.has(u.username)) {
       const hadAbsence = DB.absences.find(a => a.username === u.username && a.date === todayStr);
@@ -523,10 +530,10 @@ async function loadFromSheet() {
         // Keep check-in if it came BEFORE the last checkout (original check-in)
         if(r.timestamp <= lastOutTs){
           cleanedAttend.push(r);
-        } else if(r.timestamp - lastOutTs > 30*60*1000){
-          cleanedAttend.push(r); // legitimate re-checkin 30+ min later
+        } else if(r.timestamp - lastOutTs > 5*60*1000){
+          cleanedAttend.push(r); // legitimate re-checkin 5+ min later
         }
-        // else: ghost check-in within 30 min after checkout — drop it
+        // else: ghost check-in within 5 min after checkout — drop it (sheet sync artifact)
       });
     });
     DB.attendance = cleanedAttend;
@@ -718,7 +725,7 @@ function getLocation(){
     navigator.geolocation.getCurrentPosition(
       p=>{const lat=p.coords.latitude,lng=p.coords.longitude;if(lat<-90||lat>90||lng<-180||lng>180){rej("Invalid location received.");return}res({lat,lng});},
       e=>{if(e.code===1)rej("Location denied. Please allow location.");else if(e.code===2)rej("Location unavailable.");else rej("Location timed out.");},
-      {timeout:30000,enableHighAccuracy:true}
+      {timeout:12000,enableHighAccuracy:true}
     );
   });
 }
@@ -1076,7 +1083,7 @@ function renderUser(){
       const mainBtn=h("button",{className:"btn "+(checkedIn?"btn-danger":"btn-success")},checkedIn?"⏹ Check Out":"▶ Check In");
       mainBtn.addEventListener("click",()=>{
         if(checkedIn){
-          if(_checkoutInProgress||!isIn()){refresh();return;}
+          if(_checkoutInProgress||!isIn()||!canCheckOut()){refresh();return;}
           _checkoutInProgress=true;
           mainBtn.disabled=true;mainBtn.textContent="Opening survey…";
           showSurvey(answers=>{
@@ -1092,7 +1099,7 @@ function renderUser(){
               const geo2=checkUserGeofence(loc.lat,loc.lng,SESSION.username);
               const checkoutWarn=null; // no location warning on checkout
               const _tsOut=_tsNow+1;
-              const rec_out={id:_tsOut,username:SESSION.username,type:"out",timestamp:_tsOut,location:loc,geoOk:geo2.ok,geoName:geo2.name||"",geoDist:geo2.dist??null};
+              const rec_out={id:_tsOut,username:SESSION.username,type:"out",timestamp:_tsOut,location:loc,geoOk:geo2.ok,geoName:geo2.name||"",geoDist:geo2.dist??null,noLocationSet:geo2.noLocationSet||false};
               DB.attendance.push(rec_out);save(DB);
               gsPost({action:"addAttendance",data:{...rec_out,lat:loc?.lat||"",lng:loc?.lng||""}});
               // Store checkout timestamp in sessionStorage so isIn() can trust it over ghost sheet records
@@ -1104,10 +1111,11 @@ function renderUser(){
               // Location failed — still save survey and check out without location
               const todayCheckins3=DB.attendance.filter(r=>r.username===SESSION.username&&r.type==="in"&&new Date(r.timestamp).toDateString()===new Date().toDateString());
               const checkInTs3=todayCheckins3.length?Math.min(...todayCheckins3.map(r=>r.timestamp)):Date.now();
-              const sur2={id:Date.now(),username:SESSION.username,timestamp:Date.now(),date:localDateStr(new Date(checkInTs3)),...answers};
+              const _tsNowN=Date.now();
+              const sur2={id:_tsNowN,username:SESSION.username,timestamp:_tsNowN,date:localDateStr(new Date(checkInTs3)),...answers};
               DB.surveys.push(sur2);gsPost({action:"addSurvey",data:sur2});save(DB);
-              const _tsOutN=Date.now()+1;
-              const rec_outn={id:_tsOutN,username:SESSION.username,type:"out",timestamp:_tsOutN,location:null};
+              const _tsOutN=_tsNowN+1;
+              const rec_outn={id:_tsOutN,username:SESSION.username,type:"out",timestamp:_tsOutN,location:null,geoOk:false,geoName:"",geoDist:null,noLocationSet:true};
               DB.attendance.push(rec_outn);save(DB);
               gsPost({action:"addAttendance",data:{...rec_outn,lat:"",lng:""}});
               sessionStorage.setItem("vibeLastCheckout_"+SESSION.username, String(_tsOutN));
@@ -1121,6 +1129,7 @@ function renderUser(){
           });
         } else {
           if(!canCheckIn()){ return; } // debounce — prevent double tap
+          stampCheckIn(); // stamp now so rapid taps are blocked
           mainBtn.disabled=true;mainBtn.innerHTML='<span class="spinner"></span>Getting location…';
           const meUserRec=DB.users.find(u=>u.username===SESSION.username);
           const userWorkLoc=meUserRec?.location||"";
@@ -1138,7 +1147,7 @@ function renderUser(){
             gsPost({action:"addAttendance",data:{...rec_in,lat:loc?.lat||"",lng:loc?.lng||"",workLocation:userWorkLoc}});
             if(geoWarning) window._geoWarn=geoWarning; else delete window._geoWarn;
             refresh();
-          }).catch(msg=>{mainBtn.disabled=false;mainBtn.textContent="▶ Check In";
+          }).catch(msg=>{_lastCheckIn=0;mainBtn.disabled=false;mainBtn.textContent="▶ Check In"; // reset debounce so user can retry after error
             // Show inline error instead of alert()
             const errBanner=el("div","geo-banner geo-fail",null,{marginTop:".8rem"});
             errBanner.innerHTML=`<span class="geo-icon">❌</span><div>${msg}</div>`;
