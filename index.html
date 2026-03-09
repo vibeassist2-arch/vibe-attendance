@@ -266,6 +266,7 @@ let _queueRunning = false;
 async function flushQueue(){
   if(_queueRunning || !SCRIPT_URL) return;
   _queueRunning = true;
+  try {
   let q = loadQueue();
   let failCount = 0;
   while(q.length > 0 && failCount < 3){
@@ -294,7 +295,9 @@ async function flushQueue(){
       await new Promise(r=>setTimeout(r,1000));
     }
   }
+  } finally {
   _queueRunning = false;
+  }
 }
 
 async function gsPost(body) {
@@ -317,7 +320,8 @@ let _lastCheckIn = 0;
 function canCheckIn(){ const now = Date.now(); if(now - _lastCheckIn < 5000) return false; return true; }
 function stampCheckIn(){ _lastCheckIn = Date.now(); }
 let _lastCheckOut = 0;
-function canCheckOut(){ const now = Date.now(); if(now - _lastCheckOut < 5000) return false; _lastCheckOut = now; return true; }
+function canCheckOut(){ const now = Date.now(); if(now - _lastCheckOut < 5000) return false; return true; }
+function stampCheckOut(){ _lastCheckOut = Date.now(); }
 
 function markAbsences() {
   const today = new Date();
@@ -772,7 +776,7 @@ function getLocation(){
     navigator.geolocation.getCurrentPosition(
       p=>{const lat=p.coords.latitude,lng=p.coords.longitude;if(lat<-90||lat>90||lng<-180||lng>180){rej("Invalid location received.");return}res({lat,lng});},
       e=>{if(e.code===1)rej("Location denied. Please allow location.");else if(e.code===2)rej("Location unavailable.");else rej("Location timed out.");},
-      {timeout:12000,enableHighAccuracy:true}
+      {timeout:12000,enableHighAccuracy:true,maximumAge:0}
     );
   });
 }
@@ -786,7 +790,7 @@ function exportCSV(rows,filename){
   const blob=new Blob([keys.join(",")+"\n"+body],{type:"text/csv"});
   const url=URL.createObjectURL(blob);
   const a=document.createElement("a");a.href=url;a.download=filename;a.click();
-  setTimeout(()=>URL.revokeObjectURL(url),1000);
+  setTimeout(()=>URL.revokeObjectURL(url),10000);
 }
 function h(tag,attrs,children){
   const el=document.createElement(tag);
@@ -795,6 +799,7 @@ function h(tag,attrs,children){
     else if(k.startsWith("on")&&typeof v==="function"){el.addEventListener(k.slice(2).toLowerCase(),v)}
     else if(k==="className"){el.className=v}
     else if(k==="htmlFor"){el.htmlFor=v}
+    else if(typeof v==="boolean"){if(v)el.setAttribute(k,"");else el.removeAttribute(k);}
     else{el.setAttribute(k,v)}
   });
   if(children){(Array.isArray(children)?children:[children]).forEach(c=>{
@@ -1039,7 +1044,7 @@ function renderUser(){
     updateSyncBadge();
   });
   updateSyncBadge();
-  const _syncBadgeTimer = setInterval(()=>{ updateSyncBadge(); }, 5000);
+  const _syncBadgeTimer = window._syncBadgeTimerRef = setInterval(()=>{ updateSyncBadge(); }, 5000);
   // Clean up timer when user signs out
   soBtn.addEventListener("click", ()=>clearInterval(_syncBadgeTimer));
   tbR.appendChild(syncStatusBadge);
@@ -1077,6 +1082,7 @@ function renderUser(){
 
   function refresh(){
     window._userRefresh=refresh;
+    if(window._syncBadgeTimerRef){clearInterval(window._syncBadgeTimerRef);window._syncBadgeTimerRef=null;}
     content.innerHTML="";
     const allRecs=myRecs();
     const totalDays=[...new Set(allRecs.filter(r=>r.type==="in").map(r=>new Date(r.timestamp).toDateString()))].length;
@@ -1140,6 +1146,7 @@ function renderUser(){
       mainBtn.addEventListener("click",()=>{
         if(checkedIn){
           if(_checkoutInProgress||!isIn()||!canCheckOut()){refresh();return;}
+          stampCheckOut();
           _checkoutInProgress=true;
           mainBtn.disabled=true;mainBtn.textContent="Opening survey…";
           showSurvey(answers=>{
@@ -1358,7 +1365,7 @@ function renderUser(){
       else{
         const tw=h("div",{style:{overflowX:"auto",background:"var(--card)",borderRadius:"12px",border:"1px solid var(--border)"}});
         const tbl=el("table","month-table");
-        tbl.innerHTML=`<thead><tr><th>Date</th><th>Check In</th><th>Check Out</th><th>⏱ Hours</th><th>⏰ Arrival</th><th>🚪 Departure</th><th>📍 In Location</th><th>📍 Out Location</th></tr></thead>`;
+        tbl.innerHTML=`<thead><tr><th>Date</th><th>Check In</th><th>Check Out</th><th>⏰ Arrival</th><th>🚪 Departure</th><th>📍 In Location</th><th>📍 Out Location</th></tr></thead>`;
         const tb2=document.createElement("tbody");
         days.forEach(d=>{
           const tr2=document.createElement("tr");
@@ -1401,7 +1408,6 @@ function renderUser(){
           tr2.innerHTML=`<td style="font-family:var(--mono);font-size:.8rem">${d.date.toLocaleDateString("en-GB",{weekday:"short",day:"2-digit",month:"short"})}</td>
             <td style="color:var(--accent2);font-family:var(--mono);font-size:.82rem">${d.in?new Date(d.in).toLocaleTimeString([],({"hour":"2-digit","minute":"2-digit"})):"—"}</td>
             <td style="color:var(--danger);font-family:var(--mono);font-size:.82rem">${d.out?new Date(d.out).toLocaleTimeString([],({"hour":"2-digit","minute":"2-digit"})):"—"}</td>
-            <td>${hrsCell}</td>
             <td>${arrCell}</td>
             <td>${depCell}</td>
             <td>${inGeoCell}</td>
@@ -1594,7 +1600,7 @@ function openSurveyEditModal(survey, onSave) {
   const saveBtn=h("button",{className:"btn btn-primary",style:{marginTop:".5rem"}},"💾 Save Changes");
   saveBtn.addEventListener("click",()=>{
     const idx=DB.surveys.findIndex(s=>s.id===survey.id);
-    if(idx>=0){DB.surveys[idx]={...DB.surveys[idx],policy:i1.value,rsa:i2.value,gpa:i3.value};save(DB);syncToSheet();}
+    if(idx>=0){DB.surveys[idx]={...DB.surveys[idx],policy:parseInt(i1.value)||0,rsa:parseInt(i2.value)||0,gpa:parseInt(i3.value)||0};save(DB);syncToSheet();}
     ov.remove();onSave();
   });
   const delBtn=h("button",{className:"btn btn-danger",style:{marginTop:".6rem"}},"🗑 Delete This Entry");
@@ -1630,7 +1636,7 @@ function renderAdmin(){
     syncBtn.textContent="⏳ Syncing…";syncBtn.disabled=true;
     await loadFromSheet();const ok=await syncToSheet();
     syncBtn.textContent=ok&&ok.ok?"✅ Synced!":"❌ Failed";
-    refresh();setTimeout(()=>{syncBtn.textContent="🟢 Sync Now";syncBtn.disabled=false;},3000);
+    refresh();setTimeout(()=>{syncBtn.textContent="🟢 Sync";syncBtn.disabled=false;},3000);
   });
 
   // Storage health badge
