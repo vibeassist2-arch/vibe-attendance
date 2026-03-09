@@ -1,4 +1,4 @@
-const CACHE = "vibe-v20260310.1";
+const CACHE = "vibe-v20260310.final";
 const FILES = [
   "./index.html",
   "./manifest.json"
