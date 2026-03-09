@@ -1070,10 +1070,12 @@ function renderUser(){
       const assignedOfficeName=meUserForBanner?.officeName||"";
       // Only show location banner when user is currently checked IN
       if(todayIn && isIn()){
-        const officeLbl=todayIn.geoName&&todayIn.geoName!=="No office location set"
-          ?todayIn.geoName
-          :(assignedOfficeName||meUserForBanner?.location||"");
-        if(officeLbl&&!todayIn.noLocationSet){
+        // Only show banner if geoName came from an actual geofence check — no fallback to location label
+        const officeLbl=todayIn.geoName&&todayIn.geoName!=="No office location set"&&todayIn.geoName!==""
+          ?todayIn.geoName:"";
+        // Only show banner if user currently has a geo location assigned (prevents stale "Chennai - Outside range")
+        const hasGeoAssigned=!!(meUserForBanner?.geoLat&&meUserForBanner?.geoLng);
+        if(officeLbl&&!todayIn.noLocationSet&&hasGeoAssigned){
           if(todayIn.geoOk){
             const banner=el("div","geo-banner geo-ok");
             const desigBadge=meUserForBanner?.designation?`<span style="font-size:.72rem;background:#4f8ef722;color:var(--accent);border:1px solid #4f8ef744;border-radius:5px;padding:.1rem .4rem;margin-left:.4rem;font-weight:700">${meUserForBanner.designation}</span>`:"";
@@ -1171,8 +1173,9 @@ function renderUser(){
       });
       content.appendChild(mainBtn);
 
-      // Show geo warning only when currently checked in (stale warning after checkout = hide it)
-      if(window._geoWarn && isIn()){
+      // Show geo warning only when checked in AND user has assigned geo
+      const _meUserGeo=DB.users.find(u=>u.username===SESSION.username);
+      if(window._geoWarn && isIn() && _meUserGeo?.geoLat && _meUserGeo?.geoLng){
         const warnBanner=el("div","geo-banner geo-warn",null,{marginTop:".5rem"});
         warnBanner.innerHTML=`<span class="geo-icon">⚠️</span><div style="font-size:.88rem">${window._geoWarn}</div>`;
         content.appendChild(warnBanner);
