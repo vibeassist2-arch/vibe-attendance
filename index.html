@@ -492,19 +492,16 @@ async function loadFromSheet() {
       }
     }
 
-    // Pre-build local type map — if local DB knows a record is type:"out", trust it
-    const _localTypeMap = {};
-    DB.attendance.forEach(r => { if(r.id) _localTypeMap[String(r.id)] = r.type; });
-
     const sheetAttend = (result.attendance||[]).map(r => {
       const lat = parseFloat(r.lat), lng = parseFloat(r.lng);
       const outLat = parseFloat(r.outLat), outLng = parseFloat(r.outLng);
       const validLoc = (r.lat && r.lng && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) ? {lat, lng, workLocation: r.workLocation||""} : null;
       const validOutLoc = (r.outLat && r.outLng && outLat >= -90 && outLat <= 90 && outLng >= -180 && outLng <= 180) ? {lat: outLat, lng: outLng} : null;
       const rType = (r.type||"").toString().trim().toLowerCase();
-      // If sheet doesn't have type, check local DB first (avoids checkout-with-lat being inferred as "in")
-      const localType = r.id ? (_localTypeMap[String(r.id)] || "") : "";
-      const inferredType = rType || localType || "in";
+      // FIX 1: Prioritize explicit sheet type, then local DB record type, then default "in"
+      // Checkout records always have type:"out" explicitly — never guess from lat
+      const localRec = r.id ? DB.attendance.find(x => x.id && String(x.id) === String(r.id)) : null;
+      const inferredType = rType || localRec?.type || "in";
       // Parse geoOk correctly — sheet stores it as string "true"/"false"
       const geoOk = r.geoOk === true || r.geoOk === "true" || r.geoOk === 1 || r.geoOk === "1";
       return {
@@ -540,9 +537,11 @@ async function loadFromSheet() {
     const allAttendById = {};
     sheetAttend.forEach(r => {
       const key = r.id ? String(r.id) : (r.username + r.timestamp);
-      // Prefer whichever record has more data (sheet may have outTimestamp local doesn't)
       const local = localById[key];
-      if(local && local.timestamp > r.timestamp){
+      if(local && local.type === "out" && r.type !== "out"){
+        // Local says this is a checkout but sheet doesn't yet — trust local (sheet hasn't synced yet)
+        allAttendById[key] = local;
+      } else if(local && local.timestamp > r.timestamp){
         allAttendById[key] = local; // local is strictly newer — keep local
       } else if(local && local.timestamp === r.timestamp){
         // Same check-in time — merge both: keep local fields but adopt sheet's outTimestamp/outLocation if local is missing them
@@ -578,9 +577,7 @@ async function loadFromSheet() {
 
     let mergedAttend = Object.values(allAttendById);
 
-    // ── TYPE CORRECTION PASS: fix checkout rows that were parsed as "in" ──
-    // If a user has 2+ "in" records on same day and local DB says one is "out", correct it
-    // Also: if user has no "out" record but has 2+ "in" records, the later one is likely the checkout
+    // ── TYPE CORRECTION PASS: only trust explicit local DB or queue — no guesswork ──
     const _byUserDay2 = {};
     mergedAttend.forEach(r => {
       const dk = r.username + "__" + new Date(r.timestamp).toDateString();
@@ -588,24 +585,17 @@ async function loadFromSheet() {
       _byUserDay2[dk].push(r);
     });
     mergedAttend = mergedAttend.map(r => {
-      if(r.type !== "in") return r; // only fix "in" records that might be mistyped
-      const dk = r.username + "__" + new Date(r.timestamp).toDateString();
-      const dayRecs = _byUserDay2[dk] || [];
-      const hasRealOut = dayRecs.some(x => x.type === "out");
-      if(hasRealOut) return r; // already have a proper out record, no correction needed
-      const allIns = dayRecs.filter(x => x.type === "in").sort((a,b) => a.timestamp - b.timestamp);
-      if(allIns.length < 2) return r; // only one check-in, nothing to correct
-      // Only trust local DB / queue — not guesswork
-      const localRec = r.id ? DB.attendance.find(x => String(x.id) === String(r.id)) : null;
-      if(localRec && localRec.type === "out") return {...r, type: "out"};
-      const queueRec = _queue.find(item => item.action === "addAttendance" && item.data?.id && String(item.data.id) === String(r.id));
-      if(queueRec && queueRec.data.type === "out") return {...r, type: "out"};
-      // Safe time-based correction: earliest in <= 10AM AND this record >= 1PM → checkout
-      const earliestIn2 = allIns[0];
-      const earliestH2 = new Date(earliestIn2.timestamp).getHours();
-      const thisH = new Date(r.timestamp).getHours();
-      const latestInTs2 = Math.max(...allIns.map(x => x.timestamp));
-      if(earliestH2 <= 10 && thisH >= 13 && r.timestamp === latestInTs2) return {...r, type: "out"};
+      if(r.type !== "in") return r; // only consider records currently typed as "in"
+      // FIX 2: Check queue first — if this exact record ID is pending as "out", trust it
+      const isPendingOut = _queue.some(q =>
+        q.action === "addAttendance" &&
+        q.data?.id && String(q.data.id) === String(r.id) &&
+        q.data?.type === "out"
+      );
+      if(isPendingOut) return {...r, type: "out"};
+      // Then check local DB
+      const localRec2 = r.id ? DB.attendance.find(x => String(x.id) === String(r.id)) : null;
+      if(localRec2 && localRec2.type === "out") return {...r, type: "out"};
       return r;
     });
 
@@ -636,24 +626,7 @@ async function loadFromSheet() {
         // else: ghost check-in within 5 min after checkout — drop it (sheet sync artifact)
       });
     });
-    // ── MIGRATION: fix any "out" records with no matching "in" on same day — they were wrongly typed ──
-    // This corrects stale localStorage data from before the type-inference fix
-    const _migByUD = {};
-    cleanedAttend.forEach(r => {
-      const dk = r.username + "__" + new Date(r.timestamp).toDateString();
-      if(!_migByUD[dk]) _migByUD[dk] = {ins:[], outs:[]};
-      if(r.type === "in") _migByUD[dk].ins.push(r);
-      else _migByUD[dk].outs.push(r);
-    });
-    const migratedAttend = cleanedAttend.map(r => {
-      if(r.type !== "out") return r;
-      const dk = r.username + "__" + new Date(r.timestamp).toDateString();
-      const day = _migByUD[dk];
-      // If this "out" record has no "in" on same day → it was mistyped, correct to "in"
-      if(day && day.ins.length === 0) return {...r, type: "in"};
-      return r;
-    });
-    DB.attendance = migratedAttend;
+    DB.attendance = cleanedAttend;
 
     const sheetSurveys = (result.surveys||[]).map(s => {
       const ts = parseInt(s.timestamp)||0;
@@ -1499,9 +1472,9 @@ function renderUser(){
         [...mSurveys].sort((a,b)=>b.timestamp-a.timestamp).forEach(s=>{
           const tr3=document.createElement("tr");
           tr3.innerHTML=`<td style="font-family:var(--mono);font-size:.8rem">${s.date}</td>
-            <td><span class="pill pill-pend">${s.policy||"—"}</span></td>
-            <td><span class="pill pill-yes">${s.rsa||"—"}</span></td>
-            <td><span class="pill pill-gpa">${s.gpa||"—"}</span></td>`;
+            <td><span class="pill pill-pend">${s.policy??0}</span></td>
+            <td><span class="pill pill-yes">${s.rsa??0}</span></td>
+            <td><span class="pill pill-gpa">${s.gpa??0}</span></td>`;
           tb3.appendChild(tr3);
         });
         tbl2.appendChild(tb3);tw2.appendChild(tbl2);content.appendChild(tw2);
@@ -1797,15 +1770,6 @@ function renderAdmin(){
       if(dayRecs.some(x => x.type === "out")) return r; // already have a real out record
       const allIns = dayRecs.filter(x => x.type === "in").sort((a,b) => a.timestamp - b.timestamp);
       if(allIns.length < 2) return r; // only one check-in, nothing to fix
-      const earliestIn = allIns[0];
-      const latestIn   = allIns[allIns.length - 1];
-      const earliestH = new Date(earliestIn.timestamp).getHours();
-      const latestH   = new Date(latestIn.timestamp).getHours();
-      // Only correct if pattern looks like check-in/checkout (morning in, afternoon/evening out)
-      // Earliest in before 11AM AND latest in at or after 1PM — safe to treat latest as checkout
-      if(earliestH <= 10 && latestH >= 13 && r.timestamp === latestIn.timestamp){
-        return {...r, type: "out"};
-      }
       return r;
     });
     const allSurveys = [..._baseSurveys, ..._queuedSurveys];
@@ -2374,8 +2338,7 @@ function renderAdmin(){
               const nameBadge=officeName
                 ?`<div style="display:inline-flex;align-items:center;gap:4px;margin-bottom:3px;padding:2px 8px;border-radius:10px;font-size:.72rem;font-weight:700;background:#4f8ef711;color:var(--accent);border:1px solid #4f8ef733">🏢 ${officeName}${distStr}</div>`
                 :"";
-              const coordHtml=`<a href="${mapsUrl}" target="_blank" style="color:var(--muted);font-size:.7rem;font-family:var(--mono);text-decoration:none;display:block;margin-top:2px">📍 ${coordStr}</a>`;
-              return `${workLocHtml}${nameBadge}${coordHtml}`;
+              return `${workLocHtml}${nameBadge||"<span style='color:var(--muted);font-size:.75rem'>—</span>"}`;
             }
 
             const cells=[
