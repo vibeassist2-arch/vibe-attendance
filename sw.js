@@ -1,10 +1,11 @@
 // ── VIBE Attendance Tracker — Service Worker ──────────────────────────────────
-// Version: bump this string to force cache refresh on deploy
-const VERSION = 'vibe-at-v1';
+// ⚠️  IMPORTANT: bump VERSION on every deploy to force cache refresh
+// Format: vibe-at-vYYYYMMDD or increment the number
+const VERSION = 'vibe-at-v2';
 
 const STATIC_CACHE  = `${VERSION}-static`;
 const DYNAMIC_CACHE = `${VERSION}-dynamic`;
-const QUEUE_KEY     = 'vibe-sync-queue';
+// Note: queue is managed entirely in index.html localStorage — SW only signals clients to flush
 
 // Files to pre-cache on install (shell + assets)
 const PRECACHE_URLS = [
@@ -128,12 +129,12 @@ function offlineFallback() {
 <title>Offline — Attendance Tracker</title>
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
-  body{font-family:'Sora',sans-serif,system-ui;background:#0b0f1a;color:#e8eaf6;
+  body{font-family:'Sora',sans-serif,system-ui;background:#f8fafc;color:#1e293b;
        min-height:100vh;display:flex;align-items:center;justify-content:center;padding:2rem;text-align:center}
   .wrap{max-width:360px}
   .icon{font-size:4rem;margin-bottom:1.2rem}
   h1{font-size:1.5rem;font-weight:700;margin-bottom:.6rem}
-  p{color:#7a8bad;font-size:.95rem;line-height:1.6;margin-bottom:1.8rem}
+  p{color:#64748b;font-size:.95rem;line-height:1.6;margin-bottom:1.8rem}
   button{padding:.8rem 2rem;background:#4f8ef7;color:#fff;border:none;border-radius:10px;
          font-size:.95rem;font-weight:600;cursor:pointer;font-family:inherit}
   button:active{opacity:.8}
@@ -156,7 +157,7 @@ function offlineFallback() {
 // ── BACKGROUND SYNC ───────────────────────────────────────────────────────────
 // Fired by the browser when connectivity is restored (if Background Sync API is supported)
 self.addEventListener('sync', event => {
-  if (event.tag === 'vibe-flush') {
+  if (event.tag === 'vibe-sync') {
     event.waitUntil(notifyClientsToFlush());
   }
 });
