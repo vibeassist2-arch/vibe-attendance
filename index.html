@@ -386,7 +386,18 @@ setInterval(()=>{ if(SESSION) flushQueue(); }, 30000);
 
 // ── DEBOUNCE — prevent double check-in on rapid taps ─────────────────────────
 let _lastCheckIn = 0;
-function canCheckIn(){ const now = Date.now(); if(now - _lastCheckIn < 5000) return false; return true; }
+function canCheckIn(){
+  const now = Date.now();
+  if(now - _lastCheckIn < 5000) return false;
+  // FIX: also block if user already has a check-in today in DB (prevents double check-in on rapid page reload)
+  if(SESSION){
+    const todayStr=new Date().toDateString();
+    const hasCheckIn=DB.attendance.some(r=>r.username===SESSION.username&&r.type==="in"&&new Date(r.timestamp).toDateString()===todayStr);
+    const hasQueuedIn=loadQueue().some(q=>q.action==="addAttendance"&&q.data?.username===SESSION.username&&q.data?.type==="in"&&new Date(q.data.timestamp).toDateString()===todayStr);
+    if(hasCheckIn||hasQueuedIn) return false;
+  }
+  return true;
+}
 function stampCheckIn(){ _lastCheckIn = Date.now(); }
 let _lastCheckOut = 0;
 function canCheckOut(){ const now = Date.now(); if(now - _lastCheckOut < 5000) return false; return true; }
@@ -428,10 +439,14 @@ function markAbsences() {
       DB.absences = DB.absences.filter(a => !(a.username === u.username && a.date === todayStr));
       gsPost({ action: "removeAbsence", data: { username: u.username, date: todayStr } });
     } else if (!isPresent && !existingAbs) {
-      // FIX: unique ID using timestamp + index to prevent collision across users
-      const newAbs = { id: Date.now() * 1000 + idx, username: u.username, date: todayStr, auto: true };
-      DB.absences.push(newAbs);
-      gsPost({ action: "addAbsence", data: newAbs });
+      // FIX: also check queue — another device may have already queued this absence
+      const alreadyQueued = queue.some(q => q.action === "addAbsence" && q.data?.username === u.username && q.data?.date === todayStr);
+      if (!alreadyQueued) {
+        // FIX: unique ID using timestamp + index to prevent collision across users
+        const newAbs = { id: String(Date.now())+"_abs_"+idx, username: u.username, date: todayStr, auto: true };
+        DB.absences.push(newAbs);
+        gsPost({ action: "addAbsence", data: newAbs });
+      }
     }
   });
   save(DB);
@@ -569,12 +584,18 @@ async function loadFromSheet() {
       const key = r.id ? String(r.id) : (r.username + r.timestamp);
       const local = localById[key];
       if(local && local.timestamp > r.timestamp){
-        allAttendById[key] = local; // local is strictly newer — keep local
+        // FIX: clock skew guard — if local is >10 min ahead of sheet, prefer sheet
+        // A legitimate re-checkin would have a matching queue record; a skewed clock won't
+        const skewed = (local.timestamp - r.timestamp) > 10 * 60 * 1000;
+        const hasPendingLocal = _queue.some(q => q.data?.id && String(q.data.id) === key);
+        allAttendById[key] = (skewed && !hasPendingLocal) ? r : local;
       } else if(local && local.timestamp === r.timestamp){
-        // Same record — merge: only keep local "out" type if sheet explicitly confirms it too
-        // If sheet has no type field, default to "in" (don't trust stale local "out" from old bug)
+        // Same record — merge type: prefer local "out" over sheet "in"
+        // A local checkout that beat the sheet sync should not be downgraded to "in"
         const sheetTypeRaw = (r.type||"").toString().trim().toLowerCase();
-        const mergedType = sheetTypeRaw === "out" ? "out" : (sheetTypeRaw === "in" ? "in" : "in");
+        const localTypeRaw = (local?.type||"").toString().trim().toLowerCase();
+        // FIX: if local says "out", trust it — only revert to "in" if both agree
+        const mergedType = (localTypeRaw === "out" || sheetTypeRaw === "out") ? "out" : "in";
         allAttendById[key] = {
           ...r,
           ...local,
@@ -694,7 +715,7 @@ async function loadFromSheet() {
       if(s.timestamp > existing.timestamp || localTotal > existTotal) surveyMap[key] = {...s, policy:parseInt(s.policy)||0, rsa:parseInt(s.rsa)||0, gpa:parseInt(s.gpa)||0};
     });
     DB.surveys = Object.values(surveyMap);
-    save(DB);
+    // Note: save(DB) deferred to end of function — absences + orphan cleanup also pending
 
     // Load absences from sheet — merge with local so no device loses absence data
     // Always sync absences from sheet — sheet is source of truth for absences
@@ -720,10 +741,13 @@ async function loadFromSheet() {
     removedAbsKeys.forEach(k => delete absMap[k]);
     DB.absences = Object.values(absMap);
 
-    // Clean up orphan records for deleted users
+    // Clean up orphan records for deleted users (keep only recent attendance to avoid data loss)
     const activeUsernames = new Set(DB.users.map(u => u.username));
     DB.absences = (DB.absences||[]).filter(a => activeUsernames.has(a.username));
     DB.surveys = (DB.surveys||[]).filter(s => activeUsernames.has(s.username));
+    // FIX: also clean orphan attendance — only remove records older than 30 days for deleted users
+    const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
+    DB.attendance = DB.attendance.filter(r => activeUsernames.has(r.username) || r.timestamp > thirtyDaysAgo);
     save(DB);
     return true;
   } catch(e) { console.error("loadFromSheet error:", e); return false; }
@@ -926,11 +950,16 @@ function renderLogin(){
     const localFound=DB.users.find(x=>x.username===u&&x.password===p);
     if(!localFound){
       btn.disabled=true;btn.textContent="Verifying…";
-      loadFromSheet().then(()=>{
-        const found2=DB.users.find(x=>x.username===u&&x.password===p);
-        if(!found2){errBox.textContent="Incorrect username or password.";errBox.classList.remove("hidden");btn.disabled=false;btn.textContent="Sign In";return}
-        proceedLogin(found2,u,p);
-      }).catch(()=>{errBox.textContent="Incorrect username or password.";errBox.classList.remove("hidden");btn.disabled=false;btn.textContent="Sign In";});
+      // FIX: flush queue first so any pending password changes reach sheet before we check
+      (async()=>{
+        try{ if(navigator.onLine) await flushQueue(); }catch(_){}
+        try{
+          await loadFromSheet();
+          const found2=DB.users.find(x=>x.username===u&&x.password===p);
+          if(!found2){errBox.textContent="Incorrect username or password.";errBox.classList.remove("hidden");btn.disabled=false;btn.textContent="Sign In";return}
+          proceedLogin(found2,u,p);
+        }catch(_){errBox.textContent="Incorrect username or password.";errBox.classList.remove("hidden");btn.disabled=false;btn.textContent="Sign In";}
+      })();
       return;
     }
     proceedLogin(localFound,u,p);
@@ -944,22 +973,24 @@ function renderLogin(){
   function proceedLogin(found, u, p){
     if(found.role==="admin"){
       btn.disabled=true;btn.textContent="Syncing data…";
-      withLoginTimeout(loadFromSheet()).finally(()=>{
+      // FIX: flush queue before loading so sheet has latest data
+      flushQueue().catch(()=>{}).finally(()=>withLoginTimeout(loadFromSheet()).finally(()=>{
         const u2=DB.users.find(x=>x.username===found.username)||found;
         SESSION={username:u2.username,fullName:u2.fullName&&u2.fullName.trim()?u2.fullName.trim():u2.username,role:"admin"};
         route();
-      });
+      }));
       return;
     }
     btn.disabled=true;btn.textContent="Syncing data…";
-    withLoginTimeout(loadFromSheet()).finally(()=>{
+    // FIX: flush queue before loading
+    flushQueue().catch(()=>{}).finally(()=>withLoginTimeout(loadFromSheet()).finally(()=>{
       const u2=DB.users.find(x=>x.username===found.username)||found;
       const fn=u2.fullName&&u2.fullName.trim()?u2.fullName.trim():u2.username.charAt(0).toUpperCase()+u2.username.slice(1).toLowerCase();
       SESSION={username:u2.username,fullName:fn,role:"user"};
       // Clear any stale checkout flag from previous session
       sessionStorage.removeItem("vibeLastCheckout_"+SESSION.username);
       route();
-    });
+    }));
   }
   btn.addEventListener("click",doLogin);
   [inU,inP].forEach(i=>i.addEventListener("keydown",e=>{if(e.key==="Enter")doLogin()}));
@@ -1023,7 +1054,10 @@ function renderUser(){
       if(r.type==="out")return true;
       // Keep check-in if it came BEFORE the last checkout (it's the original check-in)
       if(r.timestamp<=cutoff)return true;
-      // Drop ghost check-ins that appeared after checkout (from sheet sync artifacts)
+      // FIX: keep genuine re-check-ins that happened >5 min after the last checkout
+      // (e.g. user checks out at 2PM and comes back at 3PM for second shift)
+      if(r.timestamp-cutoff>5*60*1000)return true;
+      // Drop ghost check-ins that appeared suspiciously close after checkout (sheet sync artifacts)
       return false;
     });
   };
@@ -1239,10 +1273,12 @@ function renderUser(){
               const checkInTs2=todayCheckins2.length?Math.min(...todayCheckins2.map(r=>r.timestamp)):Date.now();
               const surveyDate2=localDateStr(new Date(checkInTs2));
               const _tsNow=Date.now();
-              const sur={id:_tsNow,username:SESSION.username,timestamp:_tsNow,date:surveyDate2,...answers};
+              // FIX: composite IDs prevent collision across users at same millisecond
+              const _surId=String(_tsNow)+"_sur_"+SESSION.username;
+              const _outId=String(_tsNow)+"_out_"+SESSION.username;
+              const sur={id:_surId,username:SESSION.username,timestamp:_tsNow,date:surveyDate2,...answers};
               const geo2=checkUserGeofence(loc.lat,loc.lng,SESSION.username);
-              const _tsOut=_tsNow+1;
-              const rec_out={id:_tsOut,username:SESSION.username,type:"out",timestamp:_tsOut,location:loc,geoOk:geo2.ok,geoName:geo2.name,geoDist:geo2.dist??null,noLocationSet:false};
+              const rec_out={id:_outId,username:SESSION.username,type:"out",timestamp:_tsNow+1,location:loc,geoOk:geo2.ok,geoName:geo2.name,geoDist:geo2.dist??null,noLocationSet:false};
               // FIX: queue BOTH survey + checkout atomically before any flush
               // prevents sheet having survey with no matching checkout if network drops mid-way
               stampCheckOut(); // stamp debounce only when record is actually committed
@@ -1252,7 +1288,9 @@ function renderUser(){
               const _sq=loadQueue();
               const _qTs=Date.now();
               _sq.push({action:"addSurvey",data:sur,ts:_qTs});
-              _sq.push({action:"addAttendance",data:{...rec_out,lat:loc.lat,lng:loc.lng},ts:_qTs});
+              // FIX: post checkout location as outLat/outLng so Apps Script stores in correct columns
+              // and loadFromSheet can read it back as outLocation
+              _sq.push({action:"addAttendance",data:{...rec_out,outLat:loc.lat,outLng:loc.lng},ts:_qTs});
               saveQueue(_sq);
               await flushQueue(); // flush both together
               sessionStorage.setItem("vibeLastCheckout_"+SESSION.username, String(_tsOut));
@@ -1286,7 +1324,9 @@ function renderUser(){
             }
             const geo=checkUserGeofence(loc.lat,loc.lng,SESSION.username);
             const _tsIn=Date.now();
-            const rec_in={id:_tsIn,username:SESSION.username,type:"in",timestamp:_tsIn,location:{...loc,workLocation:userWorkLoc},geoOk:geo.ok,geoName:geo.name,geoDist:geo.dist??null,noLocationSet:false};
+            // FIX: composite ID prevents collision when two users check in at same millisecond
+            const _inId=String(_tsIn)+"_"+SESSION.username;
+            const rec_in={id:_inId,username:SESSION.username,type:"in",timestamp:_tsIn,location:{...loc,workLocation:userWorkLoc},geoOk:geo.ok,geoName:geo.name,geoDist:geo.dist??null,noLocationSet:false};
             DB.attendance.push(rec_in);save(DB);
             gsPost({action:"addAttendance",data:{...rec_in,lat:loc.lat,lng:loc.lng,workLocation:userWorkLoc}});
             delete window._geoWarn;
@@ -1716,6 +1756,7 @@ function renderAdmin(){
   const syncBtn=h("button",{style:{padding:".35rem .7rem",border:"1.5px solid #e5e7eb",borderRadius:"8px",background:"#dcfce7",color:"#15803d",fontFamily:"var(--font)",fontSize:".75rem",cursor:"pointer",fontWeight:"600",whiteSpace:"nowrap"}},"🟢 Sync");
   syncBtn.addEventListener("click",async()=>{
     syncBtn.textContent="⏳ Syncing…";syncBtn.disabled=true;
+    await flushQueue(); // FIX: flush pending items BEFORE pulling sheet to avoid stale data overwrite
     await loadFromSheet();const ok=await syncToSheet();
     syncBtn.textContent=ok&&ok.ok?"✅ Synced!":"❌ Failed";
     refresh();setTimeout(()=>{syncBtn.textContent="🟢 Sync";syncBtn.disabled=false;},3000);
@@ -1820,7 +1861,10 @@ const todayInUsers=[...new Set(allAttend.filter(r=>(r.type==="in"||r.type==="out
     // Users with a survey today were definitely present (survey only submits at checkout)
     const todaySurveyUsernames=new Set(todaySurveys.map(s=>s.username));
     const todayAbsent=todayIsWeekend?[]:regularUsers.filter(u=>!todayInUsers.includes(u.username)&&!todaySurveyUsernames.has(u.username));
-    const totalPolicy=allSurveys.reduce((s,r)=>s+(parseInt(r.policy)||0),0);
+    // FIX: totalPolicy should be current month only — not all-time — to match card label
+    const curMon=localMonthStr(new Date());
+    const thisMonthSurveys=allSurveys.filter(s=>(s.date||"").startsWith(curMon));
+    const totalPolicy=thisMonthSurveys.reduce((s,r)=>s+(parseInt(r.policy)||0),0);
     const todayPolicy=todaySurveys.reduce((s,r)=>s+(parseInt(r.policy)||0),0);
     const todayRsa=todaySurveys.reduce((s,r)=>s+(parseInt(r.rsa)||0),0);
     const todayGpa=todaySurveys.reduce((s,r)=>s+(parseInt(r.gpa)||0),0);
@@ -1952,8 +1996,8 @@ const todayInUsers=[...new Set(allAttend.filter(r=>(r.type==="in"||r.type==="out
     const c3=el("div","home-card");
     c3.innerHTML=`<div class="big-num" style="color:#7c3aed">${totalPolicy}</div><div class="card-label">Month Total Policy</div>`;
     const p3=h("div",{style:{marginTop:".6rem",display:"flex",gap:".5rem",flexWrap:"wrap"}});
-    const totalRsa=allSurveys.reduce((s,r)=>s+(parseInt(r.rsa)||0),0);
-    const totalGpa=allSurveys.reduce((s,r)=>s+(parseInt(r.gpa)||0),0);
+    const totalRsa=thisMonthSurveys.reduce((s,r)=>s+(parseInt(r.rsa)||0),0);
+    const totalGpa=thisMonthSurveys.reduce((s,r)=>s+(parseInt(r.gpa)||0),0);
     [["RSA: "+totalRsa,"#fef3c7","#92400e"],["GPA: "+totalGpa,"#d1fae5","#065f46"]].forEach(([txt,bg,col])=>{
       p3.appendChild(h("span",{style:{background:bg,color:col,fontSize:".72rem",padding:".2rem .55rem",borderRadius:"8px",fontWeight:"600"}},txt));
     });
@@ -2147,6 +2191,9 @@ const todayInUsers=[...new Set(allAttend.filter(r=>(r.type==="in"||r.type==="out
             DB.attendance=DB.attendance.filter(r=>r.username!==u.username);
             DB.surveys=(DB.surveys||[]).filter(r=>r.username!==u.username);
             DB.absences=(DB.absences||[]).filter(r=>r.username!==u.username);
+            // FIX: purge deleted user's records from queue — prevents re-upload of deleted data on next flush
+            const dq=loadQueue().filter(item=>!item.data||item.data.username!==u.username);
+            saveQueue(dq);
             save(DB);syncToSheet();refresh();
           });
           btns.appendChild(eBtn);btns.appendChild(dBtn);row.appendChild(btns);userListWrap.appendChild(row);
@@ -2600,6 +2647,13 @@ const todayInUsers=[...new Set(allAttend.filter(r=>(r.type==="in"||r.type==="out
         DB.attendance=DB.attendance.map(r=>r.username===u.username?{...r,username:uid}:r);
         DB.surveys=(DB.surveys||[]).map(s=>s.username===u.username?{...s,username:uid}:s);
         DB.absences=(DB.absences||[]).map(a=>a.username===u.username?{...a,username:uid}:a);
+        // FIX: also rename username in any pending queue items — prevents orphan records on sheet
+        const rq=loadQueue();
+        const rqUpdated=rq.map(item=>{
+          if(item.data&&item.data.username===u.username) return {...item,data:{...item.data,username:uid}};
+          return item;
+        });
+        saveQueue(rqUpdated);
       }
       save(DB);syncToSheet();ov.remove();refresh();
     });
@@ -2672,7 +2726,20 @@ loadDiv.innerHTML=`
 `;
 document.getElementById("app").appendChild(loadDiv);
 const timeout=setTimeout(()=>{markAbsences();route();},5000);
-loadFromSheet().then(()=>{clearTimeout(timeout);markAbsences();route();}).catch(()=>{clearTimeout(timeout);markAbsences();route();});
+// FIX: flush queue first so sheet has all pending records before we pull
+(async()=>{
+  try{ if(navigator.onLine) await flushQueue(); } catch(_){}
+  try{
+    await loadFromSheet();
+    clearTimeout(timeout);
+    markAbsences();
+    route();
+  } catch(_){
+    clearTimeout(timeout);
+    markAbsences();
+    route();
+  }
+})();
 
 
 
@@ -2685,13 +2752,16 @@ if('serviceWorker' in navigator){
     && host !== ''
     && host !== 'localhost';
   if(isRealHost){
+    // FIX: attach FLUSH_QUEUE listener at top level BEFORE registration completes
+    // so background sync events that fire early (e.g. on page load) are never missed
+    navigator.serviceWorker.addEventListener('message',e=>{
+      if(e.data?.type==='FLUSH_QUEUE') flushQueue();
+    });
     window.addEventListener('load',()=>{
       navigator.serviceWorker.register('./sw.js')
         .then(reg=>{
           console.log('✅ VIBE SW registered');
-          navigator.serviceWorker.addEventListener('message',e=>{
-            if(e.data?.type==='FLUSH_QUEUE') flushQueue();
-          });
+          // Note: FLUSH_QUEUE listener already attached above — no duplicate needed
 
           // ── Force update check in background — never interrupt active session ──
           reg.update();
