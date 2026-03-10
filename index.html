@@ -275,7 +275,19 @@ async function gsFetch(params) {
 
 // ── RETRY QUEUE — never lose a check-in even if network fails ─────────────────
 const QUEUE_KEY = "vibePostQueue";
-function loadQueue(){ try{ return JSON.parse(localStorage.getItem(QUEUE_KEY)||"[]"); }catch{ return []; } }
+const QUEUE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days — drop stale items that can never succeed
+function loadQueue(){
+  try{
+    const raw = JSON.parse(localStorage.getItem(QUEUE_KEY)||"[]");
+    // Purge items older than 7 days (use item.ts if present, else keep item)
+    const now = Date.now();
+    const fresh = raw.filter(item => !item.ts || (now - item.ts) < QUEUE_MAX_AGE_MS);
+    if(fresh.length !== raw.length){
+      try{ localStorage.setItem(QUEUE_KEY, JSON.stringify(fresh)); }catch(_){}
+    }
+    return fresh;
+  }catch{ return []; }
+}
 
 // FIX: saveQueue now returns boolean so callers can detect storage failure
 function saveQueue(q){
@@ -316,8 +328,8 @@ async function requestBackgroundSync() {
 let _queueRunning = false;
 async function flushQueue(){
   const url = getScriptUrl();
-  // FIX: guard both _queueRunning and missing URL
-  if(_queueRunning || !url) return;
+  // Guard: skip if already running, no URL, or device is offline
+  if(_queueRunning || !url || !navigator.onLine) return;
   _queueRunning = true;
   try {
     let q = loadQueue();
@@ -339,12 +351,13 @@ async function flushQueue(){
         } else {
           failCount++;
           if(failCount >= 3) { requestBackgroundSync(); break; }
-          await new Promise(r=>setTimeout(r,1000)); // back-off 1s before retry
+          await new Promise(r=>setTimeout(r, Math.min(1000 * Math.pow(2, failCount-1), 4000))); // exponential back-off: 1s, 2s, 4s
         }
       } catch(e){
         failCount++;
+        if(!navigator.onLine) break; // device went offline mid-flush — stop immediately, wait for 'online' event
         if(failCount >= 3) { requestBackgroundSync(); break; }
-        await new Promise(r=>setTimeout(r,1000));
+        await new Promise(r=>setTimeout(r, Math.min(1000 * Math.pow(2, failCount-1), 4000)));
       }
     }
   } finally {
@@ -356,7 +369,7 @@ async function gsPost(body) {
   const url = getScriptUrl();
   if (!url) return { ok: false, error: "No Script URL" };
   const q = loadQueue();
-  q.push(body);
+  q.push({...body, ts: Date.now()}); // ts enables 7-day TTL purge
   const saved = saveQueue(q);
   // FIX: propagate storage failure to caller so UI can show error
   if (!saved) return { ok: false, error: "Storage Full" };
@@ -366,6 +379,8 @@ async function gsPost(body) {
 
 // Flush queue on visibility change (when user reopens tab/phone)
 document.addEventListener("visibilitychange", () => { if(!document.hidden && SESSION) flushQueue(); });
+// Flush immediately when device comes back online — don't wait for 30s interval
+window.addEventListener("online", () => { if(SESSION) flushQueue(); });
 // Flush queue periodically — only when logged in
 setInterval(()=>{ if(SESSION) flushQueue(); }, 30000);
 
@@ -1235,8 +1250,9 @@ function renderUser(){
               DB.attendance.push(rec_out);
               save(DB);
               const _sq=loadQueue();
-              _sq.push({action:"addSurvey",data:sur});
-              _sq.push({action:"addAttendance",data:{...rec_out,lat:loc.lat,lng:loc.lng}});
+              const _qTs=Date.now();
+              _sq.push({action:"addSurvey",data:sur,ts:_qTs});
+              _sq.push({action:"addAttendance",data:{...rec_out,lat:loc.lat,lng:loc.lng},ts:_qTs});
               saveQueue(_sq);
               await flushQueue(); // flush both together
               sessionStorage.setItem("vibeLastCheckout_"+SESSION.username, String(_tsOut));
@@ -1720,6 +1736,23 @@ function renderAdmin(){
     localStorage.setItem("vibeTheme",isLight?"light":"dark");
   });
   hdrR.appendChild(adminThemeBtn);
+  // Admin sync status badge — shows pending queue items
+  const adminSyncBadge=h("span",{style:{fontSize:".7rem",padding:".2rem .5rem",borderRadius:"20px",fontWeight:"700",display:"none",fontFamily:"var(--font)"}});
+  function updateAdminSyncBadge(){
+    const qc=loadQueue().length;
+    if(qc>0){
+      adminSyncBadge.textContent=`⏳ ${qc} pending`;
+      adminSyncBadge.style.cssText="font-size:.7rem;padding:.2rem .5rem;border-radius:20px;font-weight:700;display:inline-block;background:#ffd16622;color:#92400e;border:1px solid #ffd16644;cursor:pointer;font-family:var(--font)";
+      adminSyncBadge.title=`${qc} record(s) waiting to sync. Click to retry now.`;
+    } else {
+      adminSyncBadge.style.display="none";
+    }
+  }
+  adminSyncBadge.addEventListener("click",async()=>{adminSyncBadge.textContent="⏳ Retrying…";await flushQueue();updateAdminSyncBadge();});
+  updateAdminSyncBadge();
+  const _adminBadgeInterval=setInterval(updateAdminSyncBadge,5000);
+  soBtn.addEventListener("click",()=>clearInterval(_adminBadgeInterval),{once:true});
+  hdrR.appendChild(adminSyncBadge);
   hdrR.appendChild(syncBtn);hdrR.appendChild(soBtn);hdr.appendChild(hdrR);dash.appendChild(hdr);
 
   const content=el("div","content");dash.appendChild(content);
