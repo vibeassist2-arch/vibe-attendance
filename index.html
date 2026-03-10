@@ -824,11 +824,12 @@ let DB = loadData();
 let SESSION = null;
 
 function getLocation(){
+  // Returns {lat,lng} on success or {error:"denied"|"timeout"|"unavailable"|"unsupported"} on failure
   return new Promise((res)=>{
-    if(!navigator.geolocation){res(null);return;}
+    if(!navigator.geolocation){res({error:"unsupported"});return;}
     navigator.geolocation.getCurrentPosition(
-      p=>{const lat=p.coords.latitude,lng=p.coords.longitude;if(lat<-90||lat>90||lng<-180||lng>180){res(null);return;}res({lat,lng});},
-      ()=>{res(null);}, // GPS denied/failed — resolve with null, never block check-in
+      p=>{const lat=p.coords.latitude,lng=p.coords.longitude;if(lat<-90||lat>90||lng<-180||lng>180){res({error:"unavailable"});return;}res({lat,lng});},
+      (err)=>{ if(err.code===1)res({error:"denied"}); else if(err.code===3)res({error:"timeout"}); else res({error:"unavailable"}); },
       {timeout:12000,enableHighAccuracy:true,maximumAge:0}
     );
   });
@@ -1199,6 +1200,19 @@ function renderUser(){
           showSurvey(answers=>{
             mainBtn.textContent="Checking out…";
             getLocation().then(async loc=>{
+              if(loc && loc.error){
+                // Location failed — cancel checkout, reset state
+                _checkoutInProgress=false;
+                _lastCheckOut=0;
+                mainBtn.disabled=false;mainBtn.textContent="⏹ Check Out";
+                const msgs={denied:"Location access denied. Allow location permission in your browser/phone settings, then try again.",timeout:"Location timed out. Move to an open area with better GPS signal, then try again.",unavailable:"Location unavailable. Please enable GPS on your device and try again.",unsupported:"This device/browser does not support location. Cannot check out."};
+                const msg=msgs[loc.error]||"Could not get your location. Please try again.";
+                const oldEb=content.querySelector(".loc-err-banner");if(oldEb)oldEb.remove();
+                const eb=h("div",{className:"loc-err-banner geo-banner geo-fail",style:{marginTop:".75rem"}});
+                eb.innerHTML="<span class='geo-icon'>⛔</span><div><strong>Location Required to Check Out</strong><br>"+msg+"</div>";
+                mainBtn.insertAdjacentElement("afterend",eb);
+                return;
+              }
               const todayCheckins2=DB.attendance.filter(r=>r.username===SESSION.username&&r.type==="in"&&new Date(r.timestamp).toDateString()===new Date().toDateString());
               const checkInTs2=todayCheckins2.length?Math.min(...todayCheckins2.map(r=>r.timestamp)):Date.now();
               const surveyDate2=localDateStr(new Date(checkInTs2));
@@ -1207,13 +1221,14 @@ function renderUser(){
               DB.surveys.push(sur);save(DB);
               const _sq=loadQueue();_sq.push({action:"addSurvey",data:sur});saveQueue(_sq);
               await flushQueue();
-              const geo2=loc?checkUserGeofence(loc.lat,loc.lng,SESSION.username):{ok:false,name:"",dist:null,noLocationSet:true};
+              const geo2=checkUserGeofence(loc.lat,loc.lng,SESSION.username);
               const _tsOut=_tsNow+1;
-              const rec_out={id:_tsOut,username:SESSION.username,type:"out",timestamp:_tsOut,location:loc||null,geoOk:loc?geo2.ok:false,geoName:loc?geo2.name:"",geoDist:loc?(geo2.dist??null):null,noLocationSet:!loc};
+              const rec_out={id:_tsOut,username:SESSION.username,type:"out",timestamp:_tsOut,location:loc,geoOk:geo2.ok,geoName:geo2.name,geoDist:geo2.dist??null,noLocationSet:false};
               DB.attendance.push(rec_out);save(DB);
-              gsPost({action:"addAttendance",data:{...rec_out,lat:loc?.lat||"",lng:loc?.lng||""}});
+              gsPost({action:"addAttendance",data:{...rec_out,lat:loc.lat,lng:loc.lng}});
               sessionStorage.setItem("vibeLastCheckout_"+SESSION.username, String(_tsOut));
               delete window._geoWarn;
+              const prevEb=document.querySelector(".loc-err-banner");if(prevEb)prevEb.remove();
               _checkoutInProgress=false;
               refresh();
             });
@@ -1225,16 +1240,28 @@ function renderUser(){
         } else {
           if(!canCheckIn()){ return; } // debounce — prevent double tap
           stampCheckIn(); // stamp now so rapid taps are blocked
-          mainBtn.disabled=true;mainBtn.innerHTML='<span class="spinner"></span>Checking in…';
+          mainBtn.disabled=true;mainBtn.innerHTML='<span class="spinner"></span>Getting location…';
           const meUserRec=DB.users.find(u=>u.username===SESSION.username);
           const userWorkLoc=meUserRec?.location||"";
           getLocation().then(loc=>{
-            const geo=loc?checkUserGeofence(loc.lat,loc.lng,SESSION.username):{ok:false,name:"",dist:null,noLocationSet:true};
+            if(loc && loc.error){
+              _lastCheckIn=0; // reset debounce — let user retry after fixing GPS
+              mainBtn.disabled=false;mainBtn.textContent="▶ Check In";
+              const msgs={denied:"Location access denied. Allow location permission in your browser/phone settings, then try again.",timeout:"Location timed out. Move to an open area with better GPS signal, then try again.",unavailable:"Location unavailable. Please enable GPS on your device and try again.",unsupported:"This device/browser does not support location. Cannot check in."};
+              const msg=msgs[loc.error]||"Could not get your location. Please try again.";
+              const oldEb=content.querySelector(".loc-err-banner");if(oldEb)oldEb.remove();
+              const eb=h("div",{className:"loc-err-banner geo-banner geo-fail",style:{marginTop:".75rem"}});
+              eb.innerHTML="<span class='geo-icon'>⛔</span><div><strong>Location Required to Check In</strong><br>"+msg+"</div>";
+              mainBtn.insertAdjacentElement("afterend",eb);
+              return;
+            }
+            const geo=checkUserGeofence(loc.lat,loc.lng,SESSION.username);
             const _tsIn=Date.now();
-            const rec_in={id:_tsIn,username:SESSION.username,type:"in",timestamp:_tsIn,location:loc?{...loc,workLocation:userWorkLoc}:null,geoOk:loc?geo.ok:false,geoName:loc?geo.name:"",geoDist:loc?(geo.dist??null):null,noLocationSet:!loc};
+            const rec_in={id:_tsIn,username:SESSION.username,type:"in",timestamp:_tsIn,location:{...loc,workLocation:userWorkLoc},geoOk:geo.ok,geoName:geo.name,geoDist:geo.dist??null,noLocationSet:false};
             DB.attendance.push(rec_in);save(DB);
-            gsPost({action:"addAttendance",data:{...rec_in,lat:loc?.lat||"",lng:loc?.lng||"",workLocation:userWorkLoc}});
+            gsPost({action:"addAttendance",data:{...rec_in,lat:loc.lat,lng:loc.lng,workLocation:userWorkLoc}});
             delete window._geoWarn;
+            const prevEb=document.querySelector(".loc-err-banner");if(prevEb)prevEb.remove();
             refresh();
           });
         }
@@ -2272,9 +2299,9 @@ function renderAdmin(){
             const mins=r.in&&r.out?Math.round((r.out-r.in)/60000):null;
             const hrs=mins?`${Math.floor(mins/60)}h ${mins%60}m`:"—";
             const hrsVal=mins?mins/60:null;
-            const hrsColor=hrsVal>=8?"var(--gpa)":hrsVal>=4?"var(--warn)":"var(--danger)";
-            const hrsBg=hrsVal>=8?"#38d9a922":hrsVal>=4?"#ffd16622":"#ff5f6d22";
-            const hrsBorder=hrsVal>=8?"#38d9a944":hrsVal>=4?"#ffd16644":"#ff5f6d44";
+            const hrsColor=!mins?"var(--muted)":hrsVal>=8?"var(--gpa)":hrsVal>=4?"var(--warn)":"var(--danger)";
+            const hrsBg=!mins?"transparent":hrsVal>=8?"#38d9a922":hrsVal>=4?"#ffd16622":"#ff5f6d22";
+            const hrsBorder=!mins?"transparent":hrsVal>=8?"#38d9a944":hrsVal>=4?"#ffd16644":"#ff5f6d44";
             const uInfo=regularUsers.find(u=>u.username===r.username);
             const displayN=(uInfo&&uInfo.fullName)?uInfo.fullName:r.username;
             const arr=getArrivalStatus(r.in);
@@ -2330,8 +2357,8 @@ function renderAdmin(){
           }
         }
 
-        tbl.appendChild(tbody);tw.appendChild(tbl);content.appendChild(tw);
         const pgBar=h("div",{style:{display:"flex",alignItems:"center",gap:".75rem",padding:".8rem 0",flexWrap:"wrap"}});
+        tbl.appendChild(tbody);tw.appendChild(tbl);content.appendChild(tw);
         content.appendChild(pgBar);
         renderPage();
       }
@@ -2567,8 +2594,8 @@ function renderAdmin(){
 
 // markAbsences() now runs after loadFromSheet completes
 
-// Restore saved theme before first render
-if(localStorage.getItem("vibeTheme")==="light") document.body.classList.add("light-mode");
+// Default to light mode — only switch to dark if user explicitly chose it
+if(localStorage.getItem("vibeTheme")!=="dark") document.body.classList.add("light-mode");
 
 const loadDiv=document.createElement("div");
 loadDiv.style.cssText="min-height:100vh;display:flex;flex-direction:column;font-family:'Sora',sans-serif;background:var(--bg)";
