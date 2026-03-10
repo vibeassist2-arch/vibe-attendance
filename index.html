@@ -504,7 +504,7 @@ async function loadFromSheet() {
       const rType = (r.type||"").toString().trim().toLowerCase();
       // If sheet doesn't have type, check local DB first (avoids checkout-with-lat being inferred as "in")
       const localType = r.id ? (_localTypeMap[String(r.id)] || "") : "";
-      const inferredType = rType || localType || (r.lat ? "in" : "out");
+      const inferredType = rType || localType || "in";
       // Parse geoOk correctly — sheet stores it as string "true"/"false"
       const geoOk = r.geoOk === true || r.geoOk === "true" || r.geoOk === 1 || r.geoOk === "1";
       return {
@@ -572,7 +572,7 @@ async function loadFromSheet() {
         const key = r.id ? String(r.id) : (r.username + r.timestamp);
         const existing = allAttendById[key];
         if(!existing || r.timestamp >= (existing.timestamp||0)){
-          allAttendById[key] = {...r, type: r.type||(r.lat?"in":"out")};
+          allAttendById[key] = {...r, type: r.type||"in"};
         }
       });
 
@@ -636,7 +636,24 @@ async function loadFromSheet() {
         // else: ghost check-in within 5 min after checkout — drop it (sheet sync artifact)
       });
     });
-    DB.attendance = cleanedAttend;
+    // ── MIGRATION: fix any "out" records with no matching "in" on same day — they were wrongly typed ──
+    // This corrects stale localStorage data from before the type-inference fix
+    const _migByUD = {};
+    cleanedAttend.forEach(r => {
+      const dk = r.username + "__" + new Date(r.timestamp).toDateString();
+      if(!_migByUD[dk]) _migByUD[dk] = {ins:[], outs:[]};
+      if(r.type === "in") _migByUD[dk].ins.push(r);
+      else _migByUD[dk].outs.push(r);
+    });
+    const migratedAttend = cleanedAttend.map(r => {
+      if(r.type !== "out") return r;
+      const dk = r.username + "__" + new Date(r.timestamp).toDateString();
+      const day = _migByUD[dk];
+      // If this "out" record has no "in" on same day → it was mistyped, correct to "in"
+      if(day && day.ins.length === 0) return {...r, type: "in"};
+      return r;
+    });
+    DB.attendance = migratedAttend;
 
     const sheetSurveys = (result.surveys||[]).map(s => {
       const ts = parseInt(s.timestamp)||0;
@@ -1751,7 +1768,7 @@ function renderAdmin(){
     // All queued attendance (check-ins AND checkouts) — single source, no duplication
     const _queuedAttend = _adminQueue
       .filter(item => item.action === "addAttendance" && item.data?.username && item.data?.timestamp)
-      .map(item => ({...item.data, type: item.data.type || (item.data.lat ? "in" : "out")}));
+      .map(item => ({...item.data, type: item.data.type || "in"}));
     const _queuedSurveys = _adminQueue
       .filter(item => item.action === "addSurvey" && item.data)
       .map(item => item.data)
