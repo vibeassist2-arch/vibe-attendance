@@ -1,17 +1,19 @@
 <!DOCTYPE html>
-<!-- VIBE v20260310.final — survey status card, show-all tables, absent/present format update -->
+<!-- VIBE v20260311.fix — absent bug fix: checkout records now count as present -->
 <html lang="en">
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>VIBE Attendance</title>
+<title>Attendance Tracker</title>
 <!-- PWA -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#4f8ef7">
+<meta name="application-name" content="Attendance Tracker">
+<meta name="description" content="Attendance Tracker — smart employee check-in and check-out tracking.">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="VIBE">
+<meta name="apple-mobile-web-app-title" content="Attendance Tracker">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
 <link rel="icon" type="image/png" sizes="96x96" href="favicon-96x96.png">
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
@@ -242,7 +244,7 @@ select option{background:var(--surface);color:var(--text)}
 <div id="app"></div>
 
 <script>
-// ── VIBE v20260310.final — Survey Status Card + Show All Tables ─────────────────
+// ── VIBE v20260311.fix — Absent bug fix: checkout records count as present ────
 const KEY = "vibeAttendanceData";
 const DEFAULT_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwvX9h3XDveEw0zpwDvhru7j8dlaQx5VGAGOayx1tnn7GuohDq-H7UTZdBLx9o9N3Yh/exec";
 
@@ -388,11 +390,12 @@ function markAbsences() {
   // Build set of users present today — check both DB and pending queue
   const queue = loadQueue();
   const pendingIns = new Set(queue
-    .filter(i => i.action === "addAttendance" && i.data?.type === "in" && localDateStr(new Date(i.data.timestamp)) === todayStr)
+    .filter(i => i.action === "addAttendance" && (i.data?.type === "in" || i.data?.type === "out") && localDateStr(new Date(i.data.timestamp)) === todayStr)
     .map(i => i.data.username));
   const checkedInToday = new Set(
     DB.attendance
-      .filter(r => r.type === "in" && localDateStr(new Date(r.timestamp)) === todayStr)
+      // FIX: count BOTH "in" and "out" records as present — a checkout record proves the user was present
+      .filter(r => (r.type === "in" || r.type === "out") && localDateStr(new Date(r.timestamp)) === todayStr)
       .map(r => r.username)
   );
   // Also treat users with a survey today as present — survey only submits at checkout
