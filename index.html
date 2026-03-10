@@ -365,9 +365,9 @@ async function gsPost(body) {
 }
 
 // Flush queue on visibility change (when user reopens tab/phone)
-document.addEventListener("visibilitychange", () => { if(!document.hidden) flushQueue(); });
-// Flush queue periodically
-setInterval(flushQueue, 30000);
+document.addEventListener("visibilitychange", () => { if(!document.hidden && SESSION) flushQueue(); });
+// Flush queue periodically — only when logged in
+setInterval(()=>{ if(SESSION) flushQueue(); }, 30000);
 
 // ── DEBOUNCE — prevent double check-in on rapid taps ─────────────────────────
 let _lastCheckIn = 0;
@@ -422,15 +422,16 @@ function markAbsences() {
   save(DB);
 }
 
-setInterval(async()=>{ await flushQueue(); markAbsences(); }, 60000);
+setInterval(async()=>{ if(SESSION){ await flushQueue(); markAbsences(); } }, 60000);
 
 let autoSyncInterval = null;
 function startAutoSync() {
   if (autoSyncInterval) clearInterval(autoSyncInterval);
   autoSyncInterval = setInterval(async () => {
-    if (SESSION && SCRIPT_URL && !document.hidden) { // skip if tab is hidden
+    if (SESSION && getScriptUrl() && !document.hidden) { // skip if tab is hidden
       await flushQueue(); // push pending records before pulling
-      await loadFromSheet();
+      // FIX: admin has its own adminPoll that calls loadFromSheet — skip here to avoid double load
+      if (SESSION.role !== "admin") await loadFromSheet();
       if(!SESSION)return; // signed out during async load
       if (typeof window._adminRefresh === "function") window._adminRefresh();
       else if (typeof window._userRefresh === "function") window._userRefresh();
@@ -441,25 +442,30 @@ function startAutoSync() {
 }
 
 async function syncToSheet() {
-  if (!SCRIPT_URL) return;
+  const _syncUrl = getScriptUrl();
+  if (!_syncUrl) return;
   // Send directly (not via queue) to avoid ordering issues with queued attendance records
   const payload = { action:"fullSync", data: { users: DB.users, surveys: DB.surveys, attendance: DB.attendance, absences: DB.absences, officeLocations: DB.officeLocations } };
   try {
     const _sc = new AbortController();
     const _st = setTimeout(() => _sc.abort(), 8000);
-    const res = await fetch(SCRIPT_URL, { method:"POST", redirect:"follow", headers:{"Content-Type":"text/plain"}, body: JSON.stringify(payload), signal: _sc.signal });
+    const res = await fetch(_syncUrl, { method:"POST", redirect:"follow", headers:{"Content-Type":"text/plain"}, body: JSON.stringify(payload), signal: _sc.signal });
     clearTimeout(_st);
     const text = await res.text();
     try { return JSON.parse(text); } catch { return { ok: true }; }
   } catch(e) {
-    // On failure, fall back to queue
-    console.warn("syncToSheet direct failed, queuing:", e);
-    return await gsPost(payload);
+    // FIX: do NOT queue fullSync — queued fullSync can overwrite newer sheet data
+    // with stale local DB when it eventually flushes. Just report failure.
+    console.warn("syncToSheet failed:", e);
+    return { ok: false, error: e.message };
   }
 }
 
+let _loadRunning = false;
 async function loadFromSheet() {
-  if (!SCRIPT_URL) return false;
+  if (!getScriptUrl()) return false;
+  if (_loadRunning) return false; // prevent concurrent calls corrupting DB merge
+  _loadRunning = true;
   try {
     const result = await gsFetch({ action:"getAll" });
     if (!result || !result.ok) return false;
@@ -706,6 +712,7 @@ async function loadFromSheet() {
     save(DB);
     return true;
   } catch(e) { console.error("loadFromSheet error:", e); return false; }
+  finally { _loadRunning = false; }
 }
 
 function def(){return{users:[{username:"admin",password:"admin123",role:"admin"}],attendance:[],surveys:[],absences:[],officeLocations:[]}}
@@ -1194,7 +1201,7 @@ function renderUser(){
       mainBtn.addEventListener("click",()=>{
         if(checkedIn){
           if(_checkoutInProgress||!isIn()||!canCheckOut()){refresh();return;}
-          stampCheckOut();
+          // FIX: don't stamp debounce yet — stamp only when record is actually written
           _checkoutInProgress=true;
           mainBtn.disabled=true;mainBtn.textContent="Opening survey…";
           showSurvey(answers=>{
@@ -1218,14 +1225,20 @@ function renderUser(){
               const surveyDate2=localDateStr(new Date(checkInTs2));
               const _tsNow=Date.now();
               const sur={id:_tsNow,username:SESSION.username,timestamp:_tsNow,date:surveyDate2,...answers};
-              DB.surveys.push(sur);save(DB);
-              const _sq=loadQueue();_sq.push({action:"addSurvey",data:sur});saveQueue(_sq);
-              await flushQueue();
               const geo2=checkUserGeofence(loc.lat,loc.lng,SESSION.username);
               const _tsOut=_tsNow+1;
               const rec_out={id:_tsOut,username:SESSION.username,type:"out",timestamp:_tsOut,location:loc,geoOk:geo2.ok,geoName:geo2.name,geoDist:geo2.dist??null,noLocationSet:false};
-              DB.attendance.push(rec_out);save(DB);
-              gsPost({action:"addAttendance",data:{...rec_out,lat:loc.lat,lng:loc.lng}});
+              // FIX: queue BOTH survey + checkout atomically before any flush
+              // prevents sheet having survey with no matching checkout if network drops mid-way
+              stampCheckOut(); // stamp debounce only when record is actually committed
+              DB.surveys.push(sur);
+              DB.attendance.push(rec_out);
+              save(DB);
+              const _sq=loadQueue();
+              _sq.push({action:"addSurvey",data:sur});
+              _sq.push({action:"addAttendance",data:{...rec_out,lat:loc.lat,lng:loc.lng}});
+              saveQueue(_sq);
+              await flushQueue(); // flush both together
               sessionStorage.setItem("vibeLastCheckout_"+SESSION.username, String(_tsOut));
               delete window._geoWarn;
               const prevEb=document.querySelector(".loc-err-banner");if(prevEb)prevEb.remove();
@@ -1759,20 +1772,14 @@ function renderAdmin(){
       if(!_adByUD[dk]) _adByUD[dk] = [];
       _adByUD[dk].push(r);
     });
-    allAttend = allAttend.map(r => {
-      if(r.type !== "in") return r;
-      const dk = r.username+"__"+new Date(r.timestamp).toDateString();
-      const dayRecs = _adByUD[dk] || [];
-      if(dayRecs.some(x => x.type === "out")) return r; // already have a real out record
-      const allIns = dayRecs.filter(x => x.type === "in").sort((a,b) => a.timestamp - b.timestamp);
-      if(allIns.length < 2) return r; // only one check-in, nothing to fix
-      return r;
-    });
+    // FIX: removed dead type-correction skeleton — no-op code removed for clarity
+    // Type correction is handled correctly by the _byUserDay2 pass in loadFromSheet
     const allSurveys = [..._baseSurveys, ..._queuedSurveys];
     const todayStr=localDateStr();
     function normDate(d){if(!d)return"";const s=String(d);return s.includes("T")?s.slice(0,10):s.slice(0,10);}
     const todaySurveys=allSurveys.filter(s=>normDate(s.date)===todayStr);
-    const todayInUsers=[...new Set(allAttend.filter(r=>r.type==="in"&&new Date(r.timestamp).toDateString()===new Date().toDateString()).map(r=>r.username))];
+    // FIX: count both "in" AND "out" records as present — matches markAbsences() logic
+const todayInUsers=[...new Set(allAttend.filter(r=>(r.type==="in"||r.type==="out")&&new Date(r.timestamp).toDateString()===new Date().toDateString()).map(r=>r.username))];
     // Also check raw queue — user with pending (not yet uploaded) check-in must not appear absent
     const _queuedCheckinUsers=new Set(_adminQueue.filter(item=>item.action==="addAttendance"&&item.data?.type==="in"&&item.data?.timestamp&&new Date(item.data.timestamp).toDateString()===new Date().toDateString()).map(item=>item.data.username));
     _queuedCheckinUsers.forEach(u=>{if(!todayInUsers.includes(u))todayInUsers.push(u);});
@@ -2092,9 +2099,8 @@ function renderAdmin(){
           metaRow.appendChild(h("span",{style:{fontSize:".72rem",color:"var(--accent)",fontFamily:"var(--mono)",background:"#4f8ef722",border:"1px solid #4f8ef744",borderRadius:"6px",padding:".1rem .45rem"}},"ID: "+(u.userId||u.username)));
           if(u.designation)metaRow.appendChild(h("span",{style:{fontSize:".72rem",color:"var(--muted)"}},"🏷 "+u.designation));
           if(u.location)metaRow.appendChild(h("span",{style:{fontSize:".72rem",color:"var(--muted)"}},"📍 "+u.location));
-          const pwPill=h("span",{style:{fontSize:".7rem",background:"#ffd16622",color:"var(--warn)",border:"1px solid #ffd16644",borderRadius:"6px",padding:".1rem .45rem",fontFamily:"var(--mono)",cursor:"pointer"}},"🔑 ••••••");
-          let pwShown=false;
-          pwPill.addEventListener("click",()=>{pwShown=!pwShown;pwPill.textContent=pwShown?"🔑 "+u.password:"🔑 ••••••"});
+          const pwPill=h("span",{style:{fontSize:".7rem",background:"#ffd16622",color:"var(--warn)",border:"1px solid #ffd16644",borderRadius:"6px",padding:".1rem .45rem",fontFamily:"var(--mono)",cursor:"default",userSelect:"none"}},"🔑 ••••••");
+          // FIX: password never shown in list view — use Edit modal to see/change password
           metaRow.appendChild(pwPill);
           info.appendChild(nameEl);info.appendChild(metaRow);
           row.appendChild(info);
@@ -2580,6 +2586,8 @@ function renderAdmin(){
 (function cleanEarlyAbsences(){
   const now = new Date();
   if (now.getDay() === 0) return; // Skip Sunday only (Saturday is a working day)
+  // FIX: guard against running on empty/corrupt DB — no users = nothing to clean
+  if (!DB || !DB.users || !DB.users.length) return;
   const nowMin = now.getHours() * 60 + now.getMinutes();
   const startMin = WORK_START_H * 60 + WORK_START_M;
   if (nowMin < startMin) {
