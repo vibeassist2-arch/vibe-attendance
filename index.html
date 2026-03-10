@@ -779,7 +779,7 @@ function checkUserGeofence(userLat,userLng,username){
   if(u&&u.geoLat&&u.geoLng){
     const d=haversineDistance(userLat,userLng,parseFloat(u.geoLat),parseFloat(u.geoLng));
     const radius=parseInt(u.geoRadius)||200;
-    const name=u.officeName||u.location||"";
+    const name=u.officeName||"";
     return{ok:d<=radius,name,dist:Math.round(d),radius};
   }
   // No location assigned — allow check-in freely, no geofence applied
@@ -1353,10 +1353,9 @@ function renderUser(){
           if(lat&&lng){
             const coordStr=`${lat.toFixed(4)}, ${lng.toFixed(4)}`;
             const mapsUrl=`https://maps.google.com/?q=${lat},${lng}`;
-            const officeName=rec?.geoName&&rec.geoName!=="No office location set"?rec.geoName:"";
+            const officeName=rec?.geoName&&rec.geoName!=="No office location set"&&rec.geoName!==""?rec.geoName:"";
             if(officeName) wrap.appendChild(h("div",{style:{fontSize:".8rem",fontWeight:"700",color:color,marginBottom:"2px"}},officeName));
-            const link=h("a",{href:mapsUrl,target:"_blank",style:{fontSize:".75rem",fontFamily:"var(--mono)",color:"var(--muted)",textDecoration:"none"}},`📍 ${coordStr}`);
-            wrap.appendChild(link);
+            else wrap.appendChild(h("div",{style:{fontSize:".8rem",color:"var(--muted)"}}, "—"));
           } else {
             wrap.appendChild(h("div",{style:{fontSize:".8rem",color:"var(--muted)"}}, "—"));
           }
@@ -1374,9 +1373,9 @@ function renderUser(){
           const info=h("div",{style:{flex:1}});
           const label=h("div",{style:{fontWeight:"600",fontSize:".88rem"}},r.type==="in"?"✅ Checked In":"🔴 Checked Out");
           // FIX: use optional chaining to prevent crash when location is null
-          const locLbl=r.geoName&&r.geoName!=="No office location set"
+          const locLbl=r.geoName&&r.geoName!=="No office location set"&&r.geoName!==""
             ?`📍 ${r.geoName}`
-            :(r.location?.lat!=null?`📍 ${r.location.lat.toFixed(4)}, ${r.location.lng.toFixed(4)}`:"No location");
+            :"No location";
           const locEl=el("div","rec-loc",locLbl);
           info.appendChild(label);info.appendChild(locEl);
           const time=el("div","rec-time",new Date(r.timestamp).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"}));
@@ -1411,7 +1410,7 @@ function renderUser(){
         if(!dayMap[k])dayMap[k]={date:new Date(r.timestamp),in:null,out:null,loc:null,outLoc:null,inRec:null,outRec:null};
         if(!dayMap[k].in||r.timestamp<dayMap[k].in){
           dayMap[k].in=r.timestamp;dayMap[k].loc=r.location;dayMap[k].inRec=r;
-          if(r.outLocation&&!dayMap[k].outLoc)dayMap[k].outLoc=r.outLocation;
+          if(r.outLocation&&!dayMap[k].outLoc){dayMap[k].outLoc=r.outLocation;if(!dayMap[k].outRec)dayMap[k].outRec={geoName:"",geoOk:false,geoDist:null};}
           if(r.outTimestamp&&!dayMap[k].out)dayMap[k].out=r.outTimestamp;
         }
       });
@@ -1447,29 +1446,21 @@ function renderUser(){
           const depCell=dep?`<span class="timing-pill tp-${dep.type==="full"?"ontime":dep.type}">${dep.label}</span>`:"—";
           const geoRec=d.inRec||myRecs().find(r=>r.type==="in"&&r.timestamp===d.in);
           const inLoc=d.loc||(geoRec?.location)||null;
-          // Build in-location cell with office badge — fallback to live check if no stored geoName
-          let inGeoName=geoRec?.geoName&&geoRec.geoName!=="No office location set"?geoRec.geoName:"";
+          // Only show office name set by admin at check-in time — no auto-detection
+          let inGeoName=geoRec?.geoName&&geoRec.geoName!=="No office location set"&&geoRec.geoName!==""?geoRec.geoName:"";
           let inGeoOk=!!geoRec?.geoOk, inGeoDist=geoRec?.geoDist??null;
-          if(!inGeoName&&inLoc?.lat){
-            const gLive=checkUserGeofence(inLoc.lat,inLoc.lng,SESSION.username);
-            if(gLive&&gLive.name&&gLive.name!=="No office location set"){inGeoName=gLive.name;inGeoOk=!!gLive.ok;inGeoDist=gLive.dist??null;}
-          }
           const inDistStr=inGeoDist!=null?` · ${inGeoDist}m`:"";
           const inGeoCell=inGeoName
-            ?`<div style="display:inline-flex;align-items:center;gap:3px;padding:2px 7px;border-radius:8px;font-size:.72rem;font-weight:700;background:${inGeoOk?"#38d9a922":"#ff5f6d22"};color:${inGeoOk?"var(--gpa)":"var(--danger)"};border:1px solid ${inGeoOk?"#38d9a955":"#ff5f6d55"};margin-bottom:2px">${inGeoOk?"✅":"❌"} ${inGeoName}${inDistStr}</div>${inLoc?.lat?`<br><a href="https://maps.google.com/?q=${inLoc.lat},${inLoc.lng}" target="_blank" style="font-size:.7rem;color:var(--muted);text-decoration:none;font-family:var(--mono)">📍 ${inLoc.lat.toFixed(4)}, ${inLoc.lng.toFixed(4)}</a>`:""}`
-            :(inLoc?.lat?`<a href="https://maps.google.com/?q=${inLoc.lat},${inLoc.lng}" target="_blank" style="font-size:.75rem;color:var(--accent2);text-decoration:none;font-family:var(--mono)">📍 ${inLoc.lat.toFixed(4)}, ${inLoc.lng.toFixed(4)}</a>`:`<span style="color:var(--muted);font-size:.75rem">—</span>`);
+            ?`<div style="display:inline-flex;align-items:center;gap:3px;padding:2px 7px;border-radius:8px;font-size:.72rem;font-weight:700;background:${inGeoOk?"#38d9a922":"#ff5f6d22"};color:${inGeoOk?"var(--gpa)":"var(--danger)"};border:1px solid ${inGeoOk?"#38d9a955":"#ff5f6d55"};margin-bottom:2px">${inGeoOk?"✅":"❌"} ${inGeoName}${inDistStr}</div>`
+            :`<span style="color:var(--muted);font-size:.75rem">—</span>`;
           const outLoc=d.outLoc||(d.outRec?.location)||null;
-          // Build out-location cell with office badge
-          let outGeoName=d.outRec?.geoName&&d.outRec.geoName!=="No office location set"?d.outRec.geoName:"";
+          // Only show office name set by admin at check-out time — no auto-detection
+          let outGeoName=d.outRec?.geoName&&d.outRec.geoName!=="No office location set"&&d.outRec.geoName!==""?d.outRec.geoName:"";
           let outGeoOk=!!d.outRec?.geoOk, outGeoDist=d.outRec?.geoDist??null;
-          if(!outGeoName&&outLoc?.lat){
-            const gLive2=checkUserGeofence(outLoc.lat,outLoc.lng,SESSION.username);
-            if(gLive2&&gLive2.name&&gLive2.name!=="No office location set"){outGeoName=gLive2.name;outGeoOk=!!gLive2.ok;outGeoDist=gLive2.dist??null;}
-          }
           const outDistStr=outGeoDist!=null?` · ${outGeoDist}m`:"";
           const outGeoCell=outGeoName
-            ?`<div style="display:inline-flex;align-items:center;gap:3px;padding:2px 7px;border-radius:8px;font-size:.72rem;font-weight:700;background:${outGeoOk?"#38d9a922":"#ff5f6d22"};color:${outGeoOk?"var(--gpa)":"var(--danger)"};border:1px solid ${outGeoOk?"#38d9a955":"#ff5f6d55"};margin-bottom:2px">${outGeoOk?"✅":"❌"} ${outGeoName}${outDistStr}</div>${outLoc?.lat?`<br><a href="https://maps.google.com/?q=${outLoc.lat},${outLoc.lng}" target="_blank" style="font-size:.7rem;color:var(--muted);text-decoration:none;font-family:var(--mono)">📍 ${outLoc.lat.toFixed(4)}, ${outLoc.lng.toFixed(4)}</a>`:""}`
-            :(outLoc?.lat?`<a href="https://maps.google.com/?q=${outLoc.lat},${outLoc.lng}" target="_blank" style="font-size:.75rem;color:var(--danger);text-decoration:none;font-family:var(--mono)">📍 ${outLoc.lat.toFixed(4)}, ${outLoc.lng.toFixed(4)}</a>`:`<span style="color:var(--muted);font-size:.75rem">—</span>`);
+            ?`<div style="display:inline-flex;align-items:center;gap:3px;padding:2px 7px;border-radius:8px;font-size:.72rem;font-weight:700;background:${outGeoOk?"#38d9a922":"#ff5f6d22"};color:${outGeoOk?"var(--gpa)":"var(--danger)"};border:1px solid ${outGeoOk?"#38d9a955":"#ff5f6d55"};margin-bottom:2px">${outGeoOk?"✅":"❌"} ${outGeoName}${outDistStr}</div>`
+            :`<span style="color:var(--muted);font-size:.75rem">—</span>`;
           tr2.innerHTML=`<td style="font-family:var(--mono);font-size:.8rem">${d.date.toLocaleDateString("en-GB",{weekday:"short",day:"2-digit",month:"short"})}</td>
             <td style="color:var(--accent2);font-family:var(--mono);font-size:.82rem">${d.in?new Date(d.in).toLocaleTimeString([],({"hour":"2-digit","minute":"2-digit"})):"—"}</td>
             <td style="color:var(--danger);font-family:var(--mono);font-size:.82rem">${d.out?new Date(d.out).toLocaleTimeString([],({"hour":"2-digit","minute":"2-digit"})):"—"}</td>
@@ -2252,7 +2243,7 @@ function renderAdmin(){
         if(!dayMap2[k])dayMap2[k]={username:r.username,date:new Date(r.timestamp),in:null,out:null,loc:null,outLoc:null,inRec:null,outRec:null};
         if(!dayMap2[k].in||r.timestamp<dayMap2[k].in){
           dayMap2[k].in=r.timestamp;dayMap2[k].loc=r.location;dayMap2[k].inRec=r;
-          if(r.outLocation&&!dayMap2[k].outLoc){dayMap2[k].outLoc=r.outLocation;}
+          if(r.outLocation&&!dayMap2[k].outLoc){dayMap2[k].outLoc=r.outLocation;if(!dayMap2[k].outRec)dayMap2[k].outRec={geoName:"",geoOk:false,geoDist:null};}
           if(r.outTimestamp&&!dayMap2[k].out){dayMap2[k].out=r.outTimestamp;}
         }
       });
@@ -2354,27 +2345,14 @@ function renderAdmin(){
               const mapsUrl=`https://maps.google.com/?q=${lat},${lng}`;
               const coordStr=`${lat.toFixed(4)}, ${lng.toFixed(4)}`;
 
-              // Get geofence info — prefer stored geoName on record, else compute live via user's personal geofence
+              // Only show office name set by admin at check-in time — no auto-detection
               let officeName="", dist=null, ok=false;
-              if(rec?.geoName&&rec.geoName!=="No office location set"){
+              if(rec?.geoName&&rec.geoName!=="No office location set"&&rec.geoName!==""){
                 officeName=rec.geoName; dist=rec.geoDist??null; ok=!!rec.geoOk;
-              } else {
-                // Live fallback: use user's personal geofence (checkUserGeofence covers both personal + office locations)
-                const recUsername=rec?.username||r.username;
-                const g=checkUserGeofence(lat,lng,recUsername);
-                if(g&&g.name&&g.name!=="No office location set"){
-                  officeName=g.name; dist=g.dist??null; ok=!!g.ok;
-                }
-              }
-              // Last resort: show user's officeName label (no distance badge)
-              if(!officeName){
-                const uRec=DB.users.find(u=>u.username===(rec?.username||r.username));
-                if(uRec?.officeName) officeName=uRec.officeName;
               }
 
               const workLoc=rawLoc?.workLocation||rec?.location?.workLocation||"";
               const workLocHtml=workLoc?`<div style="font-size:.7rem;font-weight:700;color:#a78bfa;margin-bottom:2px">🏢 ${workLoc}</div>`:"";
-              // Show office name + distance — neutral color, no red/green tick
               const distStr=dist!=null?` · ${dist}m`:"";
               const nameBadge=officeName
                 ?`<div style="display:inline-flex;align-items:center;gap:4px;margin-bottom:3px;padding:2px 8px;border-radius:10px;font-size:.72rem;font-weight:700;background:#4f8ef711;color:var(--accent);border:1px solid #4f8ef733">🏢 ${officeName}${distStr}</div>`
