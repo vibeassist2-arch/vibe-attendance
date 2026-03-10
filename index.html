@@ -395,10 +395,16 @@ function markAbsences() {
       .filter(r => r.type === "in" && localDateStr(new Date(r.timestamp)) === todayStr)
       .map(r => r.username)
   );
+  // Also treat users with a survey today as present — survey only submits at checkout
+  const surveyedToday = new Set(
+    (DB.surveys||[])
+      .filter(s => s.date === todayStr)
+      .map(s => s.username)
+  );
 
   // FIX: use index-based unique IDs to avoid collisions in forEach
   DB.users.filter(u => u.role !== "admin").forEach((u, idx) => {
-    const isPresent = checkedInToday.has(u.username) || pendingIns.has(u.username);
+    const isPresent = checkedInToday.has(u.username) || pendingIns.has(u.username) || surveyedToday.has(u.username);
     const existingAbs = DB.absences.find(a => a.username === u.username && a.date === todayStr);
     if (isPresent && existingAbs) {
       DB.absences = DB.absences.filter(a => !(a.username === u.username && a.date === todayStr));
@@ -538,16 +544,17 @@ async function loadFromSheet() {
     sheetAttend.forEach(r => {
       const key = r.id ? String(r.id) : (r.username + r.timestamp);
       const local = localById[key];
-      if(local && local.type === "out" && r.type !== "out"){
-        // Local says this is a checkout but sheet doesn't yet — trust local (sheet hasn't synced yet)
-        allAttendById[key] = local;
-      } else if(local && local.timestamp > r.timestamp){
+      if(local && local.timestamp > r.timestamp){
         allAttendById[key] = local; // local is strictly newer — keep local
       } else if(local && local.timestamp === r.timestamp){
-        // Same check-in time — merge both: keep local fields but adopt sheet's outTimestamp/outLocation if local is missing them
+        // Same record — merge: only keep local "out" type if sheet explicitly confirms it too
+        // If sheet has no type field, default to "in" (don't trust stale local "out" from old bug)
+        const sheetTypeRaw = (r.type||"").toString().trim().toLowerCase();
+        const mergedType = sheetTypeRaw === "out" ? "out" : (sheetTypeRaw === "in" ? "in" : "in");
         allAttendById[key] = {
           ...r,
           ...local,
+          type: mergedType,
           outTimestamp: local.outTimestamp || r.outTimestamp || 0,
           outLocation:  local.outLocation  || r.outLocation  || null,
           geoName:      local.geoName      || r.geoName      || "",
@@ -814,11 +821,11 @@ let DB = loadData();
 let SESSION = null;
 
 function getLocation(){
-  return new Promise((res,rej)=>{
-    if(!navigator.geolocation){rej("Geolocation not supported.");return}
+  return new Promise((res)=>{
+    if(!navigator.geolocation){res(null);return;}
     navigator.geolocation.getCurrentPosition(
-      p=>{const lat=p.coords.latitude,lng=p.coords.longitude;if(lat<-90||lat>90||lng<-180||lng>180){rej("Invalid location received.");return}res({lat,lng});},
-      e=>{if(e.code===1)rej("Location denied. Please allow location.");else if(e.code===2)rej("Location unavailable.");else rej("Location timed out.");},
+      p=>{const lat=p.coords.latitude,lng=p.coords.longitude;if(lat<-90||lat>90||lng<-180||lng>180){res(null);return;}res({lat,lng});},
+      ()=>{res(null);}, // GPS denied/failed — resolve with null, never block check-in
       {timeout:12000,enableHighAccuracy:true,maximumAge:0}
     );
   });
@@ -1009,6 +1016,7 @@ function renderUser(){
     if(!ins.length)return false;
     // Check queue for a pending checkout FIRST — most reliable after SW reload wipes sessionStorage
     const todayDs=new Date().toDateString();
+    const todayDStr=localDateStr(new Date());
     const queuedOut=loadQueue().filter(item=>
       item.action==="addAttendance"&&
       item.data?.type==="out"&&
@@ -1020,7 +1028,14 @@ function renderUser(){
       ...outs.map(r=>r.timestamp),
       ...queuedOut.map(item=>item.data.timestamp)
     ];
-    if(!allOutTs.length)return true;
+    if(!allOutTs.length){
+      // Last resort: if user has a survey for today, they must have checked out (survey only submits at checkout)
+      // Check both DB surveys and queued surveys
+      const hasTodaySurvey=(DB.surveys||[]).some(s=>s.username===SESSION.username&&s.date===todayDStr);
+      const hasTodayQueuedSurvey=loadQueue().some(q=>q.action==="addSurvey"&&q.data?.username===SESSION.username&&q.data?.date===todayDStr);
+      if(hasTodaySurvey||hasTodayQueuedSurvey) return false; // has survey = checked out
+      return true;
+    }
     const lastOutTs=Math.max(...allOutTs);
     const lastInTs=Math.max(...ins.map(r=>r.timestamp));
     // Only checked in if latest check-in is AFTER latest checkout (DB or queued)
@@ -1111,9 +1126,7 @@ function renderUser(){
   if(meUserProfile?.designation){
     pMeta.appendChild(h("span",{style:{fontSize:".72rem",background:"#4f8ef722",color:"var(--accent)",border:"1px solid #4f8ef744",borderRadius:"6px",padding:".15rem .5rem",fontWeight:"700"}},meUserProfile.designation));
   }
-  if(meUserProfile?.officeName){
-    pMeta.appendChild(h("span",{style:{fontSize:".72rem",background:"#a78bfa22",color:"#a78bfa",border:"1px solid #a78bfa44",borderRadius:"6px",padding:".15rem .5rem",fontWeight:"700"}},"🏢 "+meUserProfile.officeName));
-  } else if(meUserProfile?.location){
+  if(meUserProfile?.location){
     pMeta.appendChild(h("span",{style:{fontSize:".72rem",color:"var(--muted)"}},"📍 "+meUserProfile.location));
   }
   profileInfo.appendChild(pMeta);
@@ -1172,23 +1185,6 @@ function renderUser(){
       // ── LOCATION BANNER ──
       const todayIn=todayRecs().find(r=>r.type==="in");
       const meUserForBanner=DB.users.find(u=>u.username===SESSION.username);
-      const desig=(meUserForBanner?.designation||"").trim().toLowerCase();
-      const assignedOfficeName=meUserForBanner?.officeName||"";
-      // Only show GREEN location banner when user is checked IN and confirmed within range
-      if(todayIn && isIn()){
-        const officeLbl=todayIn.geoName&&todayIn.geoName!=="No office location set"&&todayIn.geoName!==""
-          ?todayIn.geoName:"";
-        const hasGeoAssigned=!!(meUserForBanner?.geoLat&&meUserForBanner?.geoLng);
-        // Only show banner if: has real geoName, has geo assigned, geoOk is true
-        if(officeLbl&&!todayIn.noLocationSet&&hasGeoAssigned&&todayIn.geoOk){
-          const banner=el("div","geo-banner geo-ok");
-          const desigBadge=meUserForBanner?.designation?`<span style="font-size:.72rem;background:#4f8ef722;color:var(--accent);border:1px solid #4f8ef744;border-radius:5px;padding:.1rem .4rem;margin-left:.4rem;font-weight:700">${meUserForBanner.designation}</span>`:"";
-          banner.innerHTML=`<span class="geo-icon">✅</span><div><strong>🏢 ${officeLbl}</strong>${desigBadge}<br><span style="font-size:.8rem;color:var(--muted)">Within range${todayIn.geoDist?" · "+todayIn.geoDist+"m":""}</span></div>`;
-          content.appendChild(banner);
-        }
-        // No red "outside range" banner — check-in is always recorded regardless of location
-      }
-
       const checkedIn=isIn();
       const mainBtn=h("button",{className:"btn "+(checkedIn?"btn-danger":"btn-success")},checkedIn?"⏹ Check Out":"▶ Check In");
       mainBtn.addEventListener("click",()=>{
@@ -1206,36 +1202,15 @@ function renderUser(){
               const _tsNow=Date.now();
               const sur={id:_tsNow,username:SESSION.username,timestamp:_tsNow,date:surveyDate2,...answers};
               DB.surveys.push(sur);save(DB);
-              // Flush survey to sheet first (awaited) so admin sees it before checkout record arrives
               const _sq=loadQueue();_sq.push({action:"addSurvey",data:sur});saveQueue(_sq);
               await flushQueue();
-              const meUserRec2=DB.users.find(u=>u.username===SESSION.username);
-              const geo2=checkUserGeofence(loc.lat,loc.lng,SESSION.username);
-              const checkoutWarn=null; // no location warning on checkout
+              const geo2=loc?checkUserGeofence(loc.lat,loc.lng,SESSION.username):{ok:false,name:"",dist:null,noLocationSet:true};
               const _tsOut=_tsNow+1;
-              const rec_out={id:_tsOut,username:SESSION.username,type:"out",timestamp:_tsOut,location:loc,geoOk:geo2.ok,geoName:geo2.name||"",geoDist:geo2.dist??null,noLocationSet:geo2.noLocationSet||false};
+              const rec_out={id:_tsOut,username:SESSION.username,type:"out",timestamp:_tsOut,location:loc||null,geoOk:loc?geo2.ok:false,geoName:loc?geo2.name:"",geoDist:loc?(geo2.dist??null):null,noLocationSet:!loc};
               DB.attendance.push(rec_out);save(DB);
               gsPost({action:"addAttendance",data:{...rec_out,lat:loc?.lat||"",lng:loc?.lng||""}});
-              // Store checkout timestamp in sessionStorage so isIn() can trust it over ghost sheet records
               sessionStorage.setItem("vibeLastCheckout_"+SESSION.username, String(_tsOut));
               delete window._geoWarn;
-              _checkoutInProgress=false;
-              refresh();
-            }).catch(async ()=>{
-              // Location failed — still save survey and check out without location
-              const todayCheckins3=DB.attendance.filter(r=>r.username===SESSION.username&&r.type==="in"&&new Date(r.timestamp).toDateString()===new Date().toDateString());
-              const checkInTs3=todayCheckins3.length?Math.min(...todayCheckins3.map(r=>r.timestamp)):Date.now();
-              const _tsNowN=Date.now();
-              const sur2={id:_tsNowN,username:SESSION.username,timestamp:_tsNowN,date:localDateStr(new Date(checkInTs3)),...answers};
-              DB.surveys.push(sur2);save(DB);
-              // Flush survey first (awaited) then checkout
-              const _sq2=loadQueue();_sq2.push({action:"addSurvey",data:sur2});saveQueue(_sq2);
-              await flushQueue();
-              const _tsOutN=_tsNowN+1;
-              const rec_outn={id:_tsOutN,username:SESSION.username,type:"out",timestamp:_tsOutN,location:null,geoOk:false,geoName:"",geoDist:null,noLocationSet:true};
-              DB.attendance.push(rec_outn);save(DB);
-              gsPost({action:"addAttendance",data:{...rec_outn,lat:"",lng:""}});
-              sessionStorage.setItem("vibeLastCheckout_"+SESSION.username, String(_tsOutN));
               _checkoutInProgress=false;
               refresh();
             });
@@ -1247,26 +1222,17 @@ function renderUser(){
         } else {
           if(!canCheckIn()){ return; } // debounce — prevent double tap
           stampCheckIn(); // stamp now so rapid taps are blocked
-          mainBtn.disabled=true;mainBtn.innerHTML='<span class="spinner"></span>Getting location…';
+          mainBtn.disabled=true;mainBtn.innerHTML='<span class="spinner"></span>Checking in…';
           const meUserRec=DB.users.find(u=>u.username===SESSION.username);
           const userWorkLoc=meUserRec?.location||"";
           getLocation().then(loc=>{
-            const geo=checkUserGeofence(loc.lat,loc.lng,SESSION.username);
+            const geo=loc?checkUserGeofence(loc.lat,loc.lng,SESSION.username):{ok:false,name:"",dist:null,noLocationSet:true};
             const _tsIn=Date.now();
-            const rec_in={id:_tsIn,username:SESSION.username,type:"in",timestamp:_tsIn,location:{...loc,workLocation:userWorkLoc},geoOk:geo.ok,geoName:geo.name||"",geoDist:geo.dist??null,noLocationSet:geo.noLocationSet||false};
+            const rec_in={id:_tsIn,username:SESSION.username,type:"in",timestamp:_tsIn,location:loc?{...loc,workLocation:userWorkLoc}:null,geoOk:loc?geo.ok:false,geoName:loc?geo.name:"",geoDist:loc?(geo.dist??null):null,noLocationSet:!loc};
             DB.attendance.push(rec_in);save(DB);
             gsPost({action:"addAttendance",data:{...rec_in,lat:loc?.lat||"",lng:loc?.lng||"",workLocation:userWorkLoc}});
             delete window._geoWarn;
             refresh();
-          }).catch(msg=>{_lastCheckIn=0;mainBtn.disabled=false;mainBtn.textContent="▶ Check In"; // reset debounce so user can retry after error
-            // Show inline error instead of alert()
-            const errBanner=el("div","geo-banner geo-fail",null,{marginTop:".8rem"});
-            errBanner.innerHTML=`<span class="geo-icon">❌</span><div>${msg}</div>`;
-            const existing=content.querySelector(".geo-fail-login");
-            if(existing)existing.remove();
-            errBanner.classList.add("geo-fail-login");
-            mainBtn.insertAdjacentElement("afterend",errBanner);
-            setTimeout(()=>errBanner.remove(),6000);
           });
         }
       });
@@ -1436,20 +1402,20 @@ function renderUser(){
           const depCell=dep?`<span class="timing-pill tp-${dep.type==="full"?"ontime":dep.type}">${dep.label}</span>`:"—";
           const geoRec=d.inRec||myRecs().find(r=>r.type==="in"&&r.timestamp===d.in);
           const inLoc=d.loc||(geoRec?.location)||null;
-          // Only show office name set by admin at check-in time — no auto-detection
-          let inGeoName=geoRec?.geoName&&geoRec.geoName!=="No office location set"&&geoRec.geoName!==""?geoRec.geoName:"";
+          // Only show office name if GPS coordinates exist
+          let inGeoName=inLoc?.lat&&geoRec?.geoName&&geoRec.geoName!=="No office location set"&&geoRec.geoName!==""?geoRec.geoName:"";
           let inGeoOk=!!geoRec?.geoOk, inGeoDist=geoRec?.geoDist??null;
           const inDistStr=inGeoDist!=null?` · ${inGeoDist}m`:"";
-          const inGeoCell=inGeoName
-            ?`<div style="display:inline-flex;align-items:center;gap:3px;padding:2px 7px;border-radius:8px;font-size:.72rem;font-weight:700;background:${inGeoOk?"#38d9a922":"#ff5f6d22"};color:${inGeoOk?"var(--gpa)":"var(--danger)"};border:1px solid ${inGeoOk?"#38d9a955":"#ff5f6d55"};margin-bottom:2px">${inGeoOk?"✅":"❌"} ${inGeoName}${inDistStr}</div>`
+          const inGeoCell=inLoc?.lat
+            ?`<a href="https://maps.google.com/?q=${inLoc.lat},${inLoc.lng}" target="_blank" style="font-size:.75rem;font-family:var(--mono);color:var(--accent2);text-decoration:none">📍 ${parseFloat(inLoc.lat).toFixed(4)}, ${parseFloat(inLoc.lng).toFixed(4)}</a>${inGeoName?`<div style="font-size:.7rem;color:var(--gpa);font-weight:700">🏢 ${inGeoName}</div>`:""}`
             :`<span style="color:var(--muted);font-size:.75rem">—</span>`;
           const outLoc=d.outLoc||(d.outRec?.location)||null;
-          // Only show office name set by admin at check-out time — no auto-detection
-          let outGeoName=d.outRec?.geoName&&d.outRec.geoName!=="No office location set"&&d.outRec.geoName!==""?d.outRec.geoName:"";
+          // Only show office name if GPS coordinates exist
+          let outGeoName=outLoc?.lat&&d.outRec?.geoName&&d.outRec.geoName!=="No office location set"&&d.outRec.geoName!==""?d.outRec.geoName:"";
           let outGeoOk=!!d.outRec?.geoOk, outGeoDist=d.outRec?.geoDist??null;
           const outDistStr=outGeoDist!=null?` · ${outGeoDist}m`:"";
-          const outGeoCell=outGeoName
-            ?`<div style="display:inline-flex;align-items:center;gap:3px;padding:2px 7px;border-radius:8px;font-size:.72rem;font-weight:700;background:${outGeoOk?"#38d9a922":"#ff5f6d22"};color:${outGeoOk?"var(--gpa)":"var(--danger)"};border:1px solid ${outGeoOk?"#38d9a955":"#ff5f6d55"};margin-bottom:2px">${outGeoOk?"✅":"❌"} ${outGeoName}${outDistStr}</div>`
+          const outGeoCell=outLoc?.lat
+            ?`<a href="https://maps.google.com/?q=${outLoc.lat},${outLoc.lng}" target="_blank" style="font-size:.75rem;font-family:var(--mono);color:var(--danger);text-decoration:none">📍 ${parseFloat(outLoc.lat).toFixed(4)}, ${parseFloat(outLoc.lng).toFixed(4)}</a>${outGeoName?`<div style="font-size:.7rem;color:var(--gpa);font-weight:700">🏢 ${outGeoName}</div>`:""}`
             :`<span style="color:var(--muted);font-size:.75rem">—</span>`;
           tr2.innerHTML=`<td style="font-family:var(--mono);font-size:.8rem">${d.date.toLocaleDateString("en-GB",{weekday:"short",day:"2-digit",month:"short"})}</td>
             <td style="color:var(--accent2);font-family:var(--mono);font-size:.82rem">${d.in?new Date(d.in).toLocaleTimeString([],({"hour":"2-digit","minute":"2-digit"})):"—"}</td>
@@ -1781,7 +1747,9 @@ function renderAdmin(){
     const _queuedCheckinUsers=new Set(_adminQueue.filter(item=>item.action==="addAttendance"&&item.data?.type==="in"&&item.data?.timestamp&&new Date(item.data.timestamp).toDateString()===new Date().toDateString()).map(item=>item.data.username));
     _queuedCheckinUsers.forEach(u=>{if(!todayInUsers.includes(u))todayInUsers.push(u);});
     const todayIsWeekend=new Date().getDay()===0;
-    const todayAbsent=todayIsWeekend?[]:regularUsers.filter(u=>!todayInUsers.includes(u.username));
+    // Users with a survey today were definitely present (survey only submits at checkout)
+    const todaySurveyUsernames=new Set(todaySurveys.map(s=>s.username));
+    const todayAbsent=todayIsWeekend?[]:regularUsers.filter(u=>!todayInUsers.includes(u.username)&&!todaySurveyUsernames.has(u.username));
     const totalPolicy=allSurveys.reduce((s,r)=>s+(parseInt(r.policy)||0),0);
     const todayPolicy=todaySurveys.reduce((s,r)=>s+(parseInt(r.policy)||0),0);
     const todayRsa=todaySurveys.reduce((s,r)=>s+(parseInt(r.rsa)||0),0);
@@ -2092,10 +2060,8 @@ function renderAdmin(){
           const nameEl=el("div","uname",(u.fullName&&u.fullName.trim()?u.fullName.trim():(u.username.charAt(0).toUpperCase()+u.username.slice(1).toLowerCase())));
           const metaRow=h("div",{style:{display:"flex",alignItems:"center",gap:".5rem",flexWrap:"wrap",marginTop:".2rem"}});
           metaRow.appendChild(h("span",{style:{fontSize:".72rem",color:"var(--accent)",fontFamily:"var(--mono)",background:"#4f8ef722",border:"1px solid #4f8ef744",borderRadius:"6px",padding:".1rem .45rem"}},"ID: "+(u.userId||u.username)));
-          if(u.designation)metaRow.appendChild(h("span",{style:{fontSize:".72rem",color:"var(--muted)"}},u.designation));
+          if(u.designation)metaRow.appendChild(h("span",{style:{fontSize:".72rem",color:"var(--muted)"}},"🏷 "+u.designation));
           if(u.location)metaRow.appendChild(h("span",{style:{fontSize:".72rem",color:"var(--muted)"}},"📍 "+u.location));
-          if(u.officeName)metaRow.appendChild(h("span",{style:{fontSize:".72rem",color:"#a78bfa",background:"#a78bfa22",border:"1px solid #a78bfa44",borderRadius:"6px",padding:".1rem .4rem"}},"🏢 "+u.officeName));
-          if(u.geoLat&&u.geoLng)metaRow.appendChild(h("span",{style:{fontSize:".72rem",color:"var(--accent2)",background:"#38d9a922",border:"1px solid #38d9a944",borderRadius:"6px",padding:".1rem .4rem"}},`📡 ${u.geoRadius||200}m`));
           const pwPill=h("span",{style:{fontSize:".7rem",background:"#ffd16622",color:"var(--warn)",border:"1px solid #ffd16644",borderRadius:"6px",padding:".1rem .45rem",fontFamily:"var(--mono)",cursor:"pointer"}},"🔑 ••••••");
           let pwShown=false;
           pwPill.addEventListener("click",()=>{pwShown=!pwShown;pwPill.textContent=pwShown?"🔑 "+u.password:"🔑 ••••••"});
@@ -2324,21 +2290,11 @@ function renderAdmin(){
               const lat=rawLoc?.lat, lng=rawLoc?.lng;
               if(!lat||!lng) return "<span style='color:var(--muted)'>—</span>";
               const mapsUrl=`https://maps.google.com/?q=${lat},${lng}`;
-              const coordStr=`${lat.toFixed(4)}, ${lng.toFixed(4)}`;
-
-              // Only show office name set by admin at check-in time — no auto-detection
-              let officeName="", dist=null, ok=false;
-              if(rec?.geoName&&rec.geoName!=="No office location set"&&rec.geoName!==""){
-                officeName=rec.geoName; dist=rec.geoDist??null; ok=!!rec.geoOk;
-              }
-
-              const workLoc=rawLoc?.workLocation||rec?.location?.workLocation||"";
-              const workLocHtml=workLoc?`<div style="font-size:.7rem;font-weight:700;color:#a78bfa;margin-bottom:2px">🏢 ${workLoc}</div>`:"";
-              const distStr=dist!=null?` · ${dist}m`:"";
-              const nameBadge=officeName
-                ?`<div style="display:inline-flex;align-items:center;gap:4px;margin-bottom:3px;padding:2px 8px;border-radius:10px;font-size:.72rem;font-weight:700;background:#4f8ef711;color:var(--accent);border:1px solid #4f8ef733">🏢 ${officeName}${distStr}</div>`
-                :"";
-              return `${workLocHtml}${nameBadge||"<span style='color:var(--muted);font-size:.75rem'>—</span>"}`;
+              const coordStr=`${parseFloat(lat).toFixed(4)}, ${parseFloat(lng).toFixed(4)}`;
+              const officeName=rec?.geoName&&rec.geoName!=="No office location set"&&rec.geoName!==""?rec.geoName:"";
+              const officeBadge=officeName
+                ?`<div style="font-size:.7rem;font-weight:700;color:var(--accent);margin-bottom:2px">🏢 ${officeName}</div>`:"";
+              return `${officeBadge}<a href="${mapsUrl}" target="_blank" style="font-size:.75rem;font-family:var(--mono);color:${accentColor};text-decoration:none;display:flex;align-items:center;gap:3px">📍 ${coordStr}</a>`;
             }
 
             const cells=[
@@ -2557,36 +2513,7 @@ function renderAdmin(){
     const {fg:fg4,inp:iDS}=mf("","🏷","Designation",{type:"text",value:u.designation||""});
     const {fg:fg5,inp:iLoc}=mf("","📍","Working Location Name",{type:"text",value:u.location||""});
 
-    // Geo location section
-    const geoSec=h("div",{style:{background:"var(--surface)",border:"1px solid var(--border)",borderRadius:"10px",padding:".75rem",marginBottom:"1rem"}});
-    geoSec.appendChild(h("div",{style:{fontSize:".75rem",fontWeight:"700",color:"var(--muted)",marginBottom:".5rem",letterSpacing:".06em",textTransform:"uppercase"}},"📡 Assigned Location (Geofence)"));
-
-    const offNameFg=el("div","field-group",null,{marginBottom:".5rem"});
-    const offNameLbl=h("label",{},"🏢 Office Name");
-    const iOfficeName=h("input",{type:"text",placeholder:"e.g. Chennai HQ",value:u.officeName||""});
-    iOfficeName.style.marginBottom="0";
-    offNameFg.appendChild(offNameLbl);offNameFg.appendChild(iOfficeName);
-
-    const coordPasteFg=el("div","field-group",null,{marginBottom:".5rem"});
-    const coordPasteLbl=h("label",{},"📋 Paste Coordinates from Google Maps");
-    const coordPasteInp=h("input",{type:"text",placeholder:"e.g. 13.0827, 80.2707",value:(u.geoLat&&u.geoLng)?`${u.geoLat}, ${u.geoLng}`:""});
-    coordPasteInp.style.marginBottom="0";
-    const iGeoLat=h("input",{type:"hidden",value:u.geoLat||""});
-    const iGeoLng=h("input",{type:"hidden",value:u.geoLng||""});
-    geoSec.appendChild(iGeoLat);geoSec.appendChild(iGeoLng);
-    coordPasteInp.addEventListener("input",()=>{
-      const raw=coordPasteInp.value.trim();
-      if(!raw){iGeoLat.value="";iGeoLng.value="";return;} // cleared — wipe hidden fields
-      const p=raw.split(",").map(s=>s.trim());
-      if(p.length>=2&&!isNaN(parseFloat(p[0]))&&!isNaN(parseFloat(p[1]))){
-        iGeoLat.value=parseFloat(p[0]);iGeoLng.value=parseFloat(p[1]);
-      }
-    });
-    coordPasteFg.appendChild(coordPasteLbl);coordPasteFg.appendChild(coordPasteInp);
-
-    const {fg:fgR,inp:iGeoR}=mf("","📏","Radius (meters)",{type:"number",min:"50",max:"2000",value:u.geoRadius||200,placeholder:"200"});
-    fgR.style.marginBottom="0";
-    geoSec.appendChild(offNameFg);geoSec.appendChild(coordPasteFg);geoSec.appendChild(fgR);
+    // No geofence section — office name and location are managed per-user by admin only via direct DB
 
     const modalErrBox=el("div","alert alert-error hidden","");
     function showModalErr(msg){modalErrBox.textContent=msg;modalErrBox.classList.remove("hidden");setTimeout(()=>modalErrBox.classList.add("hidden"),4000);}
@@ -2594,18 +2521,12 @@ function renderAdmin(){
     const sb=h("button",{className:"btn btn-primary",style:{marginTop:".5rem"}},"💾 Save Changes");
     sb.addEventListener("click",()=>{
       const name=iName.value.trim(),uid=iUID.value.trim(),pw=iPW.value.trim(),des=iDS.value.trim(),loc=iLoc.value.trim();
-      const geoLat=iGeoLat.value.trim(),geoLng=iGeoLng.value.trim(),geoRadius=iGeoR.value.trim()||200,officeName=iOfficeName.value.trim();
       if(!name){showModalErr("Full name is required.");return}
       if(!uid||!pw){showModalErr("User ID and password required.");return}
       if(uid!==u.username&&DB.users.find(x=>x.username===uid)){showModalErr("User ID already exists.");return}
-      // Validate geo coords if provided
-      if(geoLat||geoLng){
-        const gLat=parseFloat(geoLat),gLng=parseFloat(geoLng);
-        if(isNaN(gLat)||isNaN(gLng)||gLat<-90||gLat>90||gLng<-180||gLng>180){showModalErr("Invalid coordinates. Paste from Google Maps (e.g. 13.0827, 80.2707).");return}
-      }
-      const validRadius=Math.min(2000,Math.max(50,parseInt(geoRadius)||200));
       const idx=DB.users.findIndex(x=>x.username===u.username);
-      DB.users[idx]={...DB.users[idx],username:uid,password:pw,fullName:name,userId:uid,designation:des,location:loc,geoLat:geoLat||"",geoLng:geoLng||"",geoRadius:validRadius,officeName:officeName||""};
+      // Preserve existing geoLat/geoLng/geoRadius/officeName — don't wipe them
+      DB.users[idx]={...DB.users[idx],username:uid,password:pw,fullName:name,userId:uid,designation:des,location:loc};
       if(uid!==u.username){
         DB.attendance=DB.attendance.map(r=>r.username===u.username?{...r,username:uid}:r);
         DB.surveys=(DB.surveys||[]).map(s=>s.username===u.username?{...s,username:uid}:s);
@@ -2615,7 +2536,7 @@ function renderAdmin(){
     });
     const cb=h("button",{className:"btn btn-ghost",style:{marginTop:".6rem"}},"Cancel");
     cb.addEventListener("click",()=>ov.remove());
-    [fg1,fg2,fg3,fg4,fg5,geoSec,modalErrBox,sb,cb].forEach(x=>mo.appendChild(x));
+    [fg1,fg2,fg3,fg4,fg5,modalErrBox,sb,cb].forEach(x=>mo.appendChild(x));
     ov.appendChild(mo);document.body.appendChild(ov);
   }
 
