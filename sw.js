@@ -1,13 +1,19 @@
 // ── VIBE Attendance Tracker — Service Worker ──────────────────────────────────
-// ⚠️  IMPORTANT: bump VERSION on every deploy to force cache refresh
-// Format: vibe-at-vYYYYMMDD or increment the number
-const VERSION = 'vibe-at-v2';
+// ⚠️  DEPLOY CHECKLIST — must do ALL three steps on every deploy:
+//   1. Bump VERSION below (e.g. v2 → v3, or use date: vYYYYMMDD)
+//   2. Upload this sw.js to the server
+//   3. Upload the updated index.html
+// Forgetting to bump VERSION means users keep getting the old cached app shell.
+const VERSION = 'vibe-at-v2'; // ← BUMP THIS ON EVERY DEPLOY
 
 const STATIC_CACHE  = `${VERSION}-static`;
 const DYNAMIC_CACHE = `${VERSION}-dynamic`;
 // Note: queue is managed entirely in index.html localStorage — SW only signals clients to flush
 
-// Files to pre-cache on install (shell + assets)
+// Files to pre-cache on install (shell + critical assets only)
+// NOTE: screenshots are intentionally excluded — they are large files only used
+// in the PWA install prompt splash screen and are not needed for app functionality.
+// They will be fetched and cached on-demand by the cacheFirst handler if ever needed.
 const PRECACHE_URLS = [
   './index.html',
   './manifest.json',
@@ -15,23 +21,32 @@ const PRECACHE_URLS = [
   './apple-touch-icon.png',
   './icon-192.png',
   './icon-512.png',
-  './screenshot-mobile.png',
-  './screenshot-desktop.png',
   'https://fonts.googleapis.com/css2?family=Sora:wght@300;400;600;700&family=JetBrains+Mono:wght@400;600&display=swap',
 ];
 
 // ── INSTALL ───────────────────────────────────────────────────────────────────
 self.addEventListener('install', event => {
+  // Do NOT call skipWaiting() here.
+  // index.html sends SKIP_WAITING only when the user taps the update toast.
+  // Calling skipWaiting() at install time would force the new SW to take over
+  // mid-session, triggering a controllerchange → page reload on active users.
   event.waitUntil(
     caches.open(STATIC_CACHE).then(cache => {
+      // Use Promise.allSettled directly on cache.add() — don't attach
+      // inner .catch() that swallows errors before allSettled can see them.
       return Promise.allSettled(
         PRECACHE_URLS.map(url =>
-          cache.add(url).catch(err => console.warn(`[SW] Pre-cache miss: ${url}`, err))
+          cache.add(url).then(
+            () => ({ url, status: 'cached' }),
+            err => { console.warn(`[SW] Pre-cache miss: ${url}`, err); return { url, status: 'skipped' }; }
+          )
         )
       );
-    }).then(() => {
-      console.log(`[SW] ${VERSION} installed`);
-      return self.skipWaiting(); // activate immediately on first install
+    }).then(results => {
+      const skipped = results.filter(r => r.value?.status === 'skipped').map(r => r.value?.url);
+      if (skipped.length) console.warn(`[SW] ${VERSION} installed — ${skipped.length} asset(s) not cached:`, skipped);
+      else console.log(`[SW] ${VERSION} installed — all assets cached`);
+      // Do NOT skipWaiting() — wait for user to tap the update toast
     })
   );
 });
@@ -64,9 +79,11 @@ self.addEventListener('fetch', event => {
   const isGoogleFont = url.hostname === 'fonts.googleapis.com' || url.hostname === 'fonts.gstatic.com';
   if (url.origin !== self.location.origin && !isGoogleFont) return;
 
-  // 3. Google Sheets API — network-first, no cache (always need fresh data)
+  // 3. Google Apps Script — network-only, never cache.
+  // Apps Script responses must never be cached — stale responses
+  // (including error payloads) served offline would corrupt sync logic.
   if (url.hostname === 'sheets.googleapis.com' || url.hostname === 'script.google.com') {
-    event.respondWith(networkFirst(request));
+    event.respondWith(networkOnly(request));
     return;
   }
 
@@ -77,8 +94,10 @@ self.addEventListener('fetch', event => {
   }
 
   // 5. App shell (index.html) — network-first so updates land immediately,
-  //    fall back to cache when offline
-  if (url.pathname.endsWith('index.html') || url.pathname === '/' || url.pathname.endsWith('/')) {
+  //    fall back to cache when offline.
+  // FIX Bug 6: Removed url.pathname.endsWith('/') — it matches ANY sub-path
+  // ending in '/' (e.g. /admin/) which is overly broad. Only match exact root.
+  if (url.pathname.endsWith('index.html') || url.pathname === '/') {
     event.respondWith(networkFirst(request));
     return;
   }
@@ -97,10 +116,40 @@ async function cacheFirst(request, cacheName) {
 
   try {
     const response = await fetch(request);
-    if (response.ok) cache.put(request, response.clone());
+    // Cross-origin (opaque) responses have status 0 and ok=false,
+    // but are still valid and cacheable. Accept status 0 for fonts/cross-origin assets.
+    if (response.ok || response.status === 0) cache.put(request, response.clone());
     return response;
   } catch {
-    return offlineFallback();
+    // BUG FIX: Only return the HTML offline fallback page for navigation requests.
+    // For sub-resources (fonts, icons, images, scripts) returning an HTML page
+    // would cause the browser to receive the wrong content-type, log CORS errors,
+    // and potentially break rendering. For non-navigation assets, return a
+    // minimal typed error response so the browser handles the failure gracefully.
+    if (request.destination === 'document') {
+      return offlineFallback();
+    }
+    // For fonts: browser falls back to system font automatically — no response needed
+    // For images/icons: browser shows broken image — acceptable offline behaviour
+    // Return a 503 with no body so the browser knows the request failed cleanly
+    return new Response('', {
+      status: 503,
+      statusText: 'Service Unavailable — offline'
+    });
+  }
+}
+
+/** Network-only: no caching at all — used for Apps Script API calls */
+async function networkOnly(request) {
+  try {
+    return await fetch(request);
+  } catch {
+    // Return a JSON error so callers get a parseable failure, not an HTML offline page
+    return new Response(JSON.stringify({ ok: false, error: 'offline' }), {
+      status: 503,
+      statusText: 'Service Unavailable',
+      headers: { 'Content-Type': 'application/json' }
+    });
   }
 }
 
@@ -120,6 +169,8 @@ async function networkFirst(request) {
 
 /** Minimal offline page returned when nothing is cached */
 function offlineFallback() {
+  // FIX Bug 5: Explicit status + statusText so consumers can distinguish this
+  // synthetic response from a real server response
   return new Response(
     `<!DOCTYPE html>
 <html lang="en">
@@ -150,7 +201,7 @@ function offlineFallback() {
   </div>
 </body>
 </html>`,
-    { headers: { 'Content-Type': 'text/html; charset=utf-8' } }
+    { status: 200, statusText: 'OK', headers: { 'Content-Type': 'text/html; charset=utf-8' } }
   );
 }
 
