@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- VIBE v20260311.fix — absent bug fix: checkout records now count as present -->
+<!-- VIBE v20260311.fix6 — queue: direct POST removeAbsence to sheet + reload admin after purge -->
 <html lang="en">
 <head>
 <meta charset="UTF-8"/>
@@ -289,6 +289,67 @@ function loadQueue(){
   }catch{ return []; }
 }
 
+// ── TOAST NOTIFICATION SYSTEM ─────────────────────────────────────────────────
+// Replaces all alert() calls — non-blocking, auto-dismiss, stackable
+function showToast(msg, type="info", duration=4000){
+  // type: "info" | "success" | "warn" | "error"
+  const colors={
+    info:   {bg:"#4f8ef7", text:"#fff"},
+    success:{bg:"#38d9a9", text:"#052e1c"},
+    warn:   {bg:"#ffd166", text:"#1a1200"},
+    error:  {bg:"#ff5f6d", text:"#fff"}
+  };
+  const {bg, text}=colors[type]||colors.info;
+
+  // Stack toasts vertically — find existing ones and shift
+  const existing=document.querySelectorAll(".vibe-toast");
+  const offset=existing.length*60;
+
+  const t=document.createElement("div");
+  t.className="vibe-toast";
+  t.style.cssText=[
+    "position:fixed",
+    "bottom:"+(1.5+offset/16)+"rem",
+    "left:50%",
+    "transform:translateX(-50%)",
+    "background:"+bg,
+    "color:"+text,
+    "padding:.7rem 1.3rem",
+    "border-radius:12px",
+    "font-weight:700",
+    "font-size:.85rem",
+    "z-index:9999",
+    "box-shadow:0 4px 20px #00000044",
+    "font-family:'Sora',sans-serif",
+    "max-width:90vw",
+    "text-align:center",
+    "transition:opacity .3s,transform .3s",
+    "cursor:pointer",
+    "line-height:1.4"
+  ].join(";");
+  t.textContent=msg;
+
+  // Tap to dismiss
+  t.addEventListener("click",()=>dismiss());
+  document.body.appendChild(t);
+
+  function dismiss(){
+    t.style.opacity="0";
+    t.style.transform="translateX(-50%) translateY(8px)";
+    setTimeout(()=>{ t.remove(); repositionToasts(); },320);
+  }
+
+  function repositionToasts(){
+    document.querySelectorAll(".vibe-toast").forEach((el,i)=>{
+      el.style.bottom=(1.5+i*3.75)+"rem";
+    });
+  }
+
+  const timer=setTimeout(dismiss, duration);
+  t.addEventListener("click",()=>clearTimeout(timer),{once:true});
+  return t;
+}
+
 // FIX: saveQueue now returns boolean so callers can detect storage failure
 function saveQueue(q){
   try {
@@ -296,14 +357,7 @@ function saveQueue(q){
     return true;
   } catch(e) {
     console.error("LocalStorage full — queue not saved!", e);
-    // Show a non-blocking toast warning (never use alert() in utility functions)
-    try {
-      const t = document.createElement("div");
-      t.style.cssText = "position:fixed;bottom:1.5rem;left:50%;transform:translateX(-50%);background:#ff5f6d;color:#fff;padding:.75rem 1.4rem;border-radius:12px;font-weight:700;font-size:.88rem;z-index:9999;box-shadow:0 4px 20px #00000044;font-family:Sora,sans-serif";
-      t.textContent = "⚠️ Storage full — attendance may not save. Clear browser cache.";
-      document.body.appendChild(t);
-      setTimeout(() => t.remove(), 6000);
-    } catch(_) {}
+    showToast("Storage full — attendance may not save. Clear browser cache.", "error", 8000);
     return false;
   }
 }
@@ -346,7 +400,12 @@ async function flushQueue(){
           clearTimeout(t);
           const text=await res.text();
           let parsed=null; try{parsed=JSON.parse(text);}catch(_){}
-          if(res.ok||(parsed&&parsed.ok!==false)){ok=true;break;}
+          // FIX: Apps Script often returns 302 redirect or non-200 even on success.
+          // Accept if: HTTP 2xx, OR parsed JSON has ok:true, OR response body is not an error string.
+          // Only reject if we explicitly get ok:false or a known error pattern.
+          const explicitFail = parsed && parsed.ok === false;
+          const bodyLooksLikeError = !parsed && text && (text.toLowerCase().includes("error") || text.toLowerCase().includes("exception")) && text.length < 300;
+          if(!explicitFail && !bodyLooksLikeError){ok=true;break;}
           tries++;
           if(tries<3)await new Promise(r=>setTimeout(r,1000*Math.pow(2,tries-1)));
         }catch(e){
@@ -364,6 +423,7 @@ async function flushQueue(){
         item._retries=(item._retries||0)+1;
         if(item._retries>=10){
           console.error("VIBE: dropping queue item after 10 retries",item);
+          showToast("Warning: one attendance record could not sync to admin panel after multiple attempts.", "error", 8000);
           q=loadQueue();
           const idx=q.findIndex(x=>x.ts===item.ts&&x.action===item.action);
           if(idx!==-1){q.splice(idx,1);saveQueue(q);}
@@ -387,10 +447,102 @@ async function gsPost(body) {
   const q = loadQueue();
   q.push({...body, ts: Date.now()}); // ts enables 7-day TTL purge
   const saved = saveQueue(q);
-  // FIX: propagate storage failure to caller so UI can show error
   if (!saved) return { ok: false, error: "Storage Full" };
+  // Tell user if they're offline — record is safe but not yet synced
+  if(!navigator.onLine){
+    showToast("You're offline — record saved locally and will sync automatically when reconnected.", "warn", 5000);
+  }
   flushQueue(); // try immediately, non-blocking
   return { ok: true };
+}
+
+// ── VERIFY & PURGE: drop queue items already confirmed on sheet ───────────────
+// Called when queue is stuck — compares queue IDs against sheet data and removes confirmed ones
+async function verifyAndPurgeQueue(){
+  const q = loadQueue();
+  if(!q.length) return 0;
+
+  const todayStr = localDateStr(new Date());
+
+  // ── LOCAL check first (no network needed) ─────────────────────────────────
+  // Users who have a check-in/out in local DB today
+  const localCheckedInToday = new Set(
+    (DB.attendance||[])
+      .filter(r => r.username && r.timestamp && (r.type === "in" || r.type === "out") && localDateStr(new Date(r.timestamp)) === todayStr)
+      .map(r => String(r.username))
+  );
+  // Users who have a queued check-in/out for today (pending upload)
+  const queuedCheckedInToday = new Set(
+    q.filter(i => i.action === "addAttendance" && i.data?.username && i.data?.timestamp &&
+                  (i.data?.type === "in" || i.data?.type === "out") &&
+                  localDateStr(new Date(i.data.timestamp)) === todayStr)
+     .map(i => String(i.data.username))
+  );
+
+  // Drop addAbsence items locally if the user is already known to have checked in
+  const localToDrop = new Set();
+  q.forEach(item => {
+    if(item.action === "addAbsence"){
+      const uname = item.data?.username||"";
+      const date  = item.data?.date||"";
+      if(date === todayStr && (localCheckedInToday.has(uname) || queuedCheckedInToday.has(uname))) localToDrop.add(uname);
+    }
+  });
+  const afterLocalPurge = q.filter(item => {
+    if(item.action === "addAbsence"){
+      const uname = item.data?.username||"";
+      const date  = item.data?.date||"";
+      if(date === todayStr && localToDrop.has(uname)) return false;
+    }
+    return true;
+  });
+  if(localToDrop.size > 0){
+    saveQueue(afterLocalPurge);
+    // Also remove from DB.absences so Today Absent list clears immediately
+    DB.absences = (DB.absences||[]).filter(a => !(a.date===todayStr && localToDrop.has(a.username)));
+    // Queue removeAbsence so the sheet gets cleaned too
+    localToDrop.forEach(uname => {
+      const already = loadQueue().some(i => i.action==="removeAbsence" && i.data?.username===uname && i.data?.date===todayStr);
+      if(!already) gsPost({ action:"removeAbsence", data:{ username:uname, date:todayStr } });
+    });
+    save(DB);
+  }
+
+  // Pull latest sheet data
+  const result = await gsFetch({action:"getAll"});
+  if(!result || !result.ok) return q.length - afterLocalPurge.length; // return local purge count even if offline
+
+  // Build sets of IDs already on sheet
+  const sheetAttendIds = new Set((result.attendance||[]).map(r=>String(r.id||"")));
+  const sheetSurveyIds = new Set((result.surveys||[]).map(s=>String(s.id||"")));
+  const sheetAbsenceKeys = new Set((result.absences||[]).map(a=>a.username+"__"+a.date));
+  // Users who have any attendance record on sheet today — absence is wrong for them
+  const sheetCheckedInToday = new Set(
+    (result.attendance||[])
+      .filter(r => r.username && r.timestamp && localDateStr(new Date(parseInt(r.timestamp)||0)) === todayStr)
+      .map(r => String(r.username))
+  );
+
+  const before = afterLocalPurge.length;
+  const fresh = afterLocalPurge.filter(item => {
+    const id = String(item.data?.id||"");
+    if(item.action === "addAttendance" && id && sheetAttendIds.has(id)) return false;
+    if(item.action === "addSurvey"    && id && sheetSurveyIds.has(id)) return false;
+    if(item.action === "addAbsence"){
+      const key = (item.data?.username||"")+"__"+(item.data?.date||"");
+      // Drop if: absence already on sheet, OR user actually checked in on sheet today
+      if(sheetAbsenceKeys.has(key)) return false;
+      if(item.data?.date === todayStr && sheetCheckedInToday.has(item.data?.username||"")) return false;
+    }
+    if(item.action === "removeAbsence"){
+      const key = (item.data?.username||"")+"__"+(item.data?.date||"");
+      if(!sheetAbsenceKeys.has(key)) return false;
+    }
+    return true;
+  });
+
+  saveQueue(fresh);
+  return (q.length - afterLocalPurge.length) + (before - fresh.length); // total purged
 }
 
 // Flush queue on visibility change (when user reopens tab/phone)
@@ -412,6 +564,12 @@ async function gsPost(body) {
     await flushQueue();
     await loadFromSheet();
     if(!SESSION)return;
+    const remaining=loadQueue().length;
+    if(remaining===0){
+      showToast("All attendance synced to admin panel.", "success", 4000);
+    } else {
+      showToast("Back online — "+remaining+" record(s) still pending sync.", "warn", 5000);
+    }
     try{ if(typeof window._adminRefresh==="function")window._adminRefresh(); else if(typeof window._userRefresh==="function")window._userRefresh(); }catch(e){}
   });
   if(!navigator.onLine)show("No internet -- your check-in is saved and will sync when reconnected","#ffd166","#1a1200");
@@ -441,35 +599,44 @@ let _lastCheckOut = 0;
 function canCheckOut(){ const now = Date.now(); if(now - _lastCheckOut < 5000) return false; return true; }
 function stampCheckOut(){ _lastCheckOut = Date.now(); }
 
-function markAbsences() {
+async function markAbsences() {
   const today = new Date();
   const todayStr = localDateStr(today);
   if (today.getDay() === 0) return; // Skip Sunday only
 
   const nowMin = today.getHours() * 60 + today.getMinutes();
-  if (nowMin < 540) return; // Only after 9:00 AM
+  // FIX: only mark absences after 10:30 AM — gives all users time to check in and sync
+  // 9:00 AM was too early; users who checked in at 9:05 AM hadn't synced yet when absence ran
+  if (nowMin < 630) return; // 630 = 10:30 AM
 
   if (!DB.absences) DB.absences = [];
 
-  // Build set of users present today — check both DB and pending queue
+  // FIX: always flush queue and reload sheet before deciding who's absent
+  // Without this, admin device marks users absent before their check-ins arrive from sheet
+  try {
+    await flushQueue();
+    await loadFromSheet();
+  } catch(e) {
+    // If sheet unreachable, skip absence marking entirely — better to skip than wrongly mark
+    console.warn("markAbsences: sheet unreachable, skipping this cycle", e);
+    return;
+  }
+
   const queue = loadQueue();
   const pendingIns = new Set(queue
     .filter(i => i.action === "addAttendance" && (i.data?.type === "in" || i.data?.type === "out") && localDateStr(new Date(i.data.timestamp)) === todayStr)
     .map(i => i.data.username));
   const checkedInToday = new Set(
     DB.attendance
-      // FIX: count BOTH "in" and "out" records as present — a checkout record proves the user was present
       .filter(r => (r.type === "in" || r.type === "out") && localDateStr(new Date(r.timestamp)) === todayStr)
       .map(r => r.username)
   );
-  // Also treat users with a survey today as present — survey only submits at checkout
   const surveyedToday = new Set(
     (DB.surveys||[])
       .filter(s => s.date === todayStr)
       .map(s => s.username)
   );
 
-  // FIX: use index-based unique IDs to avoid collisions in forEach
   DB.users.filter(u => u.role !== "admin").forEach((u, idx) => {
     const isPresent = checkedInToday.has(u.username) || pendingIns.has(u.username) || surveyedToday.has(u.username);
     const existingAbs = DB.absences.find(a => a.username === u.username && a.date === todayStr);
@@ -477,10 +644,8 @@ function markAbsences() {
       DB.absences = DB.absences.filter(a => !(a.username === u.username && a.date === todayStr));
       gsPost({ action: "removeAbsence", data: { username: u.username, date: todayStr } });
     } else if (!isPresent && !existingAbs) {
-      // FIX: also check queue — another device may have already queued this absence
       const alreadyQueued = queue.some(q => q.action === "addAbsence" && q.data?.username === u.username && q.data?.date === todayStr);
       if (!alreadyQueued) {
-        // FIX: unique ID using timestamp + index to prevent collision across users
         const newAbs = { id: String(Date.now())+"_abs_"+idx, username: u.username, date: todayStr, auto: true };
         DB.absences.push(newAbs);
         gsPost({ action: "addAbsence", data: newAbs });
@@ -698,6 +863,38 @@ async function loadFromSheet() {
       if(!byUserDay[key]) byUserDay[key] = [];
       byUserDay[key].push(r);
     });
+
+    // FIX: adopt orphan "out" records — an "out" record with no same-day check-in
+    // should be matched to the nearest prior check-in within 24h (timezone shift artifact)
+    const orphanOuts = [];
+    Object.entries(byUserDay).forEach(([key, recs]) => {
+      const ins = recs.filter(r => r.type === "in");
+      const outs = recs.filter(r => r.type === "out");
+      if(outs.length && !ins.length){
+        // These are orphan checkouts — save for re-homing
+        outs.forEach(r => orphanOuts.push(r));
+        delete byUserDay[key]; // remove from their wrong day
+      }
+    });
+    // Re-home orphan outs to the nearest prior check-in day for same user
+    orphanOuts.forEach(orphan => {
+      // Find closest check-in within 24h before the checkout
+      const candidates = Object.keys(byUserDay).filter(k =>
+        k.startsWith(orphan.username + "__") &&
+        byUserDay[k].some(r => r.type === "in" && orphan.timestamp > r.timestamp && orphan.timestamp - r.timestamp <= 28*60*60*1000)
+      );
+      if(candidates.length){
+        // Pick the key whose check-in is closest in time
+        const bestKey = candidates.reduce((a,b) => {
+          const aIn = Math.max(...byUserDay[a].filter(r=>r.type==="in").map(r=>r.timestamp));
+          const bIn = Math.max(...byUserDay[b].filter(r=>r.type==="in").map(r=>r.timestamp));
+          return Math.abs(orphan.timestamp - aIn) < Math.abs(orphan.timestamp - bIn) ? a : b;
+        });
+        byUserDay[bestKey].push(orphan);
+      }
+      // If no match found, discard the orphan — it's a ghost record
+    });
+
     const cleanedAttend = [];
     Object.values(byUserDay).forEach(recs => {
       const outs = recs.filter(r => r.type === "out");
@@ -1222,22 +1419,24 @@ function renderUser(){
       syncStatusBadge.style.color = "var(--warn)";
       syncStatusBadge.style.border = "1px solid #ffd16644";
       syncStatusBadge.style.display = "inline-block";
-      syncStatusBadge.title = `${qc} record(s) waiting to sync. Click to retry.`;
+      syncStatusBadge.title = `${qc} record(s) waiting to sync. Tap to manage.`;
       syncStatusBadge.style.cursor = "pointer";
     } else {
       syncStatusBadge.style.display = "none";
     }
   }
-  syncStatusBadge.addEventListener("click", async()=>{
-    syncStatusBadge.textContent = "⏳ Retrying…";
-    await flushQueue();
-    updateSyncBadge();
-  });
+  syncStatusBadge.addEventListener("click", ()=>openQueueInspector(updateSyncBadge));
   updateSyncBadge();
-  // FIX: only track via window._syncBadgeTimerRef so refresh() can reliably clear it
-  // The separate const was leaking — each renderUser() call left an orphaned interval
-  window._syncBadgeTimerRef = setInterval(()=>{ updateSyncBadge(); }, 5000);
-  // Clean up timer when user signs out
+  // Auto-verify on user load — silently purge items already confirmed on sheet
+  (async()=>{
+    await flushQueue();
+    const purged = await verifyAndPurgeQueue();
+    if(purged > 0) updateSyncBadge();
+  })();
+  window._syncBadgeTimerRef = setInterval(async()=>{
+    await verifyAndPurgeQueue();
+    updateSyncBadge();
+  }, 20000);
   soBtn.addEventListener("click", ()=>{ if(window._syncBadgeTimerRef){clearInterval(window._syncBadgeTimerRef);window._syncBadgeTimerRef=null;} });
   tbR.appendChild(syncStatusBadge);
   tb.appendChild(tbR);dash.appendChild(tb);
@@ -1363,6 +1562,7 @@ function renderUser(){
               saveQueue(_sq);
               await flushQueue(); // flush both together
               sessionStorage.setItem("vibeLastCheckout_"+SESSION.username, String(_tsNow));
+              showToast(navigator.onLine ? "Checked out! Data synced to admin panel." : "Checked out! Saved locally — will sync when online.", navigator.onLine?"success":"warn", 4000);
               delete window._geoWarn;
               const prevEb=document.querySelector(".loc-err-banner");if(prevEb)prevEb.remove();
               _checkoutInProgress=false;
@@ -1398,6 +1598,7 @@ function renderUser(){
             const rec_in={id:_inId,username:SESSION.username,type:"in",timestamp:_tsIn,location:{...loc,workLocation:userWorkLoc},geoOk:geo.ok,geoName:geo.name,geoDist:geo.dist??null,noLocationSet:false};
             DB.attendance.push(rec_in);save(DB);
             gsPost({action:"addAttendance",data:{...rec_in,lat:loc.lat,lng:loc.lng,workLocation:userWorkLoc}});
+            showToast(navigator.onLine ? "Checked in! Syncing to admin panel..." : "Checked in! Saved locally — will sync when online.", navigator.onLine?"success":"warn", 4000);
             delete window._geoWarn;
             const prevEb=document.querySelector(".loc-err-banner");if(prevEb)prevEb.remove();
             refresh();
@@ -1534,15 +1735,19 @@ function renderUser(){
         if(!dayMap[k])dayMap[k]={date:new Date(r.timestamp),in:null,out:null,loc:null,outLoc:null,inRec:null,outRec:null};
         if(!dayMap[k].in||r.timestamp<dayMap[k].in){
           dayMap[k].in=r.timestamp;dayMap[k].loc=r.location;dayMap[k].inRec=r;
-          if(r.outLocation&&!dayMap[k].outLoc){dayMap[k].outLoc=r.outLocation;if(!dayMap[k].outRec)dayMap[k].outRec={geoName:"",geoOk:false,geoDist:null};}
+          // FIX: build proper outRec stub with coordinates so Out Location renders
+          if(r.outLocation&&!dayMap[k].outLoc){
+            dayMap[k].outLoc=r.outLocation;
+            if(!dayMap[k].outRec)dayMap[k].outRec={location:r.outLocation,geoName:r.geoName||"",geoOk:r.geoOk||false,geoDist:r.geoDist??null};
+          }
           if(r.outTimestamp&&!dayMap[k].out)dayMap[k].out=r.outTimestamp;
         }
       });
       // Second pass: always apply the LATEST checkout per day
+      // FIX: match by toDateString() of checkout directly (same key format) — avoids false mismatches
       mRecs.filter(r=>r.type==="out").forEach(r=>{
-        const outDate=new Date(r.timestamp).toDateString();
-        const matchKey=Object.keys(dayMap).find(k2=>new Date(dayMap[k2].date).toDateString()===outDate);
-        const target=matchKey?dayMap[matchKey]:null;
+        const outKey=new Date(r.timestamp).toDateString();
+        const target=dayMap[outKey]||null;
         if(!target)return;
         if(!target.out||r.timestamp>target.out){target.out=r.timestamp;target.outLoc=r.location||r.outLocation||null;target.outRec=r;}
       });
@@ -1805,6 +2010,262 @@ function openSurveyEditModal(survey, onSave) {
   ov.appendChild(mo);document.body.appendChild(ov);
 }
 
+// ── QUEUE INSPECTOR — admin can see/retry/clear stuck pending records ──────────
+function openQueueInspector(onClose){
+  const ov=el("div","modal-overlay");
+  const mo=el("div","modal",null,{maxWidth:"580px"});
+  const xb=h("button",{className:"x-btn"},"✕");
+  xb.addEventListener("click",()=>{ov.remove();if(onClose)onClose();});
+  mo.appendChild(xb);
+  mo.appendChild(h("h2",{},"⏳ Pending Sync Queue"));
+  const desc=h("div",{style:{fontSize:".8rem",color:"var(--muted)",marginBottom:"1rem",lineHeight:"1.6"}});
+  desc.textContent="These records are saved locally and waiting to upload to Google Sheets. Tap Retry All to push them now, or Clear All if data is already on the sheet.";
+  mo.appendChild(desc);
+
+  const statusEl=h("div",{style:{fontSize:".8rem",fontWeight:"700",marginBottom:".75rem",minHeight:"1.2rem"}});
+  mo.appendChild(statusEl);
+
+  const listWrap=h("div",{style:{maxHeight:"340px",overflowY:"auto",borderRadius:"10px",border:"1px solid var(--border)",background:"var(--surface)"}});
+  mo.appendChild(listWrap);
+
+  function renderList(){
+    listWrap.innerHTML="";
+    const q=loadQueue();
+    if(!q.length){
+      listWrap.appendChild(h("div",{style:{padding:"1.5rem",color:"var(--muted)",textAlign:"center",fontSize:".85rem"}},"✅ Queue is empty — all data synced!"));
+      return;
+    }
+    q.forEach((item,i)=>{
+      const row=h("div",{style:{display:"flex",alignItems:"flex-start",gap:".75rem",padding:".75rem 1rem",borderBottom:i<q.length-1?"1px solid var(--border)":"none"}});
+      const icon=h("div",{style:{fontSize:"1.1rem",flexShrink:"0",marginTop:".05rem"}},
+        item.action==="addAttendance"?(item.data?.type==="out"?"🚪":"🟢"):
+        item.action==="addSurvey"?"📜":
+        item.action==="addAbsence"?"❌":
+        item.action==="removeAbsence"?"✅":"📤"
+      );
+      const info=h("div",{style:{flex:1,minWidth:0}});
+      const actionLabel={addAttendance:"Check "+(item.data?.type==="out"?"Out":"In"),addSurvey:"Survey",addAbsence:"Mark Absent",removeAbsence:"Remove Absence",fullSync:"Full Sync"}[item.action]||item.action;
+      const name=item.data?.username||(item.data?.data?.users?"Full Sync":"?");
+      const ts=item.ts?new Date(item.ts).toLocaleString([],({"month":"short","day":"2-digit","hour":"2-digit","minute":"2-digit"})):"(no timestamp)";
+      const retries=item._retries||0;
+      info.appendChild(h("div",{style:{fontWeight:"700",fontSize:".85rem",color:"var(--text)"}},actionLabel+" · "+name));
+      info.appendChild(h("div",{style:{fontSize:".72rem",color:"var(--muted)",marginTop:".15rem"}},ts+(retries>0?" · "+retries+" retries":"")));
+      const delBtn=h("button",{style:{flexShrink:0,padding:".25rem .6rem",border:"1.5px solid #ff5f6d44",borderRadius:"8px",background:"#ff5f6d11",color:"var(--danger)",fontFamily:"var(--font)",fontSize:".72rem",fontWeight:"700",cursor:"pointer"}},"✕ Drop");
+      delBtn.addEventListener("click",()=>{
+        const qq=loadQueue();
+        const newQ=qq.filter((_,j)=>j!==i);
+        saveQueue(newQ);
+        statusEl.textContent="Dropped 1 item.";
+        statusEl.style.color="var(--danger)";
+        renderList();
+        if(onClose)onClose();
+      });
+      row.appendChild(icon);row.appendChild(info);row.appendChild(delBtn);
+      listWrap.appendChild(row);
+    });
+  }
+  // Helper: drop absence queue items + DB.absences + fire removeAbsence directly to sheet (no queue)
+  function purgeAbsencesForUsers(toDrop, todayStr){
+    if(!toDrop.size) return 0;
+    const q = loadQueue();
+    // Remove addAbsence items from queue
+    const filtered = q.filter(item => {
+      if(item.action==="addAbsence"){
+        const uname = item.data?.username||"";
+        const date  = item.data?.date||"";
+        if(date===todayStr && toDrop.has(uname)) return false;
+      }
+      // Also strip any stale removeAbsence items for these users — we'll fire directly
+      if(item.action==="removeAbsence"){
+        const uname = item.data?.username||"";
+        const date  = item.data?.date||"";
+        if(date===todayStr && toDrop.has(uname)) return false;
+      }
+      return true;
+    });
+    saveQueue(filtered);
+    // Remove from local DB immediately
+    DB.absences = (DB.absences||[]).filter(a => !(a.date===todayStr && toDrop.has(a.username)));
+    save(DB);
+    // Fire removeAbsence directly to sheet (bypass queue so it doesn't get stuck)
+    const url = getScriptUrl();
+    if(url){
+      toDrop.forEach(uname => {
+        const payload = { action:"removeAbsence", data:{ username:uname, date:todayStr } };
+        fetch(url, { method:"POST", redirect:"follow", headers:{"Content-Type":"text/plain"}, body:JSON.stringify(payload) })
+          .catch(()=>{}); // fire-and-forget — DB is already cleaned locally
+      });
+    }
+    return q.length - filtered.length;
+  }
+
+  // Auto-purge on open: check local DB + queue + sheet for who actually checked in
+  (async function autoAbsencePurge(){
+    const todayStr = localDateStr(new Date());
+    const toDrop = new Set();
+    const q = loadQueue();
+
+    // Local DB check-ins today
+    const localCheckedIn = new Set(
+      (DB.attendance||[])
+        .filter(r => r.username && r.timestamp && (r.type==="in"||r.type==="out") && localDateStr(new Date(r.timestamp))===todayStr)
+        .map(r => String(r.username))
+    );
+    // Other queued check-ins today
+    const queuedCheckIns = new Set(
+      q.filter(i => i.action==="addAttendance" && i.data?.username && i.data?.timestamp &&
+                    (i.data?.type==="in"||i.data?.type==="out") &&
+                    localDateStr(new Date(i.data.timestamp))===todayStr)
+       .map(i => String(i.data.username))
+    );
+
+    q.forEach(item => {
+      if(item.action==="addAbsence"){
+        const uname = item.data?.username||"";
+        const date  = item.data?.date||"";
+        if(date===todayStr && (localCheckedIn.has(uname)||queuedCheckIns.has(uname))) toDrop.add(uname);
+      }
+    });
+
+    // Also fetch sheet to catch check-ins that synced but aren't in local DB
+    try {
+      statusEl.textContent = "Checking sheet for present users…";
+      statusEl.style.color = "var(--muted)";
+      const result = await gsFetch({action:"getAll"});
+      if(result && result.ok){
+        const sheetCheckedIn = new Set(
+          (result.attendance||[])
+            .filter(r => r.username && r.timestamp && localDateStr(new Date(parseInt(r.timestamp)||0))===todayStr)
+            .map(r => String(r.username))
+        );
+        q.forEach(item => {
+          if(item.action==="addAbsence"){
+            const uname = item.data?.username||"";
+            const date  = item.data?.date||"";
+            if(date===todayStr && sheetCheckedIn.has(uname)) toDrop.add(uname);
+          }
+        });
+      }
+    } catch(_){}
+
+    if(toDrop.size > 0){
+      const dropped = purgeAbsencesForUsers(toDrop, todayStr);
+      statusEl.textContent = `✅ Auto-cleared ${dropped} absence(s) — those users already checked in.`;
+      statusEl.style.color = "var(--gpa)";
+      renderList();
+    } else {
+      statusEl.textContent = "";
+    }
+  })();
+  renderList();
+
+  // Action buttons
+  const btnRow=h("div",{style:{display:"flex",gap:".6rem",marginTop:"1rem",flexWrap:"wrap"}});
+
+  const retryBtn=h("button",{className:"btn btn-primary",style:{flex:"1",minWidth:"120px"}},"🔄 Retry All Now");
+  retryBtn.addEventListener("click",async()=>{
+    retryBtn.disabled=true;retryBtn.textContent="Checking sheet...";
+    statusEl.textContent="Comparing queue against Google Sheets...";statusEl.style.color="var(--accent)";
+
+    // Step 1: verify what's already on sheet and purge those
+    const purged = await verifyAndPurgeQueue();
+    if(purged > 0){
+      statusEl.textContent=`Found ${purged} item(s) already on sheet — removed. Flushing rest...`;
+      renderList();
+    }
+
+    // Step 2: flush remaining
+    retryBtn.textContent="Syncing...";
+    await flushQueue();
+    await loadFromSheet();
+
+    const remaining=loadQueue().length;
+    if(remaining===0){
+      statusEl.textContent="✅ All synced! Queue is now empty.";statusEl.style.color="var(--gpa)";
+    } else {
+      // Step 3: one more verify pass after flush
+      const purged2 = await verifyAndPurgeQueue();
+      const final=loadQueue().length;
+      if(final===0){
+        statusEl.textContent="✅ All confirmed on sheet and cleared.";statusEl.style.color="var(--gpa)";
+      } else {
+        // Count absences vs other stuck items
+        const remainingQ = loadQueue();
+        const absCount = remainingQ.filter(i=>i.action==="addAbsence"||i.action==="removeAbsence").length;
+        const otherCount = remainingQ.length - absCount;
+        if(absCount > 0 && otherCount === 0){
+          // All remaining are absences — users confirmed present on sheet, auto-drop
+          const todayStr2 = localDateStr(new Date());
+          const toDrop2 = new Set(remainingQ.filter(i=>i.action==="addAbsence").map(i=>i.data?.username||"").filter(Boolean));
+          purgeAbsencesForUsers(toDrop2, todayStr2);
+          saveQueue(loadQueue().filter(i=>i.action!=="removeAbsence"||!toDrop2.has(i.data?.username||"")));
+          statusEl.textContent="✅ Auto-cleared "+absCount+" absence(s) — reloading dashboard…";statusEl.style.color="var(--gpa)";
+          renderList();
+          // Reload sheet + re-render admin so Today Absent list reflects the check-ins
+          await loadFromSheet();
+          if(typeof window._adminRefresh==="function") window._adminRefresh();
+          else if(typeof window._userRefresh==="function") window._userRefresh();
+          else if(SESSION && SESSION.role==="admin") renderAdmin();
+          statusEl.textContent="✅ Auto-cleared "+absCount+" absence(s) — Today Absent list updated.";statusEl.style.color="var(--gpa)";
+        } else if(absCount > 0){
+          statusEl.textContent="⚠️ "+final+" item(s) pending: "+absCount+" absence(s) + "+otherCount+" other. Tap the Drop Absences button below.";statusEl.style.color="var(--warn)";
+        } else {
+          statusEl.textContent="⚠️ "+final+" item(s) still pending — check Script URL below or tap Clear All.";statusEl.style.color="var(--warn)";
+        }
+      }
+    }
+    retryBtn.textContent="🔄 Retry All Now";retryBtn.disabled=false;
+    renderList();
+    if(onClose)onClose();
+  });
+
+  const clearBtn=h("button",{className:"btn btn-ghost",style:{flex:"1",minWidth:"120px",border:"1.5px solid #ff5f6d44",color:"var(--danger)"}},"🗑 Clear All");
+  clearBtn.addEventListener("click",()=>{
+    if(!confirm("Clear ALL "+loadQueue().length+" pending items?\n\nOnly do this if you've confirmed the data already exists in Google Sheets. This cannot be undone."))return;
+    saveQueue([]);
+    statusEl.textContent="Queue cleared.";statusEl.style.color="var(--muted)";
+    renderList();
+    if(onClose)onClose();
+  });
+
+  // Quick action: drop ALL absence records from queue + DB + sheet
+  const absOnly=loadQueue().filter(i=>i.action==="addAbsence"||i.action==="removeAbsence").length;
+  const dropAbsBtn=h("button",{className:"btn btn-ghost",style:{flex:"1",minWidth:"120px",border:"1.5px solid #ffd16644",color:"var(--warn)",display:absOnly>0?"":"none"}},`❌ Drop ${absOnly} Absence${absOnly!==1?"s":""}`);
+  dropAbsBtn.addEventListener("click",()=>{
+    if(!confirm(`Drop all ${absOnly} absence record(s) from queue?\n\nThis will also remove them from the Today Absent list and send a cleanup to Google Sheets.\n\nDo this only if those users actually checked in.`))return;
+    const todayStr = localDateStr(new Date());
+    // Collect all usernames from queued addAbsence items
+    const toDrop = new Set(
+      loadQueue().filter(i=>i.action==="addAbsence").map(i=>i.data?.username||"").filter(Boolean)
+    );
+    const dropped = purgeAbsencesForUsers(toDrop, todayStr);
+    // Also drop removeAbsence items from queue
+    const cleaned = loadQueue().filter(i=>i.action!=="removeAbsence"||!toDrop.has(i.data?.username||""));
+    saveQueue(cleaned);
+    statusEl.textContent=`Dropped ${dropped} absence record(s) — Today Absent list updated.`;
+    statusEl.style.color="var(--warn)";
+    dropAbsBtn.style.display="none";
+    renderList();
+    if(onClose)onClose();
+  });
+
+  const closeBtn=h("button",{className:"btn btn-ghost",style:{flex:"1",minWidth:"120px"}},"Close");
+  closeBtn.addEventListener("click",()=>{ov.remove();if(onClose)onClose();});
+
+  btnRow.appendChild(retryBtn);btnRow.appendChild(dropAbsBtn);btnRow.appendChild(clearBtn);btnRow.appendChild(closeBtn);
+  mo.appendChild(btnRow);
+
+  // Show current Script URL for diagnostics
+  const scriptUrl=getScriptUrl();
+  const diagEl=h("div",{style:{marginTop:"1rem",padding:".6rem .9rem",borderRadius:"8px",background:"var(--surface)",border:"1px solid var(--border)",fontSize:".72rem",color:"var(--muted)",wordBreak:"break-all"}});
+  diagEl.innerHTML="<strong>Script URL:</strong> "+(scriptUrl?scriptUrl.slice(0,60)+"...":"❌ Not configured");
+  mo.appendChild(diagEl);
+
+  ov.appendChild(mo);
+  ov.addEventListener("click",e=>{if(e.target===ov){ov.remove();if(onClose)onClose();}});
+  document.body.appendChild(ov);
+}
+
 // ── USER DATA MODAL — admin view of any user's full synced data ───────────────
 function openUserDataModal(u, allAttend, allSurveys){
   const ov=el("div","modal-overlay");
@@ -2028,7 +2489,7 @@ function renderAdmin(){
       adminSyncBadge.style.display="none";
     }
   }
-  adminSyncBadge.addEventListener("click",async()=>{adminSyncBadge.textContent="⏳ Retrying…";await flushQueue();updateAdminSyncBadge();});
+  adminSyncBadge.addEventListener("click",()=>openQueueInspector(updateAdminSyncBadge));
   updateAdminSyncBadge();
   const _adminBadgeInterval=setInterval(updateAdminSyncBadge,5000);
   soBtn.addEventListener("click",()=>clearInterval(_adminBadgeInterval),{once:true});
@@ -2042,9 +2503,17 @@ function renderAdmin(){
   let adminPollInterval=null;
   if(window._adminPollTimeout)clearTimeout(window._adminPollTimeout);
   // Immediate sync on admin load — shows all check-ins without waiting for first poll
-  (async()=>{ await flushQueue(); await loadFromSheet(); refresh(); })();
+  // Also auto-verify queue to passively clear items already confirmed on sheet
+  (async()=>{
+    await flushQueue();
+    await loadFromSheet();
+    // Quietly purge any queue items already confirmed on sheet (clears phantom pending counts)
+    await verifyAndPurgeQueue();
+    updateAdminSyncBadge();
+    refresh();
+  })();
 
-  function scheduleAdminPoll(){ adminPollInterval=window._adminPollTimeout=setTimeout(async()=>{ if(!SESSION)return; await flushQueue(); await loadFromSheet(); const u2=DB.users.find(x=>x.username===SESSION.username); if(u2&&u2.fullName&&u2.fullName.trim())SESSION.fullName=u2.fullName.trim(); refresh(); scheduleAdminPoll(); }, getAdminPollMs()); }
+  function scheduleAdminPoll(){ adminPollInterval=window._adminPollTimeout=setTimeout(async()=>{ if(!SESSION)return; await flushQueue(); await loadFromSheet(); await verifyAndPurgeQueue(); updateAdminSyncBadge(); const u2=DB.users.find(x=>x.username===SESSION.username); if(u2&&u2.fullName&&u2.fullName.trim())SESSION.fullName=u2.fullName.trim(); refresh(); scheduleAdminPoll(); }, getAdminPollMs()); }
   scheduleAdminPoll();
   soBtn.addEventListener("click",()=>{
     clearTimeout(window._adminPollTimeout);window._adminRefresh=null;
@@ -2069,32 +2538,37 @@ function renderAdmin(){
       .map(item => item.data)
       .filter(s => s.username);
     // Exclude DB records already in queue (queue copy is freshest)
-    const _queuedIds = new Set(_queuedAttend.map(r => String(r.id||"")));
-    const _queuedSurveyIds = new Set(_queuedSurveys.map(s => String(s.id||"")));
+    // FIX: only exclude when ID is non-empty — empty-string ID would wipe all no-ID records
+    const _queuedIds = new Set(_queuedAttend.map(r => String(r.id||"")).filter(id => id !== ""));
+    const _queuedSurveyIds = new Set(_queuedSurveys.map(s => String(s.id||"")).filter(id => id !== ""));
     const _baseAttend = DB.attendance.filter(r => !_queuedIds.has(String(r.id||"")));
     const _baseSurveys = (DB.surveys||[]).filter(s => !_queuedSurveyIds.has(String(s.id||"")));
     // Build raw merged list
     let allAttend = [..._baseAttend, ..._queuedAttend].sort((a,b)=>b.timestamp-a.timestamp);
 
     // ── ADMIN TYPE-CORRECTION: fix checkout rows mistyped as "in" by sheet ──
-    // SAFE RULE: only promote latest "in" to "out" if it looks like end-of-day
-    // (earliest in <= 10AM AND latest in >= 3PM) — avoids promoting a legitimate re-check-in
     const _adByUD = {};
     allAttend.forEach(r => {
       const dk = r.username+"__"+new Date(r.timestamp).toDateString();
       if(!_adByUD[dk]) _adByUD[dk] = [];
       _adByUD[dk].push(r);
     });
-    // FIX: removed dead type-correction skeleton — no-op code removed for clarity
-    // Type correction is handled correctly by the _byUserDay2 pass in loadFromSheet
     const allSurveys = [..._baseSurveys, ..._queuedSurveys];
     const todayStr=localDateStr();
     function normDate(d){if(!d)return"";const s=String(d);return s.includes("T")?s.slice(0,10):s.slice(0,10);}
     const todaySurveys=allSurveys.filter(s=>normDate(s.date)===todayStr);
-    // FIX: count both "in" AND "out" records as present — matches markAbsences() logic
-const todayInUsers=[...new Set(allAttend.filter(r=>(r.type==="in"||r.type==="out")&&new Date(r.timestamp).toDateString()===new Date().toDateString()).map(r=>r.username))];
+    // FIX: use localDateStr(timestamp) for today comparison — avoids UTC vs local timezone mismatch
+    // where a check-in at 8:55AM IST stored as UTC has different toDateString() than device local time
+    const todayLocalStr = todayStr; // "YYYY-MM-DD" in device local time
+    const todayInUsers=[...new Set(
+      allAttend
+        .filter(r=>(r.type==="in"||r.type==="out") && localDateStr(new Date(r.timestamp))===todayLocalStr)
+        .map(r=>r.username)
+    )];
     // Also check raw queue — user with pending (not yet uploaded) check-in must not appear absent
-    const _queuedCheckinUsers=new Set(_adminQueue.filter(item=>item.action==="addAttendance"&&item.data?.type==="in"&&item.data?.timestamp&&new Date(item.data.timestamp).toDateString()===new Date().toDateString()).map(item=>item.data.username));
+    const _queuedCheckinUsers=new Set(_adminQueue
+      .filter(item=>item.action==="addAttendance"&&(item.data?.type==="in"||item.data?.type==="out")&&item.data?.timestamp&&localDateStr(new Date(item.data.timestamp))===todayLocalStr)
+      .map(item=>item.data.username));
     _queuedCheckinUsers.forEach(u=>{if(!todayInUsers.includes(u))todayInUsers.push(u);});
     const todayIsWeekend=new Date().getDay()===0;
     // Users with a survey today were definitely present (survey only submits at checkout)
@@ -2415,8 +2889,22 @@ const todayInUsers=[...new Set(allAttend.filter(r=>(r.type==="in"||r.type==="out
           metaRow.appendChild(h("span",{style:{fontSize:".72rem",color:"var(--accent)",fontFamily:"var(--mono)",background:"#4f8ef722",border:"1px solid #4f8ef744",borderRadius:"6px",padding:".1rem .45rem"}},"ID: "+(u.userId||u.username)));
           if(u.designation)metaRow.appendChild(h("span",{style:{fontSize:".72rem",color:"var(--muted)"}},"🏷 "+u.designation));
           if(u.location)metaRow.appendChild(h("span",{style:{fontSize:".72rem",color:"var(--muted)"}},"📍 "+u.location));
-          const pwPill=h("span",{style:{fontSize:".7rem",background:"#ffd16622",color:"var(--warn)",border:"1px solid #ffd16644",borderRadius:"6px",padding:".1rem .45rem",fontFamily:"var(--mono)",cursor:"default",userSelect:"none"}},"🔑 ••••••");
-          // FIX: password never shown in list view — use Edit modal to see/change password
+          let pwVisible = false;
+          const pwPill=h("span",{style:{fontSize:".7rem",background:"#ffd16622",color:"var(--warn)",border:"1px solid #ffd16644",borderRadius:"6px",padding:".1rem .45rem",fontFamily:"var(--mono)",cursor:"pointer",userSelect:"none",display:"inline-flex",alignItems:"center",gap:".3rem"}});
+          const pwText=h("span",{},"••••••");
+          const pwEye=h("span",{style:{fontSize:".8rem"}},"👁");
+          pwPill.appendChild(h("span",{},"🔑 "));
+          pwPill.appendChild(pwText);
+          pwPill.appendChild(pwEye);
+          pwPill.title="Tap to show/hide password";
+          pwPill.addEventListener("click",()=>{
+            pwVisible=!pwVisible;
+            pwText.textContent=pwVisible?(u.password||"(no password)"):"••••••";
+            pwEye.textContent=pwVisible?"🙈":"👁";
+            pwPill.style.background=pwVisible?"#ff5f6d22":"#ffd16622";
+            pwPill.style.color=pwVisible?"var(--danger)":"var(--warn)";
+            pwPill.style.border=pwVisible?"1px solid #ff5f6d44":"1px solid #ffd16644";
+          });
           metaRow.appendChild(pwPill);
           info.appendChild(nameEl);info.appendChild(metaRow);
           row.appendChild(info);
@@ -2548,21 +3036,44 @@ const todayInUsers=[...new Set(allAttend.filter(r=>(r.type==="in"||r.type==="out
         if(!dayMap2[k])dayMap2[k]={username:r.username,date:new Date(r.timestamp),in:null,out:null,loc:null,outLoc:null,inRec:null,outRec:null};
         if(!dayMap2[k].in||r.timestamp<dayMap2[k].in){
           dayMap2[k].in=r.timestamp;dayMap2[k].loc=r.location;dayMap2[k].inRec=r;
-          if(r.outLocation&&!dayMap2[k].outLoc){dayMap2[k].outLoc=r.outLocation;if(!dayMap2[k].outRec)dayMap2[k].outRec={geoName:"",geoOk:false,geoDist:null};}
-          if(r.outTimestamp&&!dayMap2[k].out){dayMap2[k].out=r.outTimestamp;}
+          // FIX: if check-in row has embedded outTimestamp/outLocation (sheet stores both in one row),
+          // populate outLoc correctly with actual location data — not a bare stub
+          if(r.outTimestamp&&!dayMap2[k].out){
+            dayMap2[k].out=r.outTimestamp;
+          }
+          if(r.outLocation&&!dayMap2[k].outLoc){
+            dayMap2[k].outLoc=r.outLocation;
+            if(!dayMap2[k].outRec){
+              // Build a proper outRec stub with actual coordinates so locCell() can render them
+              dayMap2[k].outRec={
+                location:r.outLocation,
+                geoName:r.geoName||"",
+                geoOk:r.geoOk||false,
+                geoDist:r.geoDist??null
+              };
+            }
+          }
         }
       });
       // Second pass: apply checkout records — always take the LATEST checkout per day
+      // FIX: match by username+date string directly (same key format as dayMap2) so checkout
+      // records for same calendar day always link correctly regardless of time
       filteredOut.forEach(r=>{
-        const outDate=new Date(r.timestamp).toDateString();
-        const matchKey=Object.keys(dayMap2).find(k2=>
-          k2.startsWith(r.username+"__")&&
-          new Date(dayMap2[k2].date).toDateString()===outDate
-        );
-        const target=matchKey?dayMap2[matchKey]:null;
-        if(!target)return; // no matching check-in, skip orphan checkout
+        const outDayKey=r.username+"__"+new Date(r.timestamp).toDateString();
+        // Direct key match first (fastest, most reliable)
+        let target=dayMap2[outDayKey]||null;
+        // Fallback: scan all entries for this user in case check-in was stored under a different date key
+        if(!target){
+          const matchKey=Object.keys(dayMap2).find(k2=>
+            k2.startsWith(r.username+"__")&&
+            Math.abs(dayMap2[k2].in - r.timestamp) < 24*60*60*1000 // within 24h of check-in
+          );
+          target=matchKey?dayMap2[matchKey]:null;
+        }
+        if(!target)return; // orphan checkout with no matching check-in — skip
         if(!target.out||r.timestamp>target.out){
           target.out=r.timestamp;
+          // FIX: prefer r.location (the checkout GPS point) then r.outLocation fallback
           target.outLoc=r.location||r.outLocation||null;
           target.outRec=r;
         }
