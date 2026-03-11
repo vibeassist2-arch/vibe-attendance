@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- VIBE v20260311.fix6 — queue: direct POST removeAbsence to sheet + reload admin after purge -->
+<!-- VIBE v20260311.fix10 — cleared users now added to todayInUsers so they appear in Today Present -->
 <html lang="en">
 <head>
 <meta charset="UTF-8"/>
@@ -385,6 +385,12 @@ async function flushQueue(){
   if(_queueRunning || !url || !navigator.onLine) return;
   _queueRunning = true;
   try {
+    // removeAbsence items are always fired directly — never queue them
+    // Drop any that snuck in (e.g. from older code paths)
+    const _preClean = loadQueue();
+    const _hasRemove = _preClean.some(i => i.action === "removeAbsence");
+    if(_hasRemove) saveQueue(_preClean.filter(i => i.action !== "removeAbsence"));
+
     let q = loadQueue();
     let i = 0;
     while(i < q.length){
@@ -605,27 +611,50 @@ async function markAbsences() {
   if (today.getDay() === 0) return; // Skip Sunday only
 
   const nowMin = today.getHours() * 60 + today.getMinutes();
-  // FIX: only mark absences after 10:30 AM — gives all users time to check in and sync
-  // 9:00 AM was too early; users who checked in at 9:05 AM hadn't synced yet when absence ran
-  if (nowMin < 630) return; // 630 = 10:30 AM
+  if (nowMin < 630) return; // Only after 10:30 AM
 
   if (!DB.absences) DB.absences = [];
 
-  // FIX: always flush queue and reload sheet before deciding who's absent
-  // Without this, admin device marks users absent before their check-ins arrive from sheet
+  // GUARD: if any check-in/out is still queued (not yet uploaded), skip this cycle entirely.
+  // Marking absences while check-ins are pending always produces wrong results.
+  const queueBefore = loadQueue();
+  const hasPendingCheckIns = queueBefore.some(i =>
+    i.action === "addAttendance" &&
+    i.data?.timestamp &&
+    localDateStr(new Date(i.data.timestamp)) === todayStr
+  );
+  if (hasPendingCheckIns) {
+    console.log("markAbsences: skipping — check-ins still in queue, waiting for sync");
+    // Try to flush now; next interval will re-evaluate
+    try { await flushQueue(); } catch(_) {}
+    return;
+  }
+
+  // Try to flush + reload sheet — if unreachable, skip entirely
   try {
     await flushQueue();
-    await loadFromSheet();
+    const loaded = await loadFromSheet();
+    if (!loaded) {
+      console.warn("markAbsences: sheet unreachable, skipping this cycle");
+      return;
+    }
   } catch(e) {
-    // If sheet unreachable, skip absence marking entirely — better to skip than wrongly mark
     console.warn("markAbsences: sheet unreachable, skipping this cycle", e);
     return;
   }
 
-  const queue = loadQueue();
-  const pendingIns = new Set(queue
-    .filter(i => i.action === "addAttendance" && (i.data?.type === "in" || i.data?.type === "out") && localDateStr(new Date(i.data.timestamp)) === todayStr)
-    .map(i => i.data.username));
+  // GUARD: re-check queue after flush — if check-ins arrived during the await, abort
+  const queueAfter = loadQueue();
+  const stillPending = queueAfter.some(i =>
+    i.action === "addAttendance" &&
+    i.data?.timestamp &&
+    localDateStr(new Date(i.data.timestamp)) === todayStr
+  );
+  if (stillPending) {
+    console.log("markAbsences: check-ins still pending after flush, skipping");
+    return;
+  }
+
   const checkedInToday = new Set(
     DB.attendance
       .filter(r => (r.type === "in" || r.type === "out") && localDateStr(new Date(r.timestamp)) === todayStr)
@@ -638,13 +667,17 @@ async function markAbsences() {
   );
 
   DB.users.filter(u => u.role !== "admin").forEach((u, idx) => {
-    const isPresent = checkedInToday.has(u.username) || pendingIns.has(u.username) || surveyedToday.has(u.username);
+    const isPresent = checkedInToday.has(u.username) || surveyedToday.has(u.username);
     const existingAbs = DB.absences.find(a => a.username === u.username && a.date === todayStr);
     if (isPresent && existingAbs) {
+      // User checked in — remove any wrong absence
       DB.absences = DB.absences.filter(a => !(a.username === u.username && a.date === todayStr));
-      gsPost({ action: "removeAbsence", data: { username: u.username, date: todayStr } });
+      // Fire directly to sheet (not via queue) to avoid re-queuing loop
+      const url = getScriptUrl();
+      if(url) fetch(url, { method:"POST", redirect:"follow", headers:{"Content-Type":"text/plain"},
+        body: JSON.stringify({ action:"removeAbsence", data:{ username: u.username, date: todayStr } }) }).catch(()=>{});
     } else if (!isPresent && !existingAbs) {
-      const alreadyQueued = queue.some(q => q.action === "addAbsence" && q.data?.username === u.username && q.data?.date === todayStr);
+      const alreadyQueued = queueAfter.some(q => q.action === "addAbsence" && q.data?.username === u.username && q.data?.date === todayStr);
       if (!alreadyQueued) {
         const newAbs = { id: String(Date.now())+"_abs_"+idx, username: u.username, date: todayStr, auto: true };
         DB.absences.push(newAbs);
@@ -655,7 +688,19 @@ async function markAbsences() {
   save(DB);
 }
 
-setInterval(async()=>{ if(SESSION){ await flushQueue(); markAbsences(); } }, 60000);
+setInterval(async()=>{
+  if(!SESSION) return;
+  await flushQueue();
+  // Only run markAbsences if no check-ins are sitting in the queue for today
+  // This prevents the race where check-ins are pending but not yet on sheet
+  const todayStr = localDateStr(new Date());
+  const hasQueuedIns = loadQueue().some(i =>
+    i.action === "addAttendance" &&
+    i.data?.timestamp &&
+    localDateStr(new Date(i.data.timestamp)) === todayStr
+  );
+  if(!hasQueuedIns) markAbsences();
+}, 60000);
 
 let autoSyncInterval = null;
 function startAutoSync() {
@@ -2068,15 +2113,9 @@ function openQueueInspector(onClose){
   function purgeAbsencesForUsers(toDrop, todayStr){
     if(!toDrop.size) return 0;
     const q = loadQueue();
-    // Remove addAbsence items from queue
+    // Remove addAbsence AND removeAbsence queue items for these users
     const filtered = q.filter(item => {
-      if(item.action==="addAbsence"){
-        const uname = item.data?.username||"";
-        const date  = item.data?.date||"";
-        if(date===todayStr && toDrop.has(uname)) return false;
-      }
-      // Also strip any stale removeAbsence items for these users — we'll fire directly
-      if(item.action==="removeAbsence"){
+      if(item.action==="addAbsence"||item.action==="removeAbsence"){
         const uname = item.data?.username||"";
         const date  = item.data?.date||"";
         if(date===todayStr && toDrop.has(uname)) return false;
@@ -2087,6 +2126,16 @@ function openQueueInspector(onClose){
     // Remove from local DB immediately
     DB.absences = (DB.absences||[]).filter(a => !(a.date===todayStr && toDrop.has(a.username)));
     save(DB);
+    // Persist cleared usernames so Today Absent list stays correct even if check-ins never arrive
+    try {
+      const _key = "vibeClearedAbsent__"+todayStr;
+      const existing = new Set(JSON.parse(localStorage.getItem(_key)||"[]"));
+      toDrop.forEach(u => existing.add(u));
+      localStorage.setItem(_key, JSON.stringify([...existing]));
+      // Auto-expire: clean up keys older than 2 days
+      Object.keys(localStorage).filter(k=>k.startsWith("vibeClearedAbsent__")&&k<"vibeClearedAbsent__"+todayStr)
+        .forEach(k=>localStorage.removeItem(k));
+    } catch(_){}
     // Fire removeAbsence directly to sheet (bypass queue so it doesn't get stuck)
     const url = getScriptUrl();
     if(url){
@@ -2098,6 +2147,16 @@ function openQueueInspector(onClose){
     }
     return q.length - filtered.length;
   }
+
+  // On open: silently drop all removeAbsence queue items — these are always fired directly to sheet
+  // Keeping them in the queue only causes phantom pending counts with no benefit
+  (function dropStaleRemoveAbsence(){
+    const q = loadQueue();
+    const cleaned = q.filter(i => i.action !== "removeAbsence");
+    if(cleaned.length < q.length){
+      saveQueue(cleaned);
+    }
+  })();
 
   // Auto-purge on open: check local DB + queue + sheet for who actually checked in
   (async function autoAbsencePurge(){
@@ -2573,7 +2632,18 @@ function renderAdmin(){
     const todayIsWeekend=new Date().getDay()===0;
     // Users with a survey today were definitely present (survey only submits at checkout)
     const todaySurveyUsernames=new Set(todaySurveys.map(s=>s.username));
-    const todayAbsent=todayIsWeekend?[]:regularUsers.filter(u=>!todayInUsers.includes(u.username)&&!todaySurveyUsernames.has(u.username));
+    // Also treat users whose absences were manually cleared today as present
+    // This covers the case where check-ins are stuck on employee devices (never reached sheet)
+    // but admin confirmed they are physically present by clearing their absence
+    const _clearedAbsenceKey = "vibeClearedAbsent__"+todayStr;
+    let _clearedToday = new Set();
+    try{ _clearedToday = new Set(JSON.parse(localStorage.getItem(_clearedAbsenceKey)||"[]")); }catch(_){}
+    // Add cleared users to todayInUsers so they show in Today Present count too
+    _clearedToday.forEach(u => { if(!todayInUsers.includes(u)) todayInUsers.push(u); });
+    const todayAbsent=todayIsWeekend?[]:regularUsers.filter(u=>
+      !todayInUsers.includes(u.username) &&
+      !todaySurveyUsernames.has(u.username)
+    );
     // FIX: totalPolicy should be current month only — not all-time — to match card label
     const curMon=localMonthStr(new Date());
     const thisMonthSurveys=allSurveys.filter(s=>(s.date||"").startsWith(curMon));
@@ -3479,7 +3549,16 @@ loadDiv.innerHTML=`
 `;
 document.getElementById("app").appendChild(loadDiv);
 function safeRoute(){
-  try{ markAbsences(); route(); }
+  try{
+    // Only run markAbsences at startup if no check-ins are pending in queue
+    const _todayStr = localDateStr(new Date());
+    const _hasQueuedIns = loadQueue().some(i =>
+      i.action === "addAttendance" && i.data?.timestamp &&
+      localDateStr(new Date(i.data.timestamp)) === _todayStr
+    );
+    if(!_hasQueuedIns) markAbsences();
+    route();
+  }
   catch(e){
     console.error("VIBE: startup crash",e);
     SESSION=null; clearSession();
