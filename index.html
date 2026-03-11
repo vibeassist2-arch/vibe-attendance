@@ -244,7 +244,7 @@ select option{background:var(--surface);color:var(--text)}
 <div id="app"></div>
 
 <script>
-// ── VIBE v20260311.fix11 — Online-only users: no localStorage, proper departure status ────
+// ── VIBE v20260311.fix13 — Users: ZERO localStorage for attendance/survey/absence data; sheet is sole source of truth ────
 const KEY = "vibeAttendanceData";
 const DEFAULT_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwvX9h3XDveEw0zpwDvhru7j8dlaQx5VGAGOayx1tnn7GuohDq-H7UTZdBLx9o9N3Yh/exec";
 
@@ -609,8 +609,9 @@ document.addEventListener("visibilitychange", () => {
     else{ flushQueue(); loadFromSheet().then(()=>{ try{if(typeof window._adminRefresh==="function")window._adminRefresh();}catch(_){} }).catch(()=>{}); }
   }
 });
-// Flush immediately when device comes back online — admin only
-window.addEventListener("online", () => { if(SESSION && SESSION.role==="admin") flushQueue(); });
+// FIX Bug 6: Removed duplicate 'online' flushQueue listener here — it is already
+// handled inside setupOfflineBanner() above with full toast + SESSION guard logic.
+// Keeping two listeners causes redundant flush calls and toast confusion for users.
 // Flush queue periodically — only when admin is logged in
 setInterval(()=>{ if(SESSION && SESSION.role==="admin") flushQueue(); }, 30000);
 
@@ -620,9 +621,11 @@ function canCheckIn(){
   const now = Date.now();
   if(now - _lastCheckIn < 5000) return false;
   // Block if user already has a check-in today in DB (prevents double check-in on rapid page reload)
+  // FIX Bug 2: Use localDateStr() consistently — toDateString() is locale-formatted and
+  // can mismatch with timezone-aware date comparisons used everywhere else in the codebase
   if(SESSION && SESSION.role !== "admin"){
-    const todayStr=new Date().toDateString();
-    const hasCheckIn=DB.attendance.some(r=>r.username===SESSION.username&&r.type==="in"&&new Date(r.timestamp).toDateString()===todayStr);
+    const todayStr=localDateStr(new Date());
+    const hasCheckIn=DB.attendance.some(r=>r.username===SESSION.username&&r.type==="in"&&localDateStr(new Date(r.timestamp))===todayStr);
     if(hasCheckIn) return false;
   }
   return true;
@@ -635,7 +638,8 @@ function stampCheckOut(){ _lastCheckOut = Date.now(); }
 async function markAbsences() {
   const today = new Date();
   const todayStr = localDateStr(today);
-  if (today.getDay() === 0) return; // Skip Sunday only
+  // FIX Bug 4: Skip Sunday only — Saturday is a working day (consistent with cleanEarlyAbsences)
+  if (today.getDay() === 0) return;
 
   const nowMin = today.getHours() * 60 + today.getMinutes();
   if (nowMin < 630) return; // Only after 10:30 AM
@@ -1028,8 +1032,11 @@ async function loadFromSheet() {
     const absMap = {};
     // Sheet data first
     sheetAbsences.forEach(a => { absMap[a.username+"__"+a.date] = a; });
+    // FIX Bug 1: Reload queue fresh here — _queue was loaded before attendance merge
+    // and may be stale if any sync ops modified it during this function call
+    const _freshQueue = loadQueue();
     // Add any local absences not yet on sheet (queued addAbsence items)
-    const queuedAbsKeys = new Set(_queue
+    const queuedAbsKeys = new Set(_freshQueue
       .filter(item => item.action === "addAbsence" && item.data)
       .map(item => String(item.data.username||"")+"__"+String(item.data.date||"")));
     (DB.absences||[]).forEach(a => {
@@ -1037,7 +1044,7 @@ async function loadFromSheet() {
       if(queuedAbsKeys.has(k) && !absMap[k]) absMap[k] = a; // only keep if queued and not yet on sheet
     });
     // Remove absences that were queued for removal
-    const removedAbsKeys = new Set(_queue
+    const removedAbsKeys = new Set(_freshQueue
       .filter(item => item.action === "removeAbsence" && item.data)
       .map(item => String(item.data.username||"")+"__"+String(item.data.date||"")));
     removedAbsKeys.forEach(k => delete absMap[k]);
@@ -1051,22 +1058,13 @@ async function loadFromSheet() {
     const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
     DB.attendance = DB.attendance.filter(r => activeUsernames.has(r.username) || r.timestamp > thirtyDaysAgo);
 
-    // USER ONLINE-ONLY: only save current user's own records locally — not all employees' data
-    // Admin saves everything (needed for dashboard, reports, etc.)
-    if(SESSION && SESSION.role !== "admin"){
-      const _uname = SESSION.username;
-      const _userOnly = {
-        ...DB,
-        attendance: DB.attendance.filter(r => r.username === _uname),
-        surveys: (DB.surveys||[]).filter(s => s.username === _uname),
-        absences: (DB.absences||[]).filter(a => a.username === _uname),
-      };
-      save(_userOnly);
-      // Keep full DB in memory for display (users array needed for geofence lookup etc.)
-      // but only persist the user's own records to localStorage
-    } else {
+    // USER: DB lives in memory only — nothing is written to localStorage.
+    // Sheet is the sole source of truth; save() is a no-op for users anyway.
+    // Admin saves full DB to localStorage for offline resilience.
+    if(SESSION && SESSION.role === "admin"){
       save(DB);
     }
+    // For users: full DB stays in memory (users array needed for geofence etc.) — no localStorage write.
     return true;
   } catch(e) { console.error("loadFromSheet error:", e); return false; }
   finally { _loadRunning = false; }
@@ -1075,6 +1073,10 @@ async function loadFromSheet() {
 function def(){return{users:[{username:"admin",password:"admin123",role:"admin"}],attendance:[],surveys:[],absences:[],officeLocations:[]}}
 
 function loadData(){
+  // USER: never read or write attendance/surveys/absences from/to localStorage.
+  // Sheet is the sole source of truth for users. We read localStorage only for
+  // admin offline resilience and for the users/officeLocations arrays needed
+  // before the first loadFromSheet() completes.
   try{
     const r=localStorage.getItem(KEY);
     if(!r) return def();
@@ -1084,6 +1086,17 @@ function loadData(){
     if(!d.surveys) d.surveys=[];
     if(!d.absences) d.absences=[];
     if(!d.officeLocations) d.officeLocations=[];
+    // For non-admin sessions: strip all attendance/surveys/absences — never show stale local data.
+    // Full fresh data arrives via loadFromSheet() on login. Also delete the data from storage
+    // so we don't accumulate stale records across sessions.
+    const sess = (()=>{ try{ const s=JSON.parse(localStorage.getItem("vibeSession")||"null"); return s; }catch(_){ return null; } })();
+    if(sess && sess.role !== "admin"){
+      d.attendance = [];
+      d.surveys = [];
+      d.absences = [];
+      // Persist the stripped copy so old stale records are gone permanently
+      try{ localStorage.setItem(KEY, JSON.stringify(d)); }catch(_){}
+    }
     return d;
   }catch{return def();}
 }
@@ -1106,6 +1119,9 @@ function archiveOldData(d, months=6){
 }
 
 function save(d){
+  // USER: never persist attendance/surveys/absences to localStorage.
+  // Sheet is the sole source of truth. Session token is stored separately via saveSession().
+  if(SESSION && SESSION.role !== "admin") return;
   try{
     let str = JSON.stringify(d);
     const pct = str.length / LS_LIMIT * 100;
@@ -1357,6 +1373,10 @@ function renderLogin(){
       return;
     }
     btn.disabled=true;btn.textContent="Syncing data…";
+    // USER ONLINE-ONLY: wipe any stale attendance/surveys/absences from localStorage
+    // that may remain from a previous app version. Users never write these to localStorage,
+    // so delete the whole data key — session token is stored separately and is unaffected.
+    try{ localStorage.removeItem(KEY); }catch(_){}
     // USER ONLINE-ONLY: just load from sheet — no queue to flush
     withLoginTimeout(loadFromSheet()).finally(()=>{
       const u2=DB.users.find(x=>x.username===found.username)||found;
@@ -1400,7 +1420,14 @@ function showSurvey(onSubmit, onCancel){
     submitBtn.disabled=!ok;submitBtn.textContent=ok?"✓ Submit & Check Out":"Please fill all 3 fields";
   }
   [i1,i2,i3].forEach(i=>i.addEventListener("input",checkFill));
-  submitBtn.addEventListener("click",()=>{onSubmit({policy:parseInt(i1.value)||0,rsa:parseInt(i2.value)||0,gpa:parseInt(i3.value)||0});overlay.remove();});
+  submitBtn.addEventListener("click",()=>{
+    // FIX Bug 7: Warn (but don't block) if all three counts are 0 — likely an accidental submit
+    const p=parseInt(i1.value)||0, r=parseInt(i2.value)||0, g=parseInt(i3.value)||0;
+    if(p===0&&r===0&&g===0){
+      if(!confirm("All counts are 0. Are you sure you want to submit with zero entries?")) return;
+    }
+    onSubmit({policy:p,rsa:r,gpa:g});overlay.remove();
+  });
   [xBtn,title,sub,w1,w2,w3,submitBtn].forEach(x=>modal.appendChild(x));
   overlay.appendChild(modal);
   overlay.addEventListener("click",e=>{if(e.target===overlay){overlay.remove();if(onCancel)onCancel();}});
@@ -1653,13 +1680,12 @@ function renderUser(){
                 return;
               }
               stampCheckOut(); // stamp debounce only when record is actually committed
-              // Only update local DB after server confirms — store only this user's records
+              // Only update in-memory DB after server confirms — no localStorage write for users
               DB.surveys.push(sur);
               DB.attendance.push(rec_out);
-              const _saveOut={...DB,attendance:DB.attendance.filter(r=>r.username===SESSION.username),surveys:(DB.surveys||[]).filter(s=>s.username===SESSION.username),absences:(DB.absences||[]).filter(a=>a.username===SESSION.username)};
-              save(_saveOut);
+              // USER: sheet is the only persistent store — DB stays in memory only
               sessionStorage.setItem("vibeLastCheckout_"+SESSION.username, String(_tsNow));
-              showToast("Checked out! ✅ Data synced to admin panel.", "success", 4000);
+              showToast("Checked out! ✅ Data synced to sheet.", "success", 4000);
               delete window._geoWarn;
               const prevEb=document.querySelector(".loc-err-banner");if(prevEb)prevEb.remove();
               _checkoutInProgress=false;
@@ -1722,12 +1748,10 @@ function renderUser(){
               mainBtn.insertAdjacentElement("afterend",eb2);
               return;
             }
-            // Only update local DB after server confirms — keeps DB in sync with sheet
-            // Store only this user's own record locally (not other employees' data)
+            // Only update in-memory DB after server confirms — sheet is source of truth for users
             DB.attendance.push(rec_in);
-            const _saveIn={...DB,attendance:DB.attendance.filter(r=>r.username===SESSION.username),surveys:(DB.surveys||[]).filter(s=>s.username===SESSION.username),absences:(DB.absences||[]).filter(a=>a.username===SESSION.username)};
-            save(_saveIn);
-            showToast("Checked in! ✅ Synced to admin panel.", "success", 4000);
+            // USER: no localStorage write — DB stays in memory; sheet is the only persistent store
+            showToast("Checked in! ✅ Synced to sheet.", "success", 4000);
             delete window._geoWarn;
             const prevEb=document.querySelector(".loc-err-banner");if(prevEb)prevEb.remove();
             refresh();
@@ -2119,8 +2143,7 @@ function openSurveyEditModal(survey, onSave) {
           clearTimeout(_t);
         }catch(_){}
         DB.surveys[idx]=updated;
-        // Save only this user's own records locally
-        save({...DB,attendance:DB.attendance.filter(r=>r.username===SESSION.username),surveys:(DB.surveys||[]).filter(s=>s.username===SESSION.username),absences:(DB.absences||[]).filter(a=>a.username===SESSION.username)});
+        // USER: no localStorage write — sheet is the only persistent store
       } else {
         DB.surveys[idx]=updated;save(DB);syncToSheet();
         // Also update the queued copy if it hasn't been flushed yet
@@ -2135,9 +2158,18 @@ function openSurveyEditModal(survey, onSave) {
   delBtn.addEventListener("click",async()=>{
     if(!confirm("Delete this survey entry?"))return;
     if(SESSION && SESSION.role !== "admin"){
-      // USER ONLINE-ONLY: remove from local DB only (sheet stays in sync via loadFromSheet)
+      // FIX Bug 3: Post deletion to sheet so it doesn't reappear on next loadFromSheet()
+      const _gsUrlDel=getScriptUrl();
+      if(_gsUrlDel){
+        try{
+          const _cd=new AbortController();const _td=setTimeout(()=>_cd.abort(),10000);
+          await fetch(_gsUrlDel,{method:"POST",redirect:"follow",headers:{"Content-Type":"text/plain"},
+            body:JSON.stringify({action:"deleteSurvey",data:{id:survey.id}}),signal:_cd.signal});
+          clearTimeout(_td);
+        }catch(_){}
+      }
       DB.surveys=DB.surveys.filter(s=>s.id!==survey.id);
-      save({...DB,attendance:DB.attendance.filter(r=>r.username===SESSION.username),surveys:(DB.surveys||[]).filter(s=>s.username===SESSION.username),absences:(DB.absences||[]).filter(a=>a.username===SESSION.username)});
+      // USER: no localStorage write — sheet is the only persistent store
     } else {
       DB.surveys=DB.surveys.filter(s=>s.id!==survey.id);save(DB);syncToSheet();
     }
@@ -3301,7 +3333,9 @@ function renderAdmin(){
       content.appendChild(sg);
 
       const absentRecs=(DB.absences||[]).filter(a=>{
-        const aDate=new Date(a.date+"T00:00:00");
+        // FIX Bug 5: Anchor absence at T12:00:00 (not T00:00:00) so it lands safely
+        // in the middle of the day, preventing off-by-one exclusions at range boundaries
+        const aDate=new Date(a.date+"T12:00:00");
         const aTs=aDate.getTime();
         const isWeekend=aDate.getDay()===0;
         const userExists=regularUsers.find(u=>u.username===a.username);
@@ -3634,7 +3668,7 @@ function renderAdmin(){
 (function cleanEarlyAbsences(){
   const now = new Date();
   if (now.getDay() === 0) return; // Skip Sunday only (Saturday is a working day)
-  // FIX: guard against running on empty/corrupt DB — no users = nothing to clean
+  // Guard against running on empty/corrupt DB — no users = nothing to clean
   if (!DB || !DB.users || !DB.users.length) return;
   const nowMin = now.getHours() * 60 + now.getMinutes();
   const startMin = WORK_START_H * 60 + WORK_START_M;
@@ -3643,8 +3677,11 @@ function renderAdmin(){
     const before = (DB.absences||[]).length;
     // Only remove auto-marked absences, not manually-added ones
     DB.absences = (DB.absences || []).filter(a => !(a.date === todayStr && a.auto === true));
-    // FIX: only save if something actually changed — avoids unnecessary write on every page load
-    if(DB.absences.length !== before) save(DB);
+    // Only save if something changed AND we are an admin session.
+    // This runs at startup before SESSION is fully confirmed, so guard explicitly.
+    // Users never write attendance data to localStorage — sheet is sole source of truth.
+    const _sess = (()=>{ try{ const s=JSON.parse(localStorage.getItem("vibeSession")||"null"); return s; }catch(_){ return null; } })();
+    if(DB.absences.length !== before && _sess && _sess.role === "admin") save(DB);
   }
 })();
 
