@@ -1411,6 +1411,13 @@ function showSurvey(onSubmit, onCancel){
 function renderUser(){
   if(!SESSION||!SESSION.username){renderLogin();return;}
   if(!DB.users.find(u=>u.username===SESSION.username)){SESSION=null;clearSession();renderLogin();return;}
+  // ── HARD KILL all admin background tasks — prevents stale admin intervals
+  // showing queue badges or firing sync calls while a user is logged in ──────
+  if(window._adminPollInterval){clearInterval(window._adminPollInterval);window._adminPollInterval=null;}
+  if(window._adminPollTimeout){clearTimeout(window._adminPollTimeout);window._adminPollTimeout=null;}
+  if(window._adminBadgeInterval){clearInterval(window._adminBadgeInterval);window._adminBadgeInterval=null;}
+  window._adminRefresh=null; window._doAdminSync=null;
+  // ──────────────────────────────────────────────────────────────────────────
   const myRecs=()=>DB.attendance.filter(r=>r.username===SESSION.username).sort((a,b)=>b.timestamp-a.timestamp);
   const todayRecs=()=>{
     const s=new Date().toDateString();
@@ -2072,8 +2079,6 @@ function renderUser(){
       calWrap.appendChild(legend);
       content.appendChild(calWrap);
     }
-    // Restart sync badge timer after every refresh (it was cleared at the top of refresh())
-    window._syncBadgeTimerRef = setInterval(()=>{ updateSyncBadge(); }, 5000);
   }
   refresh();render(dash);
 }
@@ -2639,8 +2644,9 @@ function renderAdmin(){
   }
   adminSyncBadge.addEventListener("click",()=>openQueueInspector(updateAdminSyncBadge));
   updateAdminSyncBadge();
-  const _adminBadgeInterval=setInterval(updateAdminSyncBadge,5000);
-  soBtn.addEventListener("click",()=>clearInterval(_adminBadgeInterval),{once:true});
+  if(window._adminBadgeInterval) clearInterval(window._adminBadgeInterval);
+  window._adminBadgeInterval=setInterval(updateAdminSyncBadge,5000);
+  soBtn.addEventListener("click",()=>{clearInterval(window._adminBadgeInterval);window._adminBadgeInterval=null;},{once:true});
   hdrR.appendChild(adminSyncBadge);
   hdrR.appendChild(syncBtn);hdrR.appendChild(soBtn);hdr.appendChild(hdrR);dash.appendChild(hdr);
 
