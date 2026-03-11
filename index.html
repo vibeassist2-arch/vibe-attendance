@@ -328,41 +328,57 @@ async function requestBackgroundSync() {
 let _queueRunning = false;
 async function flushQueue(){
   const url = getScriptUrl();
-  // Guard: skip if already running, no URL, or device is offline
   if(_queueRunning || !url || !navigator.onLine) return;
   _queueRunning = true;
   try {
     let q = loadQueue();
-    let failCount = 0;
-    while(q.length > 0 && failCount < 3){
-      const item = q[0];
-      try{
-        const _ctrl = new AbortController();
-        const _timer = setTimeout(() => _ctrl.abort(), 8000);
-        const res = await fetch(url, { method:"POST", redirect:"follow", headers:{"Content-Type":"text/plain"}, body: JSON.stringify(item), signal: _ctrl.signal });
-        clearTimeout(_timer);
-        const text = await res.text();
-        let parsed = null;
-        try { parsed = JSON.parse(text); } catch(e){}
-        if(res.ok || (parsed && parsed.ok !== false)){
-          q.shift();
-          saveQueue(q);
-          failCount = 0;
-        } else {
-          failCount++;
-          if(failCount >= 3) { requestBackgroundSync(); break; }
-          await new Promise(r=>setTimeout(r, Math.min(1000 * Math.pow(2, failCount-1), 4000))); // exponential back-off: 1s, 2s, 4s
+    let i = 0;
+    while(i < q.length){
+      if(!navigator.onLine) break;
+      const item = q[i];
+      let ok = false;
+      let tries = 0;
+      while(tries < 3){
+        try{
+          const ctrl=new AbortController();
+          const t=setTimeout(()=>ctrl.abort(),8000);
+          const res=await fetch(url,{method:"POST",redirect:"follow",headers:{"Content-Type":"text/plain"},body:JSON.stringify(item),signal:ctrl.signal});
+          clearTimeout(t);
+          const text=await res.text();
+          let parsed=null; try{parsed=JSON.parse(text);}catch(_){}
+          if(res.ok||(parsed&&parsed.ok!==false)){ok=true;break;}
+          tries++;
+          if(tries<3)await new Promise(r=>setTimeout(r,1000*Math.pow(2,tries-1)));
+        }catch(e){
+          if(!navigator.onLine)break;
+          tries++;
+          if(tries<3)await new Promise(r=>setTimeout(r,1000*Math.pow(2,tries-1)));
         }
-      } catch(e){
-        failCount++;
-        if(!navigator.onLine) break; // device went offline mid-flush — stop immediately, wait for 'online' event
-        if(failCount >= 3) { requestBackgroundSync(); break; }
-        await new Promise(r=>setTimeout(r, Math.min(1000 * Math.pow(2, failCount-1), 4000)));
       }
+      if(ok){
+        q=loadQueue();
+        const idx=q.findIndex(x=>x.ts===item.ts&&x.action===item.action);
+        if(idx!==-1)q.splice(idx,1);
+        saveQueue(q);
+      } else {
+        item._retries=(item._retries||0)+1;
+        if(item._retries>=10){
+          console.error("VIBE: dropping queue item after 10 retries",item);
+          q=loadQueue();
+          const idx=q.findIndex(x=>x.ts===item.ts&&x.action===item.action);
+          if(idx!==-1){q.splice(idx,1);saveQueue(q);}
+        } else {
+          q=loadQueue();
+          const idx=q.findIndex(x=>x.ts===item.ts&&x.action===item.action);
+          if(idx!==-1){q[idx]._retries=item._retries;saveQueue(q);}
+          i++;
+        }
+        requestBackgroundSync();
+        if(!navigator.onLine)break;
+      }
+      q=loadQueue();
     }
-  } finally {
-    _queueRunning = false;
-  }
+  } finally { _queueRunning=false; }
 }
 
 async function gsPost(body) {
@@ -378,6 +394,28 @@ async function gsPost(body) {
 }
 
 // Flush queue on visibility change (when user reopens tab/phone)
+
+// Offline banner
+(function setupOfflineBanner(){
+  const ID="vibeOfflineBanner";
+  function show(msg,bg,col){
+    let b=document.getElementById(ID);
+    if(!b){b=document.createElement("div");b.id=ID;b.style.position="fixed";b.style.top="0";b.style.left="0";b.style.right="0";b.style.zIndex="9998";b.style.padding=".5rem 1rem";b.style.fontFamily="Sora,sans-serif";b.style.fontSize=".82rem";b.style.fontWeight="700";b.style.textAlign="center";b.style.transition="opacity .3s";document.body.appendChild(b);}
+    b.style.background=bg;b.style.color=col;b.style.display="block";b.style.opacity="1";b.textContent=msg;
+  }
+  function hide(){var b=document.getElementById(ID);if(b){b.style.opacity="0";setTimeout(function(){b.style.display="none";},350);}}
+  window.addEventListener("offline",function(){show("No internet -- your check-in is saved and will sync when reconnected","#ffd166","#1a1200");});
+  window.addEventListener("online",async function(){
+    show("Back online -- syncing...","#38d9a9","#052e1c");
+    setTimeout(hide,3000);
+    if(!SESSION)return;
+    await flushQueue();
+    await loadFromSheet();
+    if(!SESSION)return;
+    try{ if(typeof window._adminRefresh==="function")window._adminRefresh(); else if(typeof window._userRefresh==="function")window._userRefresh(); }catch(e){}
+  });
+  if(!navigator.onLine)show("No internet -- your check-in is saved and will sync when reconnected","#ffd166","#1a1200");
+})();
 document.addEventListener("visibilitychange", () => { if(!document.hidden && SESSION) flushQueue(); });
 // Flush immediately when device comes back online — don't wait for 30s interval
 window.addEventListener("online", () => { if(SESSION) flushQueue(); });
@@ -867,7 +905,24 @@ function getDepartureStatus(tsMs, checkInTs){
 function localMonthStr(date){const d=date||new Date();return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`}
 
 let DB = loadData();
-let SESSION = null;
+// Session persistence
+const SESSION_KEY = "vibeSession";
+function saveSession(s){ try{ localStorage.setItem(SESSION_KEY, JSON.stringify(s)); }catch(e){} }
+function clearSession(){ try{ localStorage.removeItem(SESSION_KEY); }catch(e){} }
+function restoreSession(){
+  try{
+    const raw = localStorage.getItem(SESSION_KEY);
+    if(!raw) return null;
+    const s = JSON.parse(raw);
+    if(!s || !s.username) return null;
+    const u = DB.users.find(x => x.username === s.username);
+    if(!u) return null;
+    if(u.fullName && u.fullName.trim()) s.fullName = u.fullName.trim();
+    s.role = u.role;
+    return s;
+  }catch(e){ return null; }
+}
+let SESSION = restoreSession();
 
 function getLocation(){
   // Returns {lat,lng} on success or {error:"denied"|"timeout"|"unavailable"|"unsupported"} on failure
@@ -912,10 +967,20 @@ function el(tag,cls,children,style){return h(tag,{className:cls,...(style?{style
 function render(node){const app=document.getElementById("app");app.innerHTML="";app.appendChild(node)}
 
 function route(){
+  if(SESSION){
+    const stillExists = DB.users.find(u => u.username === SESSION.username);
+    if(!stillExists){ SESSION=null; clearSession(); }
+  }
   if(!SESSION){if(autoSyncInterval){clearInterval(autoSyncInterval);autoSyncInterval=null;}renderLogin();return;}
   startAutoSync();
-  if(SESSION.role==="admin"){renderAdmin();return}
-  renderUser();
+  try{
+    if(SESSION.role==="admin"){renderAdmin();return;}
+    renderUser();
+  }catch(e){
+    console.error("VIBE: render error",e);
+    SESSION=null;clearSession();
+    try{renderLogin();}catch(_){}
+  }
 }
 
 // ── LOGIN ─────────────────────────────────────────────────────────────────────
@@ -977,6 +1042,7 @@ function renderLogin(){
       flushQueue().catch(()=>{}).finally(()=>withLoginTimeout(loadFromSheet()).finally(()=>{
         const u2=DB.users.find(x=>x.username===found.username)||found;
         SESSION={username:u2.username,fullName:u2.fullName&&u2.fullName.trim()?u2.fullName.trim():u2.username,role:"admin"};
+        saveSession(SESSION);
         route();
       }));
       return;
@@ -987,6 +1053,7 @@ function renderLogin(){
       const u2=DB.users.find(x=>x.username===found.username)||found;
       const fn=u2.fullName&&u2.fullName.trim()?u2.fullName.trim():u2.username.charAt(0).toUpperCase()+u2.username.slice(1).toLowerCase();
       SESSION={username:u2.username,fullName:fn,role:"user"};
+      saveSession(SESSION);
       // Clear any stale checkout flag from previous session
       sessionStorage.removeItem("vibeLastCheckout_"+SESSION.username);
       route();
@@ -1033,6 +1100,8 @@ function showSurvey(onSubmit, onCancel){
 
 // ── USER DASH ─────────────────────────────────────────────────────────────────
 function renderUser(){
+  if(!SESSION||!SESSION.username){renderLogin();return;}
+  if(!DB.users.find(u=>u.username===SESSION.username)){SESSION=null;clearSession();renderLogin();return;}
   const myRecs=()=>DB.attendance.filter(r=>r.username===SESSION.username).sort((a,b)=>b.timestamp-a.timestamp);
   const todayRecs=()=>{
     const s=new Date().toDateString();
@@ -1121,7 +1190,7 @@ function renderUser(){
     // FIX: also clear autoSyncInterval on user sign-out (was only cleared on admin sign-out)
     if(autoSyncInterval){clearInterval(autoSyncInterval);autoSyncInterval=null;}
     if(SESSION) sessionStorage.removeItem("vibeLastCheckout_"+SESSION.username);
-    SESSION=null;route();
+    SESSION=null;clearSession();route();
   });
   const refBtn=h("button",{className:"btn btn-ghost btn-sm"},"🔄 Refresh");
   refBtn.addEventListener("click",async()=>{
@@ -1293,7 +1362,7 @@ function renderUser(){
               _sq.push({action:"addAttendance",data:{...rec_out,outLat:loc.lat,outLng:loc.lng},ts:_qTs});
               saveQueue(_sq);
               await flushQueue(); // flush both together
-              sessionStorage.setItem("vibeLastCheckout_"+SESSION.username, String(_tsOut));
+              sessionStorage.setItem("vibeLastCheckout_"+SESSION.username, String(_tsNow));
               delete window._geoWarn;
               const prevEb=document.querySelector(".loc-err-banner");if(prevEb)prevEb.remove();
               _checkoutInProgress=false;
@@ -1736,8 +1805,178 @@ function openSurveyEditModal(survey, onSave) {
   ov.appendChild(mo);document.body.appendChild(ov);
 }
 
+// ── USER DATA MODAL — admin view of any user's full synced data ───────────────
+function openUserDataModal(u, allAttend, allSurveys){
+  const ov=el("div","modal-overlay");
+  const mo=el("div","modal",null,{maxWidth:"560px"});
+  const xb=h("button",{className:"x-btn"},"✕");xb.addEventListener("click",()=>ov.remove());
+  mo.appendChild(xb);
+
+  const displayName=(u.fullName&&u.fullName.trim())?u.fullName.trim():(u.username.charAt(0).toUpperCase()+u.username.slice(1).toLowerCase());
+  const titleEl=h("h2",{},displayName);
+  const subEl=h("div",{style:{color:"var(--muted)",fontSize:".82rem",marginBottom:"1.2rem",display:"flex",flexWrap:"wrap",gap:".5rem",alignItems:"center"}});
+  subEl.appendChild(h("span",{style:{background:"#4f8ef722",color:"var(--accent)",border:"1px solid #4f8ef744",borderRadius:"6px",padding:".1rem .45rem",fontSize:".75rem",fontFamily:"var(--mono)"}},"ID: "+(u.userId||u.username)));
+  if(u.designation)subEl.appendChild(h("span",{},"🏷 "+u.designation));
+  if(u.location)subEl.appendChild(h("span",{},"📍 "+u.location));
+  mo.appendChild(titleEl);mo.appendChild(subEl);
+
+  // Get this user's data
+  const userAttend=allAttend.filter(r=>r.username===u.username).sort((a,b)=>b.timestamp-a.timestamp);
+  const userSurveys=(allSurveys||[]).filter(s=>s.username===u.username).sort((a,b)=>(b.date||"").localeCompare(a.date||""));
+  const userAbsences=(DB.absences||[]).filter(a=>a.username===u.username).sort((a,b)=>(b.date||"").localeCompare(a.date||""));
+
+  // Summary stats
+  const now=new Date();
+  const curMon=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}`;
+  const presentDays=new Set(userAttend.filter(r=>r.type==="in").map(r=>new Date(r.timestamp).toDateString())).size;
+  const monthSurveys=userSurveys.filter(s=>(s.date||"").startsWith(curMon));
+  const monthPolicy=monthSurveys.reduce((s,r)=>s+(parseInt(r.policy)||0),0);
+  const monthRsa=monthSurveys.reduce((s,r)=>s+(parseInt(r.rsa)||0),0);
+  const monthGpa=monthSurveys.reduce((s,r)=>s+(parseInt(r.gpa)||0),0);
+  const monthAbsences=userAbsences.filter(a=>(a.date||"").startsWith(curMon)).length;
+
+  const statsGrid=h("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:".6rem",marginBottom:"1.2rem"}});
+  function statBox(num,lbl,col){
+    const b=h("div",{style:{background:"var(--surface)",border:"1px solid var(--border)",borderRadius:"10px",padding:".75rem 1rem"}});
+    b.appendChild(h("div",{style:{fontSize:"1.5rem",fontWeight:"900",fontFamily:"var(--mono)",color:col}},String(num)));
+    b.appendChild(h("div",{style:{fontSize:".72rem",color:"var(--muted)",marginTop:".15rem"}},lbl));
+    return b;
+  }
+  statsGrid.appendChild(statBox(presentDays,"Total Present","var(--accent2)"));
+  statsGrid.appendChild(statBox(monthAbsences,"Absent This Month","var(--danger)"));
+  statsGrid.appendChild(statBox(monthPolicy,"Policy This Month","var(--policy)"));
+  statsGrid.appendChild(statBox(monthRsa+" / "+monthGpa,"RSA / GPA This Month","var(--rsa)"));
+  mo.appendChild(statsGrid);
+
+  // Tabs inside modal
+  let modalTab="attendance";
+  const tabRow=h("div",{style:{display:"flex",gap:".4rem",marginBottom:"1rem",flexWrap:"wrap"}});
+  const tabDefs=[["attendance","📋 Attendance ("+userAttend.filter(r=>r.type==="in").length+" days)"],["surveys","📜 Surveys ("+userSurveys.length+")"],["absences","❌ Absences ("+userAbsences.length+")"]];
+  const tabBody=h("div",{});
+  mo.appendChild(tabRow);mo.appendChild(tabBody);
+
+  function renderModalTab(){
+    tabBody.innerHTML="";
+    // Update tab styles
+    tabRow.querySelectorAll("button").forEach((b,i)=>{
+      b.style.background=tabDefs[i][0]===modalTab?"var(--accent)":"transparent";
+      b.style.color=tabDefs[i][0]===modalTab?"#fff":"var(--muted)";
+      b.style.borderColor=tabDefs[i][0]===modalTab?"var(--accent)":"var(--border)";
+      b.style.fontWeight=tabDefs[i][0]===modalTab?"700":"500";
+    });
+
+    if(modalTab==="attendance"){
+      // Group by date — show check-in + check-out per day
+      const byDay={};
+      userAttend.forEach(r=>{
+        const dk=new Date(r.timestamp).toDateString();
+        if(!byDay[dk])byDay[dk]={date:new Date(r.timestamp),ins:[],outs:[]};
+        if(r.type==="in")byDay[dk].ins.push(r);
+        else byDay[dk].outs.push(r);
+      });
+      const days=Object.values(byDay).sort((a,b)=>b.date-a.date);
+      if(!days.length){tabBody.appendChild(el("div","empty","No attendance records found."));return;}
+
+      const tbl=h("table",{style:{width:"100%",borderCollapse:"collapse",fontSize:".82rem"}});
+      const thead=h("thead",{});
+      thead.innerHTML="<tr><th class='attend-th'>Date</th><th class='attend-th'>Check In</th><th class='attend-th'>Check Out</th><th class='attend-th'>Arrival</th><th class='attend-th'>Departure</th></tr>";
+      tbl.appendChild(thead);
+      const tbody=h("tbody",{});
+      days.forEach(({date,ins,outs})=>{
+        const inTs=ins.length?Math.min(...ins.map(r=>r.timestamp)):null;
+        const outTs=outs.length?Math.max(...outs.map(r=>r.timestamp)):null;
+        const arr=getArrivalStatus(inTs);
+        const dep=getDepartureStatus(outTs,inTs);
+        const arrColor=arr?.type==="ontime"?"var(--gpa)":arr?.type==="halfday"?"var(--warn)":"var(--danger)";
+        const depColor=dep?.type==="full"?"var(--gpa)":dep?.type==="permission"?"var(--policy)":"var(--muted)";
+        const tr=h("tr",{});
+        tr.innerHTML=`
+          <td class='attend-td'>${date.toLocaleDateString("en-GB",{weekday:"short",day:"2-digit",month:"short"})}</td>
+          <td class='attend-td' style='color:var(--accent2);font-family:var(--mono)'>${inTs?new Date(inTs).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"}):"—"}</td>
+          <td class='attend-td' style='color:var(--danger);font-family:var(--mono)'>${outTs?new Date(outTs).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"}):"—"}</td>
+          <td class='attend-td'><span style='color:${arrColor};font-weight:700;font-size:.78rem'>${arr?arr.label:"—"}</span></td>
+          <td class='attend-td'><span style='color:${depColor};font-weight:700;font-size:.78rem'>${dep?dep.label:"—"}</span></td>`;
+        tbody.appendChild(tr);
+      });
+      tbl.appendChild(tbody);
+      const wrap=h("div",{style:{overflowX:"auto",maxHeight:"360px",overflowY:"auto",borderRadius:"10px",border:"1px solid var(--border)"}});
+      wrap.appendChild(tbl);tabBody.appendChild(wrap);
+
+    } else if(modalTab==="surveys"){
+      if(!userSurveys.length){tabBody.appendChild(el("div","empty","No survey entries found."));return;}
+      const tbl=h("table",{style:{width:"100%",borderCollapse:"collapse",fontSize:".82rem"}});
+      const thead=h("thead",{});
+      thead.innerHTML="<tr><th class='attend-th'>Date</th><th class='attend-th'>📜 Policy</th><th class='attend-th'>🔐 RSA</th><th class='attend-th'>🎓 GPA</th></tr>";
+      tbl.appendChild(thead);
+      const tbody=h("tbody",{});
+      userSurveys.forEach(s=>{
+        const tr=h("tr",{});
+        tr.innerHTML=`
+          <td class='attend-td'>${s.date}</td>
+          <td class='attend-td' style='color:var(--policy);font-weight:700;font-family:var(--mono)'>${parseInt(s.policy)||0}</td>
+          <td class='attend-td' style='color:var(--rsa);font-weight:700;font-family:var(--mono)'>${parseInt(s.rsa)||0}</td>
+          <td class='attend-td' style='color:var(--gpa);font-weight:700;font-family:var(--mono)'>${parseInt(s.gpa)||0}</td>`;
+        tbody.appendChild(tr);
+      });
+      tbl.appendChild(tbody);
+      const wrap=h("div",{style:{overflowX:"auto",maxHeight:"360px",overflowY:"auto",borderRadius:"10px",border:"1px solid var(--border)"}});
+      wrap.appendChild(tbl);tabBody.appendChild(wrap);
+
+    } else if(modalTab==="absences"){
+      if(!userAbsences.length){tabBody.appendChild(el("div","empty","No absences recorded."));return;}
+      const tbl=h("table",{style:{width:"100%",borderCollapse:"collapse",fontSize:".82rem"}});
+      const thead=h("thead",{});
+      thead.innerHTML="<tr><th class='attend-th'>Date</th><th class='attend-th'>Type</th></tr>";
+      tbl.appendChild(thead);
+      const tbody=h("tbody",{});
+      userAbsences.forEach(a=>{
+        const tr=h("tr",{});
+        const typeLabel=a.auto?"Auto-marked":"Manual";
+        const typeColor=a.auto?"var(--warn)":"var(--danger)";
+        tr.innerHTML=`
+          <td class='attend-td'>${a.date}</td>
+          <td class='attend-td'><span style='color:${typeColor};font-weight:700;font-size:.78rem'>${typeLabel}</span></td>`;
+        tbody.appendChild(tr);
+      });
+      tbl.appendChild(tbody);
+      const wrap=h("div",{style:{overflowX:"auto",maxHeight:"360px",overflowY:"auto",borderRadius:"10px",border:"1px solid var(--border)"}});
+      wrap.appendChild(tbl);tabBody.appendChild(wrap);
+    }
+  }
+
+  tabDefs.forEach(([key,lbl])=>{
+    const tb=h("button",{style:{padding:".4rem .85rem",borderRadius:"8px",border:"1.5px solid var(--border)",background:"transparent",color:"var(--muted)",fontFamily:"var(--font)",fontSize:".8rem",cursor:"pointer",transition:"all .15s",fontWeight:"500"}},lbl);
+    tb.addEventListener("click",()=>{modalTab=key;renderModalTab();});
+    tabRow.appendChild(tb);
+  });
+  renderModalTab();
+
+  // Force-sync button so admin can pull freshest data for this user
+  const syncRowEl=h("div",{style:{marginTop:"1rem",paddingTop:"1rem",borderTop:"1px solid var(--border)",display:"flex",gap:".5rem",alignItems:"center"}});
+  const syncUserBtn=h("button",{className:"btn btn-ghost btn-sm"},"🔄 Sync Latest Data");
+  syncUserBtn.addEventListener("click",async()=>{
+    syncUserBtn.disabled=true;syncUserBtn.textContent="Syncing...";
+    await flushQueue();
+    await loadFromSheet();
+    syncUserBtn.textContent="Done!";
+    // Refresh modal data in place
+    const freshAttend=[...DB.attendance,...loadQueue().filter(i=>i.action==="addAttendance"&&i.data?.username).map(i=>i.data)].filter(r=>r.username===u.username).sort((a,b)=>b.timestamp-a.timestamp);
+    const freshSurveys=(DB.surveys||[]).filter(s=>s.username===u.username).sort((a,b)=>(b.date||"").localeCompare(a.date||""));
+    ov.remove();
+    openUserDataModal(u,freshAttend,freshSurveys);
+  });
+  syncRowEl.appendChild(syncUserBtn);
+  syncRowEl.appendChild(h("span",{style:{fontSize:".75rem",color:"var(--muted)"}},"Data synced from Google Sheets"));
+  mo.appendChild(syncRowEl);
+
+  ov.appendChild(mo);
+  ov.addEventListener("click",e=>{if(e.target===ov)ov.remove();});
+  document.body.appendChild(ov);
+}
+
 // ── ADMIN DASH ────────────────────────────────────────────────────────────────
 function renderAdmin(){
+  if(!SESSION||!SESSION.username){renderLogin();return;}
   let curTab="users";
   let dlMonth="";
   const dash=el("div","dash");
@@ -1812,7 +2051,7 @@ function renderAdmin(){
     if(autoSyncInterval){clearInterval(autoSyncInterval);autoSyncInterval=null;}
     delete window._recQuick;delete window._recUser;delete window._recMonth;
     delete window._userSearch;delete window._geoWarn;
-    SESSION=null;route();
+    SESSION=null;clearSession();route();
   });
 
   function refresh(){
@@ -2181,7 +2420,10 @@ const todayInUsers=[...new Set(allAttend.filter(r=>(r.type==="in"||r.type==="out
           metaRow.appendChild(pwPill);
           info.appendChild(nameEl);info.appendChild(metaRow);
           row.appendChild(info);
-          const btns=h("div",{style:{display:"flex",gap:".5rem",flexShrink:0}});
+          const btns=h("div",{style:{display:"flex",gap:".5rem",flexShrink:0,flexWrap:"wrap"}});
+          // ── View Data button — shows full attendance/survey history for this user ──
+          const vBtn=h("button",{className:"btn btn-primary btn-sm"},"👁 View");
+          vBtn.addEventListener("click",()=>openUserDataModal(u, allAttend, allSurveys));
           const eBtn=h("button",{className:"btn btn-ghost btn-sm"},"✏️ Edit");
           eBtn.addEventListener("click",()=>openEditModal(u));
           const dBtn=h("button",{className:"btn btn-danger btn-sm"},"Delete");
@@ -2196,7 +2438,7 @@ const todayInUsers=[...new Set(allAttend.filter(r=>(r.type==="in"||r.type==="out
             saveQueue(dq);
             save(DB);syncToSheet();refresh();
           });
-          btns.appendChild(eBtn);btns.appendChild(dBtn);row.appendChild(btns);userListWrap.appendChild(row);
+          btns.appendChild(vBtn);btns.appendChild(eBtn);btns.appendChild(dBtn);row.appendChild(btns);userListWrap.appendChild(row);
         });
       }
 
@@ -2725,19 +2967,24 @@ loadDiv.innerHTML=`
   <style>@keyframes spin{to{transform:rotate(360deg)}}</style>
 `;
 document.getElementById("app").appendChild(loadDiv);
-const timeout=setTimeout(()=>{markAbsences();route();},5000);
-// FIX: flush queue first so sheet has all pending records before we pull
+function safeRoute(){
+  try{ markAbsences(); route(); }
+  catch(e){
+    console.error("VIBE: startup crash",e);
+    SESSION=null; clearSession();
+    try{ route(); }catch(_){ document.getElementById("app").innerHTML='<div style="color:#e8eaf6;font-family:Sora,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh">App failed to load. Please refresh the page.</div>'; }
+  }
+}
+const timeout=setTimeout(safeRoute, 5000);
 (async()=>{
   try{ if(navigator.onLine) await flushQueue(); } catch(_){}
   try{
     await loadFromSheet();
     clearTimeout(timeout);
-    markAbsences();
-    route();
+    safeRoute();
   } catch(_){
     clearTimeout(timeout);
-    markAbsences();
-    route();
+    safeRoute();
   }
 })();
 
@@ -2800,6 +3047,7 @@ if('serviceWorker' in navigator){
     });
   }
 }
+
 </script>
 </body>
 </html>
