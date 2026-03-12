@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- VIBE v20260311.fix10 — cleared users now added to todayInUsers so they appear in Today Present -->
+<!-- VIBE v20260312.fix14 — removed pending/sync UI; fixed ReferenceError in doAdminSync (updateAdminSyncBadge removed) -->
 <html lang="en">
 <head>
 <meta charset="UTF-8"/>
@@ -2638,15 +2638,6 @@ function renderAdmin(){
   hdrR.appendChild(h("span",{style:{fontSize:".8rem",color:"#64748b",whiteSpace:"nowrap"}},SESSION.username));
   hdrR.appendChild(h("span",{style:{background:"#2563eb",color:"#fff",fontSize:".65rem",padding:".15rem .5rem",borderRadius:"20px",fontWeight:"700",whiteSpace:"nowrap"}},"Admin"));
   const soBtn=h("button",{style:{padding:".35rem .7rem",border:"1.5px solid #e5e7eb",borderRadius:"8px",background:"#fff",color:"#64748b",fontFamily:"var(--font)",fontSize:".75rem",cursor:"pointer",fontWeight:"600",whiteSpace:"nowrap"}},"Sign Out");
-  const syncBtn=h("button",{style:{padding:".35rem .7rem",border:"1.5px solid #e5e7eb",borderRadius:"8px",background:"#dcfce7",color:"#15803d",fontFamily:"var(--font)",fontSize:".75rem",cursor:"pointer",fontWeight:"600",whiteSpace:"nowrap"}},"🟢 Sync");
-  syncBtn.addEventListener("click",async()=>{
-    syncBtn.textContent="⏳ Syncing…";syncBtn.disabled=true;
-    await doAdminSync(true);
-    const ok=await syncToSheet();
-    syncBtn.textContent=ok&&ok.ok?"✅ Synced!":"❌ Failed";
-    setTimeout(()=>{syncBtn.textContent="🟢 Sync";syncBtn.disabled=false;},3000);
-  });
-
   // Storage health badge
   const pct=storagePercent();
   const storageColor=pct>85?"#ef4444":pct>65?"#f59e0b":"#22c55e";
@@ -2662,25 +2653,11 @@ function renderAdmin(){
     localStorage.setItem("vibeTheme",isLight?"light":"dark");
   });
   hdrR.appendChild(adminThemeBtn);
-  // Admin sync status badge — shows pending queue items
-  const adminSyncBadge=h("span",{style:{fontSize:".7rem",padding:".2rem .5rem",borderRadius:"20px",fontWeight:"700",display:"none",fontFamily:"var(--font)"}});
-  function updateAdminSyncBadge(){
-    const qc=loadQueue().length;
-    if(qc>0){
-      adminSyncBadge.textContent=`⏳ ${qc} pending`;
-      adminSyncBadge.style.cssText="font-size:.7rem;padding:.2rem .5rem;border-radius:20px;font-weight:700;display:inline-block;background:#ffd16622;color:#92400e;border:1px solid #ffd16644;cursor:pointer;font-family:var(--font)";
-      adminSyncBadge.title=`${qc} record(s) waiting to sync. Click to retry now.`;
-    } else {
-      adminSyncBadge.style.display="none";
-    }
-  }
-  adminSyncBadge.addEventListener("click",()=>openQueueInspector(updateAdminSyncBadge));
-  updateAdminSyncBadge();
+  // USER ONLINE-ONLY: pending badge and manual sync button removed — all users are online-only, no queue UI needed.
+  // Background sync still runs silently via doAdminSync interval.
   if(window._adminBadgeInterval) clearInterval(window._adminBadgeInterval);
-  window._adminBadgeInterval=setInterval(updateAdminSyncBadge,5000);
-  soBtn.addEventListener("click",()=>{clearInterval(window._adminBadgeInterval);window._adminBadgeInterval=null;},{once:true});
-  hdrR.appendChild(adminSyncBadge);
-  hdrR.appendChild(syncBtn);hdrR.appendChild(soBtn);hdr.appendChild(hdrR);dash.appendChild(hdr);
+  window._adminBadgeInterval=null;
+  hdrR.appendChild(soBtn);hdr.appendChild(hdrR);dash.appendChild(hdr);
 
   const content=el("div","content");dash.appendChild(content);
 
@@ -2717,7 +2694,6 @@ function renderAdmin(){
       })();
       const u2=DB.users.find(x=>x.username===SESSION?.username);
       if(u2?.fullName?.trim()) SESSION.fullName=u2.fullName.trim();
-      updateAdminSyncBadge();
       if(SESSION) try{if(typeof window._adminRefresh==="function")window._adminRefresh();}catch(_){}
     }finally{ _adminSyncing=false; }
   }
