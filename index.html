@@ -510,17 +510,17 @@ async function loadFromSheet() {
     if (!result || !result.ok) return false;
 
     const sheetUsers = (result.users||[]).map(u => ({
-      username: String(u.username||"").trim(),
-      password: String(u.password||"").trim(),
-      fullName: String(u.fullName||u.full_name||u.FullName||u.name||"").trim(),
-      userId: String(u.userId||u.user_id||u.UserId||u.username||"").trim(),
-      designation: u.designation||"",
-      location: u.location||"",
-      role: u.role||"user",
-      geoLat: u.geoLat||"",
-      geoLng: u.geoLng||"",
-      geoRadius: (u.geoRadius !== undefined && u.geoRadius !== "") ? parseInt(u.geoRadius) || 200 : 200,
-      officeName: u.officeName||""
+      username:    String(u.username    ?? "").trim(),
+      password:    String(u.password    ?? "").trim(),
+      fullName:    String(u.fullName || u.full_name || u.FullName || u.name || "").trim(),
+      userId:      String(u.userId   || u.user_id  || u.UserId   || u.username || "").trim(),
+      designation: String(u.designation ?? "").trim(),
+      location:    String(u.location    ?? "").trim(),
+      role:        String(u.role        ?? "user").trim() || "user",
+      geoLat:      String(u.geoLat      ?? "").trim(),
+      geoLng:      String(u.geoLng      ?? "").trim(),
+      geoRadius:   (u.geoRadius !== undefined && u.geoRadius !== "" && u.geoRadius !== null) ? parseInt(u.geoRadius) || 200 : 200,
+      officeName:  String(u.officeName  ?? "").trim()
     })).filter(u => u.username);
 
     if (sheetUsers.length) {
@@ -559,8 +559,8 @@ async function loadFromSheet() {
       // Parse geoOk correctly — sheet stores it as string "true"/"false"
       const geoOk = r.geoOk === true || r.geoOk === "true" || r.geoOk === 1 || r.geoOk === "1";
       return {
-        id: r.id,
-        username: r.username,
+        id: String(r.id ?? ""),
+        username: String(r.username ?? "").trim(),
         type: inferredType,
         timestamp: parseInt(r.timestamp)||0,
         location: validLoc,
