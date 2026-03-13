@@ -4,7 +4,7 @@
 //   2. Upload this sw.js to the server
 //   3. Upload the updated index.html
 // Forgetting to bump VERSION means users keep getting the old cached app shell.
-const VERSION = 'vibe-at-v2'; // ← BUMP THIS ON EVERY DEPLOY
+const VERSION = 'vibe-at-v20260313'; // ← BUMP THIS ON EVERY DEPLOY
 
 const STATIC_CACHE  = `${VERSION}-static`;
 const DYNAMIC_CACHE = `${VERSION}-dynamic`;
