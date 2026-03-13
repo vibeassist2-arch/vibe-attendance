@@ -509,19 +509,27 @@ async function loadFromSheet() {
     const result = await gsFetch({ action:"getAll" });
     if (!result || !result.ok) return false;
 
-    const sheetUsers = (result.users||[]).map(u => ({
-      username:    String(u.username    ?? "").trim(),
-      password:    String(u.password    ?? "").trim(),
-      fullName:    String(u.fullName || u.full_name || u.FullName || u.name || "").trim(),
-      userId:      String(u.userId   || u.user_id  || u.UserId   || u.username || "").trim(),
-      designation: String(u.designation ?? "").trim(),
-      location:    String(u.location    ?? "").trim(),
-      role:        String(u.role        ?? "user").trim() || "user",
-      geoLat:      String(u.geoLat      ?? "").trim(),
-      geoLng:      String(u.geoLng      ?? "").trim(),
-      geoRadius:   (u.geoRadius !== undefined && u.geoRadius !== "" && u.geoRadius !== null) ? parseInt(u.geoRadius) || 200 : 200,
-      officeName:  String(u.officeName  ?? "").trim()
-    })).filter(u => u.username);
+    const sheetUsers = (result.users||[]).map(u => {
+      // Helper to safely convert any value to a trimmed string
+      const safeString = (val, fallback = "") => {
+        if (val === null || val === undefined) return fallback;
+        if (typeof val === 'function') return fallback;
+        return String(val).trim();
+      };
+      return {
+        username:    safeString(u.username, ""),
+        password:    safeString(u.password, ""),
+        fullName:    safeString(u.fullName || u.full_name || u.FullName || u.name, ""),
+        userId:      safeString(u.userId || u.user_id || u.UserId || u.username, ""),
+        designation: safeString(u.designation, ""),
+        location:    safeString(u.location, ""),
+        role:        safeString(u.role, "user") || "user",
+        geoLat:      safeString(u.geoLat, ""),
+        geoLng:      safeString(u.geoLng, ""),
+        geoRadius:   (u.geoRadius !== undefined && u.geoRadius !== "" && u.geoRadius !== null) ? parseInt(u.geoRadius) || 200 : 200,
+        officeName:  safeString(u.officeName, "")
+      };
+    }).filter(u => u.username);
 
     if (sheetUsers.length) {
       const localAdmins = DB.users.filter(u => u.role === "admin" && !sheetUsers.find(s => s.username === u.username));
@@ -547,11 +555,16 @@ async function loadFromSheet() {
     }
 
     const sheetAttend = (result.attendance||[]).map(r => {
+      const safeString = (val, fallback = "") => {
+        if (val === null || val === undefined) return fallback;
+        if (typeof val === 'function') return fallback;
+        return String(val).trim();
+      };
       const lat = parseFloat(r.lat), lng = parseFloat(r.lng);
       const outLat = parseFloat(r.outLat), outLng = parseFloat(r.outLng);
       const validLoc = (r.lat && r.lng && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) ? {lat, lng, workLocation: r.workLocation||""} : null;
       const validOutLoc = (r.outLat && r.outLng && outLat >= -90 && outLat <= 90 && outLng >= -180 && outLng <= 180) ? {lat: outLat, lng: outLng} : null;
-      const rType = (r.type||"").toString().trim().toLowerCase();
+      const rType = safeString(r.type, "").toLowerCase();
       // FIX 1: Prioritize explicit sheet type, then local DB record type, then default "in"
       // Checkout records always have type:"out" explicitly — never guess from lat
       const localRec = r.id ? DB.attendance.find(x => x.id && String(x.id) === String(r.id)) : null;
@@ -559,8 +572,8 @@ async function loadFromSheet() {
       // Parse geoOk correctly — sheet stores it as string "true"/"false"
       const geoOk = r.geoOk === true || r.geoOk === "true" || r.geoOk === 1 || r.geoOk === "1";
       return {
-        id: String(r.id ?? ""),
-        username: String(r.username ?? "").trim(),
+        id: safeString(r.id, ""),
+        username: safeString(r.username, ""),
         type: inferredType,
         timestamp: parseInt(r.timestamp)||0,
         location: validLoc,
@@ -621,12 +634,17 @@ async function loadFromSheet() {
     DB.attendance = cleanedAttend;
 
     const sheetSurveys = (result.surveys||[]).map(s => {
+      const safeString = (val, fallback = "") => {
+        if (val === null || val === undefined) return fallback;
+        if (typeof val === 'function') return fallback;
+        return String(val).trim();
+      };
       const ts = parseInt(s.timestamp)||0;
       // Derive date from timestamp first, then fall back to date field
-      let d = ts ? localDateStr(new Date(ts)) : (s.date || "").slice(0,10);
+      let d = ts ? localDateStr(new Date(ts)) : safeString(s.date, "").slice(0,10);
       // If date is still empty, skip this record — can't reliably dedup without a date
       if(!d) return null;
-      return { id: String(s.id||""), username: String(s.username||"").trim(), date: d, timestamp: ts, policy: parseInt(s.policy)||0, rsa: parseInt(s.rsa)||0, gpa: parseInt(s.gpa)||0 };
+      return { id: safeString(s.id, ""), username: safeString(s.username, ""), date: d, timestamp: ts, policy: parseInt(s.policy)||0, rsa: parseInt(s.rsa)||0, gpa: parseInt(s.gpa)||0 };
     }).filter(s => s && s.username && s.date);
 
     const surveyMap = {};
@@ -645,9 +663,19 @@ async function loadFromSheet() {
     DB.surveys = Object.values(surveyMap);
 
     // Load absences from sheet — sheet is sole source of truth
-    const sheetAbsences = (result.absences||[]).map(a => ({
-      id: a.id, username: String(a.username||"").trim(), date: String(a.date||"").slice(0,10), auto: (a.auto === true || a.auto === "true")
-    })).filter(a => a.username && a.date);
+    const sheetAbsences = (result.absences||[]).map(a => {
+      const safeString = (val, fallback = "") => {
+        if (val === null || val === undefined) return fallback;
+        if (typeof val === 'function') return fallback;
+        return String(val).trim();
+      };
+      return {
+        id: a.id, 
+        username: safeString(a.username, ""), 
+        date: safeString(a.date, "").slice(0,10), 
+        auto: a.auto||false
+      };
+    }).filter(a => a.username && a.date);
     DB.absences = sheetAbsences;
 
     // Clean up orphan records for deleted users
@@ -2802,7 +2830,7 @@ function renderAdmin(){
     const todayStr = localDateStr(now);
     const before = (DB.absences||[]).length;
     // Only remove auto-marked absences, not manually-added ones
-    DB.absences = (DB.absences || []).filter(a => !(a.date === todayStr && (a.auto === true || a.auto === "true")));
+    DB.absences = (DB.absences || []).filter(a => !(a.date === todayStr && a.auto === true));
     // Only save if something changed AND we are an admin session.
     // This runs at startup before SESSION is fully confirmed, so guard explicitly.
     // Users never write attendance data to localStorage — sheet is sole source of truth.
