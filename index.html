@@ -620,13 +620,23 @@ let _lastCheckIn = 0;
 function canCheckIn(){
   const now = Date.now();
   if(now - _lastCheckIn < 5000) return false;
-  // Block if user already has a check-in today in DB (prevents double check-in on rapid page reload)
-  // FIX Bug 2: Use localDateStr() consistently — toDateString() is locale-formatted and
-  // can mismatch with timezone-aware date comparisons used everywhere else in the codebase
+  // Block only if user has a check-in today AND has NOT yet checked out
+  // (allows re-check-in after checkout — e.g. lunch break)
   if(SESSION && SESSION.role !== "admin"){
     const todayStr=localDateStr(new Date());
     const hasCheckIn=DB.attendance.some(r=>r.username===SESSION.username&&r.type==="in"&&localDateStr(new Date(r.timestamp))===todayStr);
-    if(hasCheckIn) return false;
+    if(hasCheckIn){
+      // Check if they are currently checked in (no checkout after last check-in)
+      const todayRecs2=DB.attendance.filter(r=>r.username===SESSION.username&&localDateStr(new Date(r.timestamp))===todayStr);
+      const ins=todayRecs2.filter(r=>r.type==="in");
+      const outs=todayRecs2.filter(r=>r.type==="out");
+      const sessionCheckoutTs=parseInt(sessionStorage.getItem("vibeLastCheckout_"+SESSION.username)||"0");
+      const lastOutTs=outs.length?Math.max(...outs.map(r=>r.timestamp)):0;
+      const effectiveOutTs=Math.max(sessionCheckoutTs,lastOutTs);
+      const lastInTs=ins.length?Math.max(...ins.map(r=>r.timestamp)):0;
+      // Still checked in — block re-check-in
+      if(lastInTs>effectiveOutTs) return false;
+    }
   }
   return true;
 }
@@ -1196,10 +1206,8 @@ function getDepartureStatus(tsMs, checkInTs){
   const workedMs=tsMs-checkInTs;
   const workedMin=Math.round(workedMs/60000);
   if(workedMin>=FULL_DAY_MIN) return{type:"full",label:"Full Day"};
-  if(workedMin>=HALF_DAY_MIN) return{type:"permission",label:"Permission"};
-  // Less than 4 hours — show actual worked time
-  const wh=Math.floor(workedMin/60),wm=workedMin%60;
-  return{type:"permission",label:wh>0?(wm>0?`${wh}h ${wm}m`:`${wh}h`):(`${wm}m`)};
+  // Less than 8 hours — always show Permission (never show raw worked time)
+  return{type:"permission",label:"Permission"};
 }
 function localMonthStr(date){const d=date||new Date();return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`}
 
@@ -1397,6 +1405,8 @@ function renderLogin(){
 
 // ── CHECKOUT SURVEY ───────────────────────────────────────────────────────────
 function showSurvey(onSubmit, onCancel){
+  // Prevent double-open if survey is already showing
+  if(document.querySelector(".modal-overlay")) return;
   const overlay=el("div","modal-overlay");
   const modal=el("div","modal");
   const xBtn=h("button",{className:"x-btn"},"✕");
@@ -1422,7 +1432,7 @@ function showSurvey(onSubmit, onCancel){
   [i1,i2,i3].forEach(i=>i.addEventListener("input",checkFill));
   submitBtn.addEventListener("click",()=>{
     // FIX Bug 7: Warn (but don't block) if all three counts are 0 — likely an accidental submit
-    const p=parseInt(i1.value)||0, r=parseInt(i2.value)||0, g=parseInt(i3.value)||0;
+    const p=Math.max(0,parseInt(i1.value)||0), r=Math.max(0,parseInt(i2.value)||0), g=Math.max(0,parseInt(i3.value)||0);
     if(p===0&&r===0&&g===0){
       if(!confirm("All counts are 0. Are you sure you want to submit with zero entries?")) return;
     }
@@ -1607,12 +1617,11 @@ function renderUser(){
 
     if(curTab==="today"){
       // ── LOCATION BANNER ──
-      const todayIn=todayRecs().find(r=>r.type==="in");
-      const meUserForBanner=DB.users.find(u=>u.username===SESSION.username);
       const checkedIn=isIn();
       const mainBtn=h("button",{className:"btn "+(checkedIn?"btn-danger":"btn-success")},checkedIn?"⏹ Check Out":"▶ Check In");
       mainBtn.addEventListener("click",()=>{
-        if(checkedIn){
+        const _liveCheckedIn=isIn();
+        if(_liveCheckedIn){
           if(_checkoutInProgress||!isIn()||!canCheckOut()){refresh();return;}
           // ── USER ONLINE-ONLY: block check-out when offline ─────────────────
           if(!navigator.onLine){
@@ -1664,7 +1673,7 @@ function renderUser(){
               }catch(e){_surOk=false;}
               try{
                 const _c2=new AbortController();const _t2=setTimeout(()=>_c2.abort(),10000);
-                const _r2=await fetch(_gsUrl2,{method:"POST",redirect:"follow",headers:{"Content-Type":"text/plain"},body:JSON.stringify({action:"addAttendance",data:{...rec_out,outLat:loc.lat,outLng:loc.lng}}),signal:_c2.signal});
+                const _r2=await fetch(_gsUrl2,{method:"POST",redirect:"follow",headers:{"Content-Type":"text/plain"},body:JSON.stringify({action:"addAttendance",data:{...rec_out,lat:loc.lat,lng:loc.lng,outLat:loc.lat,outLng:loc.lng}}),signal:_c2.signal});
                 clearTimeout(_t2);
                 const _tx2=await _r2.text();
                 try{const _j2=JSON.parse(_tx2);_outOk=!!_j2.ok;}catch(_){_outOk=true;}
@@ -1759,6 +1768,45 @@ function renderUser(){
         }
       });
       content.appendChild(mainBtn);
+
+      // ── OFFICE LOCATION BANNER ────────────────────────────────────────────
+      // Always show banner — with location: tick/warning. Without: "not assigned" notice.
+      const meUserGeo=DB.users.find(u=>u.username===SESSION.username);
+      {
+        const _officeName=meUserGeo&&meUserGeo.officeName&&meUserGeo.officeName.trim()?meUserGeo.officeName.trim():"";
+        const _hasGeo=meUserGeo&&meUserGeo.geoLat&&meUserGeo.geoLng;
+        const _geoRadius=(meUserGeo&&parseInt(meUserGeo.geoRadius)>0)?parseInt(meUserGeo.geoRadius):200;
+        const geoBanner=h("div",{style:{marginTop:".75rem",padding:".85rem 1.1rem",borderRadius:"12px",fontSize:".88rem",display:"flex",alignItems:"flex-start",gap:".7rem",lineHeight:"1.5"}});
+        if(!_hasGeo){
+          // No office location set — show grey notice
+          geoBanner.style.cssText="margin-top:.75rem;padding:.85rem 1.1rem;border-radius:12px;font-size:.88rem;display:flex;align-items:flex-start;gap:.7rem;line-height:1.5;background:#7a8bad22;border:1.5px solid #7a8bad44;color:var(--muted)";
+          geoBanner.innerHTML="<span style='font-size:1.3rem;flex-shrink:0'>🏢</span><div><strong style='color:var(--muted)'>No Office Location Assigned</strong><br><span style='font-size:.78rem'>Contact your admin to set your office location.</span></div>";
+          content.appendChild(geoBanner);
+        } else {
+          // Has geo — show loading then live distance
+          const _displayName=_officeName||"Office";
+          geoBanner.style.cssText="margin-top:.75rem;padding:.85rem 1.1rem;border-radius:12px;font-size:.88rem;display:flex;align-items:flex-start;gap:.7rem;line-height:1.5;background:#4f8ef722;border:1.5px solid #4f8ef744;color:var(--accent)";
+          geoBanner.innerHTML="<span style='font-size:1.3rem;flex-shrink:0'>🏢</span><div><strong>"+_displayName+"</strong><br><span style='font-size:.78rem;color:var(--muted)'>Checking your distance…</span></div>";
+          content.appendChild(geoBanner);
+          getLocation().then(loc=>{
+            if(loc&&loc.error){
+              geoBanner.style.cssText="margin-top:.75rem;padding:.85rem 1.1rem;border-radius:12px;font-size:.88rem;display:flex;align-items:flex-start;gap:.7rem;line-height:1.5;background:#4f8ef722;border:1.5px solid #4f8ef744;color:var(--accent)";
+              geoBanner.innerHTML="<span style='font-size:1.3rem;flex-shrink:0'>🏢</span><div><strong>"+_displayName+"</strong><br><span style='font-size:.78rem;color:var(--muted)'>Location unavailable — GPS needed to check distance</span></div>";
+              return;
+            }
+            const dist=Math.round(haversineDistance(loc.lat,loc.lng,parseFloat(meUserGeo.geoLat),parseFloat(meUserGeo.geoLng)));
+            const within=dist<=_geoRadius;
+            if(within){
+              geoBanner.style.cssText="margin-top:.75rem;padding:.85rem 1.1rem;border-radius:12px;font-size:.88rem;display:flex;align-items:flex-start;gap:.7rem;line-height:1.5;background:#38d9a922;border:1.5px solid #38d9a966;color:#70efcd";
+              geoBanner.innerHTML="<span style='font-size:1.3rem;flex-shrink:0'>✅</span><div><strong style='color:var(--gpa)'>"+_displayName+"</strong><br><span style='font-size:.78rem;color:var(--muted)'>You are within range · "+dist+"m away</span></div>";
+            } else {
+              geoBanner.style.cssText="margin-top:.75rem;padding:.85rem 1.1rem;border-radius:12px;font-size:.88rem;display:flex;align-items:flex-start;gap:.7rem;line-height:1.5;background:#ff5f6d22;border:1.5px solid #ff5f6d88;color:#ff9aa2";
+              geoBanner.innerHTML="<span style='font-size:1.3rem;flex-shrink:0'>⚠️</span><div><strong style='color:var(--danger)'>"+_displayName+"</strong><br><span style='font-size:.78rem'>You are <strong>"+dist+"m away</strong> — must be within "+_geoRadius+"m to check in from office</span></div>";
+            }
+          });
+        }
+      }
+      // ─────────────────────────────────────────────────────────────────────
 
       // Clear stale geo warning on checkout
       if(!isIn()) delete window._geoWarn;
@@ -2132,7 +2180,7 @@ function openSurveyEditModal(survey, onSave) {
   saveBtn.addEventListener("click",async()=>{
     const idx=DB.surveys.findIndex(s=>s.id===survey.id);
     if(idx>=0){
-      const updated={...DB.surveys[idx],policy:parseInt(i1.value)||0,rsa:parseInt(i2.value)||0,gpa:parseInt(i3.value)||0};
+      const updated={...DB.surveys[idx],policy:Math.max(0,parseInt(i1.value)||0),rsa:Math.max(0,parseInt(i2.value)||0),gpa:Math.max(0,parseInt(i3.value)||0)};
       // USER ONLINE-ONLY: post directly to sheet
       if(SESSION && SESSION.role !== "admin"){
         saveBtn.disabled=true;saveBtn.textContent="Saving…";
@@ -3289,9 +3337,15 @@ function renderAdmin(){
         if(!target)return; // orphan checkout with no matching check-in — skip
         if(!target.out||r.timestamp>target.out){
           target.out=r.timestamp;
-          // FIX: prefer r.location (the checkout GPS point) then r.outLocation fallback
-          target.outLoc=r.location||r.outLocation||null;
-          target.outRec=r;
+          // FIX: for "out" records the checkout GPS may be stored as:
+          // 1) r.location (set when record was built in memory)
+          // 2) r.outLocation (parsed from outLat/outLng sheet columns)
+          // Build a fallback loc object directly from raw lat/lng fields if both are missing.
+          const _rawLat=parseFloat(r.outLat||r.lat||""), _rawLng=parseFloat(r.outLng||r.lng||"");
+          const _fallbackLoc=(!isNaN(_rawLat)&&!isNaN(_rawLng)&&_rawLat!==0&&_rawLng!==0)?{lat:_rawLat,lng:_rawLng}:null;
+          const _outLocFinal=r.location||r.outLocation||_fallbackLoc||null;
+          target.outLoc=_outLocFinal;
+          target.outRec={...r,location:_outLocFinal};
         }
       });
       const rows=Object.values(dayMap2).sort((a,b)=>b.date-a.date);
@@ -3373,8 +3427,10 @@ function renderAdmin(){
 
             // Helper: build location cell with office name + tick/cross badge
             function locCell(rec, rawLoc, accentColor){
-              if(!rawLoc&&!rec) return "<span style='color:var(--muted)'>—</span>";
-              const lat=rawLoc?.lat, lng=rawLoc?.lng;
+              // Try rawLoc first, then rec.location, then rec.outLocation as fallbacks
+              const loc=rawLoc||(rec?.location)||( rec?.outLocation)||null;
+              if(!loc&&!rec) return "<span style='color:var(--muted)'>—</span>";
+              const lat=loc?.lat, lng=loc?.lng;
               if(!lat||!lng) return "<span style='color:var(--muted)'>—</span>";
               const mapsUrl=`https://maps.google.com/?q=${lat},${lng}`;
               const coordStr=`${parseFloat(lat).toFixed(4)}, ${parseFloat(lng).toFixed(4)}`;
@@ -3382,6 +3438,7 @@ function renderAdmin(){
               const officeBadge=officeName
                 ?`<div style="font-size:.7rem;font-weight:700;color:var(--accent);margin-bottom:2px">🏢 ${officeName}</div>`:"";
               return `${officeBadge}<a href="${mapsUrl}" target="_blank" style="font-size:.75rem;font-family:var(--mono);color:${accentColor};text-decoration:none;display:flex;align-items:center;gap:3px">📍 ${coordStr}</a>`;
+
             }
 
             const cells=[
@@ -3600,7 +3657,63 @@ function renderAdmin(){
     const {fg:fg4,inp:iDS}=mf("","🏷","Designation",{type:"text",value:u.designation||""});
     const {fg:fg5,inp:iLoc}=mf("","📍","Working Location Name",{type:"text",value:u.location||""});
 
-    // No geofence section — office name and location are managed per-user by admin only via direct DB
+    // ── OFFICE LOCATION SECTION ──────────────────────────────────────────────
+    const officeSection=h("div",{style:{marginTop:"1rem",padding:"1rem",background:"var(--surface)",borderRadius:"12px",border:"1px solid var(--border)"}});
+    officeSection.appendChild(h("div",{style:{fontSize:".72rem",fontWeight:"700",color:"var(--accent)",letterSpacing:".08em",textTransform:"uppercase",marginBottom:".75rem"}},"🏢 Office Location"));
+    const {fg:fg6,inp:iOfficeName}=mf("","🏢","Office Name",{type:"text",value:u.officeName||"",placeholder:"e.g. Head Office"});
+    // ── Single paste field for Google Maps coordinates ──────────────────────
+    const coordFg=el("div","field-group");
+    const coordLbl=h("label",{});
+    coordLbl.appendChild(document.createTextNode("📌 Office Coordinates (paste from Google Maps)"));
+    const coordInp=h("input",{type:"text",placeholder:"e.g. 13.0341, 80.2381  or  13.0341,80.2381",style:{marginBottom:"0",fontFamily:"var(--mono)",fontSize:".88rem"}});
+    // Pre-fill from existing values
+    if(u.geoLat&&u.geoLng) coordInp.value=parseFloat(u.geoLat).toFixed(6)+", "+parseFloat(u.geoLng).toFixed(6);
+    // Hidden inputs that store the parsed values
+    const iGeoLat=h("input",{type:"hidden",value:u.geoLat||""});
+    const iGeoLng=h("input",{type:"hidden",value:u.geoLng||""});
+    // Parse on input — accept "lat, lng" or "lat,lng" or "lat lng"
+    function parseCoordPaste(raw){
+      // Accept: "13.0341, 80.2381" | "13.0341,80.2381" | "13.0341 80.2381"
+      // Also accept negative coords e.g. "-33.8688, 151.2093"
+      const s=raw.trim();
+      const m=s.match(/^(-?\d{1,3}\.?\d*)[,\s]+(-?\d{1,3}\.?\d*)$/);
+      return m?{lat:m[1],lng:m[2]}:null;
+    }
+    coordInp.addEventListener("input",()=>{
+      const raw=coordInp.value.trim();
+      const parsed=parseCoordPaste(raw);
+      if(parsed){
+        iGeoLat.value=parsed.lat;iGeoLng.value=parsed.lng;
+        coordInp.style.borderColor="var(--accent2)";
+      } else if(raw===""){
+        iGeoLat.value="";iGeoLng.value="";
+        coordInp.style.borderColor="";
+      } else {
+        iGeoLat.value="";iGeoLng.value="";
+        coordInp.style.borderColor="var(--danger)";
+      }
+    });
+    // Also parse on paste event for instant feedback
+    coordInp.addEventListener("paste",()=>{
+      setTimeout(()=>coordInp.dispatchEvent(new Event("input")),0);
+    });
+    coordFg.appendChild(coordLbl);coordFg.appendChild(coordInp);
+    coordFg.appendChild(iGeoLat);coordFg.appendChild(iGeoLng);
+    const {fg:fg9,inp:iRadius}=mf("","📏","Radius (metres)",{type:"number",min:"50",value:u.geoRadius||200,placeholder:"200"});
+    // Use Current Location button
+    const geoFillBtn=h("button",{className:"btn btn-ghost btn-sm",style:{marginTop:".3rem",marginBottom:".5rem"}},"📡 Use My Current Location");
+    geoFillBtn.addEventListener("click",()=>{
+      geoFillBtn.disabled=true;geoFillBtn.textContent="Getting location…";
+      getLocation().then(loc=>{
+        geoFillBtn.disabled=false;geoFillBtn.textContent="📡 Use My Current Location";
+        if(loc&&loc.error){showModalErr("Could not get location: "+loc.error);return;}
+        iGeoLat.value=loc.lat.toFixed(6);iGeoLng.value=loc.lng.toFixed(6);
+        coordInp.value=loc.lat.toFixed(6)+", "+loc.lng.toFixed(6);
+        coordInp.style.borderColor="var(--accent2)";
+      });
+    });
+    [fg6,coordFg,fg9,geoFillBtn].forEach(x=>officeSection.appendChild(x));
+    // ────────────────────────────────────────────────────────────────────────
 
     const modalErrBox=el("div","alert alert-error hidden","");
     function showModalErr(msg){modalErrBox.textContent=msg;modalErrBox.classList.remove("hidden");setTimeout(()=>modalErrBox.classList.add("hidden"),4000);}
@@ -3608,12 +3721,15 @@ function renderAdmin(){
     const sb=h("button",{className:"btn btn-primary",style:{marginTop:".5rem"}},"💾 Save Changes");
     sb.addEventListener("click",()=>{
       const name=iName.value.trim(),uid=iUID.value.trim(),pw=iPW.value.trim(),des=iDS.value.trim(),loc=iLoc.value.trim();
+      const officeName=iOfficeName.value.trim();
+      const geoLat=iGeoLat.value.trim(),geoLng=iGeoLng.value.trim();
+      const geoRadius=parseInt(iRadius.value)||200;
       if(!name){showModalErr("Full name is required.");return}
       if(!uid||!pw){showModalErr("User ID and password required.");return}
       if(uid!==u.username&&DB.users.find(x=>x.username===uid)){showModalErr("User ID already exists.");return}
+      if((geoLat&&!geoLng)||(geoLng&&!geoLat)){showModalErr("Enter both Latitude and Longitude, or leave both empty.");return}
       const idx=DB.users.findIndex(x=>x.username===u.username);
-      // Preserve existing geoLat/geoLng/geoRadius/officeName — don't wipe them
-      DB.users[idx]={...DB.users[idx],username:uid,password:pw,fullName:name,userId:uid,designation:des,location:loc};
+      DB.users[idx]={...DB.users[idx],username:uid,password:pw,fullName:name,userId:uid,designation:des,location:loc,officeName,geoLat,geoLng,geoRadius};
       if(uid!==u.username){
         DB.attendance=DB.attendance.map(r=>r.username===u.username?{...r,username:uid}:r);
         DB.surveys=(DB.surveys||[]).map(s=>s.username===u.username?{...s,username:uid}:s);
@@ -3630,7 +3746,7 @@ function renderAdmin(){
     });
     const cb=h("button",{className:"btn btn-ghost",style:{marginTop:".6rem"}},"Cancel");
     cb.addEventListener("click",()=>ov.remove());
-    [fg1,fg2,fg3,fg4,fg5,modalErrBox,sb,cb].forEach(x=>mo.appendChild(x));
+    [fg1,fg2,fg3,fg4,fg5,officeSection,modalErrBox,sb,cb].forEach(x=>mo.appendChild(x));
     ov.appendChild(mo);document.body.appendChild(ov);
   }
 
