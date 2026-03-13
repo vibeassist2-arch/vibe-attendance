@@ -251,6 +251,14 @@ const DEFAULT_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbztylXBLNoCH
 // Securely get the script URL — never accept arbitrary URLs from localStorage
 function getScriptUrl() { return DEFAULT_SCRIPT_URL; }
 let SCRIPT_URL = DEFAULT_SCRIPT_URL;
+
+// HTML escape function to prevent XSS attacks
+function escapeHtml(text) {
+  if (!text) return "";
+  const div = document.createElement("div");
+  div.textContent = String(text);
+  return div.innerHTML;
+}
 // ONE-TIME WIPE of all old localStorage data (keep only theme + session token)
 (function(){try{const keep=new Set(["vibeTheme","vibeSession"]);Object.keys(localStorage).filter(k=>!keep.has(k)).forEach(k=>localStorage.removeItem(k));}catch(_){}})();
 
@@ -509,27 +517,33 @@ async function loadFromSheet() {
     const result = await gsFetch({ action:"getAll" });
     if (!result || !result.ok) return false;
 
-    const sheetUsers = (result.users||[]).map(u => {
-      // Helper to safely convert any value to a trimmed string
-      const safeString = (val, fallback = "") => {
-        if (val === null || val === undefined) return fallback;
-        if (typeof val === 'function') return fallback;
-        return String(val).trim();
-      };
-      return {
+    // Helper functions to safely handle function values from Google Sheets
+    const safeString = (val, fallback = "") => {
+      if (val === null || val === undefined) return fallback;
+      if (typeof val === 'function') return fallback;
+      return String(val).trim();
+    };
+    const safeChain = (...vals) => {
+      for (let v of vals) {
+        const s = safeString(v, null);
+        if (s) return s;
+      }
+      return "";
+    };
+
+    const sheetUsers = (result.users||[]).map(u => ({
         username:    safeString(u.username, ""),
         password:    safeString(u.password, ""),
-        fullName:    safeString(u.fullName || u.full_name || u.FullName || u.name, ""),
-        userId:      safeString(u.userId || u.user_id || u.UserId || u.username, ""),
+        fullName:    safeChain(u.fullName, u.full_name, u.FullName, u.name),
+        userId:      safeChain(u.userId, u.user_id, u.UserId, u.username),
         designation: safeString(u.designation, ""),
         location:    safeString(u.location, ""),
         role:        safeString(u.role, "user") || "user",
         geoLat:      safeString(u.geoLat, ""),
         geoLng:      safeString(u.geoLng, ""),
-        geoRadius:   (u.geoRadius !== undefined && u.geoRadius !== "" && u.geoRadius !== null) ? parseInt(u.geoRadius) || 200 : 200,
+        geoRadius:   (u.geoRadius !== undefined && u.geoRadius !== "" && u.geoRadius !== null && typeof u.geoRadius !== 'function') ? parseInt(u.geoRadius) || 200 : 200,
         officeName:  safeString(u.officeName, "")
-      };
-    }).filter(u => u.username);
+      })).filter(u => u.username);
 
     if (sheetUsers.length) {
       const localAdmins = DB.users.filter(u => u.role === "admin" && !sheetUsers.find(s => s.username === u.username));
@@ -554,15 +568,16 @@ async function loadFromSheet() {
       }
     }
 
+    // Helper for safe numeric parsing
+    const safeParseFloat = (val, fallback = 0) => {
+      const num = parseFloat(val);
+      return isNaN(num) ? fallback : num;
+    };
+
     const sheetAttend = (result.attendance||[]).map(r => {
-      const safeString = (val, fallback = "") => {
-        if (val === null || val === undefined) return fallback;
-        if (typeof val === 'function') return fallback;
-        return String(val).trim();
-      };
-      const lat = parseFloat(r.lat), lng = parseFloat(r.lng);
-      const outLat = parseFloat(r.outLat), outLng = parseFloat(r.outLng);
-      const validLoc = (r.lat && r.lng && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) ? {lat, lng, workLocation: r.workLocation||""} : null;
+      const lat = safeParseFloat(r.lat), lng = safeParseFloat(r.lng);
+      const outLat = safeParseFloat(r.outLat), outLng = safeParseFloat(r.outLng);
+      const validLoc = (r.lat && r.lng && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) ? {lat, lng, workLocation: safeString(r.workLocation, "")} : null;
       const validOutLoc = (r.outLat && r.outLng && outLat >= -90 && outLat <= 90 && outLng >= -180 && outLng <= 180) ? {lat: outLat, lng: outLng} : null;
       const rType = safeString(r.type, "").toLowerCase();
       // FIX 1: Prioritize explicit sheet type, then local DB record type, then default "in"
@@ -580,7 +595,7 @@ async function loadFromSheet() {
         outLocation: validOutLoc,
         outTimestamp: parseInt(r.outTimestamp)||0,
         geoOk,
-        geoName: r.geoName||"",
+        geoName: safeString(r.geoName, ""),
         geoDist: r.geoDist!=null ? parseInt(r.geoDist)||0 : null
       };
     }).filter(r => r.username && r.timestamp);
@@ -611,8 +626,10 @@ async function loadFromSheet() {
       );
       if(candidates.length){
         const bestKey = candidates.reduce((a,b) => {
-          const aIn = Math.max(...byUserDay[a].filter(r=>r.type==="in").map(r=>r.timestamp));
-          const bIn = Math.max(...byUserDay[b].filter(r=>r.type==="in").map(r=>r.timestamp));
+          const aIns = byUserDay[a].filter(r=>r.type==="in").map(r=>r.timestamp);
+          const bIns = byUserDay[b].filter(r=>r.type==="in").map(r=>r.timestamp);
+          const aIn = aIns.length ? Math.max(...aIns) : 0;
+          const bIn = bIns.length ? Math.max(...bIns) : 0;
           return Math.abs(orphan.timestamp - aIn) < Math.abs(orphan.timestamp - bIn) ? a : b;
         });
         byUserDay[bestKey].push(orphan);
@@ -625,7 +642,7 @@ async function loadFromSheet() {
       outs.forEach(r => cleanedAttend.push(r));
       const ins = recs.filter(r => r.type === "in");
       if(!outs.length){ ins.forEach(r => cleanedAttend.push(r)); return; }
-      const lastOutTs = Math.max(...outs.map(r => r.timestamp));
+      const lastOutTs = outs.length ? Math.max(...outs.map(r => r.timestamp)) : 0;
       ins.forEach(r => {
         if(r.timestamp < lastOutTs){ cleanedAttend.push(r); }
         else if(r.timestamp - lastOutTs > 5*60*1000){ cleanedAttend.push(r); }
@@ -634,14 +651,18 @@ async function loadFromSheet() {
     DB.attendance = cleanedAttend;
 
     const sheetSurveys = (result.surveys||[]).map(s => {
-      const safeString = (val, fallback = "") => {
-        if (val === null || val === undefined) return fallback;
-        if (typeof val === 'function') return fallback;
-        return String(val).trim();
-      };
       const ts = parseInt(s.timestamp)||0;
       // Derive date from timestamp first, then fall back to date field
-      let d = ts ? localDateStr(new Date(ts)) : safeString(s.date, "").slice(0,10);
+      let d = "";
+      try {
+        if (ts) {
+          d = localDateStr(new Date(ts));
+        } else {
+          d = safeString(s.date, "").slice(0,10);
+        }
+      } catch (e) {
+        d = safeString(s.date, "").slice(0,10);
+      }
       // If date is still empty, skip this record — can't reliably dedup without a date
       if(!d) return null;
       return { id: safeString(s.id, ""), username: safeString(s.username, ""), date: d, timestamp: ts, policy: parseInt(s.policy)||0, rsa: parseInt(s.rsa)||0, gpa: parseInt(s.gpa)||0 };
@@ -664,13 +685,8 @@ async function loadFromSheet() {
 
     // Load absences from sheet — sheet is sole source of truth
     const sheetAbsences = (result.absences||[]).map(a => {
-      const safeString = (val, fallback = "") => {
-        if (val === null || val === undefined) return fallback;
-        if (typeof val === 'function') return fallback;
-        return String(val).trim();
-      };
       return {
-        id: a.id, 
+        id: safeString(a.id, ""), 
         username: safeString(a.username, ""), 
         date: safeString(a.date, "").slice(0,10), 
         auto: a.auto||false
@@ -700,7 +716,29 @@ function getStorageUsage(){ return 0; }
 function storagePercent(){ return 0; }
 function archiveOldData(d){ return d; }
 function save(d){ /* no-op — online only */ }
-function localDateStr(date){const d=date||new Date();return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`}
+function localDateStr(date){
+  try {
+    const d = date || new Date();
+    if (!(d instanceof Date) || isNaN(d.getTime())) return "";
+    return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+  } catch(e) {
+    return "";
+  }
+}
+
+// Safe date creation from timestamp — returns null if invalid
+function safeDate(timestamp) {
+  try {
+    if (timestamp === null || timestamp === undefined) return null;
+    const ts = parseInt(timestamp);
+    if (isNaN(ts)) return null;
+    const d = new Date(ts);
+    if (!(d instanceof Date) || isNaN(d.getTime())) return null;
+    return d;
+  } catch(e) {
+    return null;
+  }
+}
 
 // ── GEOFENCE HELPERS ──────────────────────────────────────────────────────────
 function haversineDistance(lat1,lng1,lat2,lng2){
@@ -713,7 +751,9 @@ function haversineDistance(lat1,lng1,lat2,lng2){
 function checkUserGeofence(userLat,userLng,username){
   const u=DB.users.find(x=>x.username===username);
   if(u&&u.geoLat&&u.geoLng){
-    const d=haversineDistance(userLat,userLng,parseFloat(u.geoLat),parseFloat(u.geoLng));
+    const lat = parseFloat(u.geoLat), lng = parseFloat(u.geoLng);
+    if (isNaN(lat) || isNaN(lng)) return {ok:false,name:"",dist:0,radius:200};
+    const d=haversineDistance(userLat,userLng,lat,lng);
     const radius=parseInt(u.geoRadius)||200;
     const name=u.officeName||"";
     return{ok:d<=radius,name,dist:Math.round(d),radius};
@@ -1529,8 +1569,11 @@ function renderUser(){
       const calAbsent=new Set((DB.absences||[]).filter(a=>a.username===SESSION.username&&a.date&&a.date.startsWith(window._calMonth)).map(a=>a.date));
 
       // Calendar grid
-      const calYear=parseInt(window._calMonth.split("-")[0]);
-      const calMonthIdx=parseInt(window._calMonth.split("-")[1])-1;
+      const parts = (window._calMonth || "").split("-");
+      if (parts.length < 2) return; // Invalid month format, skip rendering
+      const calYear=parseInt(parts[0]);
+      const calMonthIdx=parseInt(parts[1])-1;
+      if (isNaN(calYear) || isNaN(calMonthIdx)) return; // Invalid month values
       const firstDay=new Date(calYear,calMonthIdx,1).getDay();
       const daysInMonth=new Date(calYear,calMonthIdx+1,0).getDate();
       const todayDateStr=localDateStr(new Date());
@@ -1649,7 +1692,7 @@ function openSurveyEditModal(survey, onSave) {
   mo.appendChild(h("div",{style:{fontSize:"1.5rem",marginBottom:".4rem"}},"✏️"));
   mo.appendChild(h("h2",{},"Edit Survey Entry"));
   const sub=el("div","sub","");
-  sub.innerHTML=`User: <strong>${survey.username}</strong> &nbsp;·&nbsp; Date: <strong>${survey.date}</strong>`;
+  sub.innerHTML=`User: <strong>${escapeHtml(survey.username)}</strong> &nbsp;·&nbsp; Date: <strong>${escapeHtml(survey.date)}</strong>`;
   mo.appendChild(sub);
   function numField(labelTxt, cls, val) {
     const wrap=h("div",{style:{marginBottom:"1.2rem"}});
@@ -2699,7 +2742,7 @@ function renderAdmin(){
         const uD=[...new Set(allAttend.filter(r=>r.username===u.username&&r.type==="in"&&localMonthStr(new Date(r.timestamp))===selMx).map(r=>new Date(r.timestamp).toDateString()))].length;
         const tr3=document.createElement("tr");
         const displayN=(u.fullName&&u.fullName.trim()?u.fullName.trim():(u.username.charAt(0).toUpperCase()+u.username.slice(1).toLowerCase()));
-        tr3.innerHTML=`<td><span style="font-weight:600">${displayN}</span><br><span style="font-size:.72rem;color:var(--muted);font-family:var(--mono)">${u.username}${u.designation?" · "+u.designation:""}${u.location?" · 📍 "+u.location:""}</span></td>
+        tr3.innerHTML=`<td><span style="font-weight:600">${escapeHtml(displayN)}</span><br><span style="font-size:.72rem;color:var(--muted);font-family:var(--mono)">${escapeHtml(u.username)}${u.designation?" · "+escapeHtml(u.designation):""}${u.location?" · 📍 "+escapeHtml(u.location):""}</span></td>
           <td><span class="pill pill-pend">${uS.reduce((s,r)=>s+(parseInt(r.policy)||0),0)}</span></td>
           <td><span class="pill pill-yes">${uS.reduce((s,r)=>s+(parseInt(r.rsa)||0),0)}</span></td>
           <td><span class="pill pill-gpa">${uS.reduce((s,r)=>s+(parseInt(r.gpa)||0),0)}</span></td>
