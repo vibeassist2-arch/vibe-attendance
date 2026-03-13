@@ -646,7 +646,7 @@ async function loadFromSheet() {
 
     // Load absences from sheet — sheet is sole source of truth
     const sheetAbsences = (result.absences||[]).map(a => ({
-      id: a.id, username: String(a.username||"").trim(), date: String(a.date||"").slice(0,10), auto: a.auto||false
+      id: a.id, username: String(a.username||"").trim(), date: String(a.date||"").slice(0,10), auto: (a.auto === true || a.auto === "true")
     })).filter(a => a.username && a.date);
     DB.absences = sheetAbsences;
 
@@ -2802,7 +2802,7 @@ function renderAdmin(){
     const todayStr = localDateStr(now);
     const before = (DB.absences||[]).length;
     // Only remove auto-marked absences, not manually-added ones
-    DB.absences = (DB.absences || []).filter(a => !(a.date === todayStr && a.auto === true));
+    DB.absences = (DB.absences || []).filter(a => !(a.date === todayStr && (a.auto === true || a.auto === "true")));
     // Only save if something changed AND we are an admin session.
     // This runs at startup before SESSION is fully confirmed, so guard explicitly.
     // Users never write attendance data to localStorage — sheet is sole source of truth.
