@@ -246,7 +246,7 @@ select option{background:var(--surface);color:var(--text)}
 <script>
 // ── VIBE v20260313.online — FULLY ONLINE. No localStorage for data. Google Sheets is sole source of truth for ALL roles. ────
 const KEY = "vibeAttendanceData";
-const DEFAULT_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbw6ku46xu_Mvi0TiXhsrD-zK5oq5v0aYtt1CFgv4pqbhV0NauZemfdi3Z22QJfMIerY/exec";
+const DEFAULT_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbztylXBLNoCHL6YSL5DvkrQTrSEIpgZt1soSxYZSB9ir7GLyJtj1_psM-g1yr3mmVev/exec";
 
 // Securely get the script URL — never accept arbitrary URLs from localStorage
 function getScriptUrl() { return DEFAULT_SCRIPT_URL; }
@@ -460,7 +460,7 @@ async function markAbsences() {
       gsPost({ action: "addAbsence", data: newAbs });
     }
   });
-  save(DB);
+  // ONLINE-ONLY: save() is a no-op — sheet is source of truth
 }
 
 setInterval(async()=>{
@@ -504,7 +504,6 @@ async function syncToSheet() {
 let _loadRunning = false;
 async function loadFromSheet() {
   if (!getScriptUrl()) return false;
-  if (_loadRunning) return false; // prevent concurrent calls corrupting DB merge
   _loadRunning = true;
   try {
     const result = await gsFetch({ action:"getAll" });
@@ -513,8 +512,8 @@ async function loadFromSheet() {
     const sheetUsers = (result.users||[]).map(u => ({
       username: String(u.username||"").trim(),
       password: String(u.password||"").trim(),
-      fullName: (u.fullName||u.full_name||u.FullName||u.name||"").trim(),
-      userId: (u.userId||u.user_id||u.UserId||u.username||"").trim(),
+      fullName: String(u.fullName||u.full_name||u.FullName||u.name||"").trim(),
+      userId: String(u.userId||u.user_id||u.UserId||u.username||"").trim(),
       designation: u.designation||"",
       location: u.location||"",
       role: u.role||"user",
@@ -795,13 +794,14 @@ function render(node){const app=document.getElementById("app");app.innerHTML="";
 
 function route(){
   if(SESSION){
-    // ONLINE-ONLY: DB starts empty and fills after loadFromSheet().
-    // Never invalidate an admin session based on empty DB — admin always exists on the sheet.
-    // For users, also skip this check — loadFromSheet() verifies them on login.
-    const stillExists = SESSION.role === "admin"
-      ? true
-      : DB.users.find(u => u.username === SESSION.username);
-    if(!stillExists){ SESSION=null; clearSession(); }
+    // ONLINE-ONLY: DB starts empty — only populated after loadFromSheet().
+    // NEVER clear a session just because DB.users is empty (sign-in loop bug).
+    // Only invalidate if the DB has users loaded AND this user genuinely isn't in it.
+    if(DB.users && DB.users.length > 0 && SESSION.role !== "admin"){
+      const stillExists = DB.users.find(u => u.username === SESSION.username);
+      if(!stillExists){ SESSION=null; clearSession(); }
+    }
+    // Admin session is always trusted — admin always exists on the sheet.
   }
   // ── USER ONLINE-ONLY GATE ────────────────────────────────────────────────────
   // Regular users cannot use the app offline — sign them out and show login
@@ -827,8 +827,9 @@ function route(){
     if(SESSION.role==="admin"){renderAdmin();return;}
     renderUser();
   }catch(e){
+    // ONLINE-ONLY: do NOT clear session on render error — DB may just be loading
+    // Log the error but keep the session alive so the next sync can recover
     console.error("VIBE: render error",e);
-    SESSION=null;clearSession();
     try{renderLogin();}catch(_){}
   }
 }
@@ -862,20 +863,24 @@ function renderLogin(){
     const u=inU.value.trim(),p=inP.value.trim();
     errBox.classList.add("hidden");
     if(!u||!p){errBox.textContent="Please enter username and password.";errBox.classList.remove("hidden");return}
-    const localFound=DB.users.find(x=>x.username===u&&x.password===p);
-    if(!localFound){
-      btn.disabled=true;btn.textContent="Verifying…";
-      (async()=>{
-        try{
-          await loadFromSheet();
-          const found2=DB.users.find(x=>x.username===u&&x.password===p);
-          if(!found2){errBox.textContent="Incorrect username or password.";errBox.classList.remove("hidden");btn.disabled=false;btn.textContent="Sign In";return}
-          proceedLogin(found2,u,p);
-        }catch(_){errBox.textContent="Incorrect username or password.";errBox.classList.remove("hidden");btn.disabled=false;btn.textContent="Sign In";}
-      })();
-      return;
-    }
-    proceedLogin(localFound,u,p);
+    btn.disabled=true;btn.textContent="Verifying…";
+    (async()=>{
+      try{
+        await loadFromSheet();
+      }catch(_){}
+      // Check sheet users first, then fall back to hardcoded admin (for first-time setup)
+      let found=DB.users.find(x=>x.username===u&&x.password===p);
+      // If sheet returned no users at all (fresh deploy), allow hardcoded admin/admin123
+      if(!found && DB.users.filter(x=>x.role==="admin").length===0){
+        const defUser=def().users.find(x=>x.username===u&&x.password===p);
+        if(defUser) found=defUser;
+      }
+      if(!found){
+        errBox.textContent="Incorrect username or password.";errBox.classList.remove("hidden");
+        btn.disabled=false;btn.textContent="Sign In";return;
+      }
+      proceedLogin(found,u,p);
+    })();
   }
 
   function withLoginTimeout(promise, ms=6000){
@@ -884,13 +889,10 @@ function renderLogin(){
 
   function proceedLogin(found, u, p){
     if(found.role==="admin"){
-      btn.disabled=true;btn.textContent="Loading data…";
-      withLoginTimeout(loadFromSheet()).finally(()=>{
-        const u2=DB.users.find(x=>x.username===found.username)||found;
-        SESSION={username:u2.username,fullName:u2.fullName&&u2.fullName.trim()?u2.fullName.trim():u2.username,role:"admin"};
-        saveSession(SESSION);
-        route();
-      });
+      // Route immediately — dashboard loads sheet data on its own via doAdminSync
+      SESSION={username:found.username,fullName:found.fullName&&found.fullName.trim()?found.fullName.trim():found.username,role:"admin"};
+      saveSession(SESSION);
+      route();
       return;
     }
     // ── USER LOGIN: ONLINE ONLY ───────────────────────────────────────────────
@@ -901,21 +903,12 @@ function renderLogin(){
       btn.disabled=false;btn.textContent="Sign In";
       return;
     }
-    btn.disabled=true;btn.textContent="Syncing data…";
-    // USER ONLINE-ONLY: wipe any stale attendance/surveys/absences from localStorage
-    // that may remain from a previous app version. Users never write these to localStorage,
-    // so delete the whole data key — session token is stored separately and is unaffected.
-    try{ localStorage.removeItem(KEY); }catch(_){}
-    // USER ONLINE-ONLY: just load from sheet — no queue to flush
-    withLoginTimeout(loadFromSheet()).finally(()=>{
-      const u2=DB.users.find(x=>x.username===found.username)||found;
-      const fn=u2.fullName&&u2.fullName.trim()?u2.fullName.trim():u2.username.charAt(0).toUpperCase()+u2.username.slice(1).toLowerCase();
-      SESSION={username:u2.username,fullName:fn,role:"user"};
-      saveSession(SESSION);
-      // Clear any stale checkout flag from previous session
-      sessionStorage.removeItem("vibeLastCheckout_"+SESSION.username);
-      route();
-    });
+    // Route immediately — user dash loads sheet data on its own
+    const fn=found.fullName&&found.fullName.trim()?found.fullName.trim():found.username.charAt(0).toUpperCase()+found.username.slice(1).toLowerCase();
+    SESSION={username:found.username,fullName:fn,role:"user"};
+    saveSession(SESSION);
+    sessionStorage.removeItem("vibeLastCheckout_"+SESSION.username);
+    route();
   }
   btn.addEventListener("click",doLogin);
   [inU,inP].forEach(i=>i.addEventListener("keydown",e=>{if(e.key==="Enter")doLogin()}));
@@ -1176,7 +1169,7 @@ function renderUser(){
               }catch(e){_surOk=false;}
               try{
                 const _c2=new AbortController();const _t2=setTimeout(()=>_c2.abort(),10000);
-                const _r2=await fetch(_gsUrl2,{method:"POST",redirect:"follow",headers:{"Content-Type":"text/plain"},body:JSON.stringify({action:"addAttendance",data:{...rec_out,outLat:loc.lat,outLng:loc.lng}}),signal:_c2.signal});
+                const _r2=await fetch(_gsUrl2,{method:"POST",redirect:"follow",headers:{"Content-Type":"text/plain"},body:JSON.stringify({action:"addAttendance",data:{...rec_out,lat:loc.lat,lng:loc.lng,outLat:loc.lat,outLng:loc.lng}}),signal:_c2.signal});
                 clearTimeout(_t2);
                 const _tx2=await _r2.text();
                 try{const _j2=JSON.parse(_tx2);_outOk=!!_j2.ok;}catch(_){_outOk=true;}
@@ -1906,6 +1899,7 @@ function renderAdmin(){
   }
 
   // Immediate sync on load, then start poll
+  content.innerHTML='<div style="display:flex;align-items:center;justify-content:center;min-height:60vh;color:var(--muted);font-family:var(--font);font-size:.95rem">⏳ Loading data from Google Sheets…</div>';
   (async()=>{ await doAdminSync(true); refresh(); startAdminPoll(); })();
   window._doAdminSync = doAdminSync; // expose for visibilitychange handler
 
@@ -1945,10 +1939,8 @@ function renderAdmin(){
         .map(r=>r.username)
     )];
     // Also check raw queue — user with pending (not yet uploaded) check-in must not appear absent
-    const _queuedCheckinUsers=new Set(_adminQueue
-      .filter(item=>item.action==="addAttendance"&&(item.data?.type==="in"||item.data?.type==="out")&&item.data?.timestamp&&localDateStr(new Date(item.data.timestamp))===todayLocalStr)
-      .map(item=>item.data.username));
-    _queuedCheckinUsers.forEach(u=>{if(!todayInUsers.includes(u))todayInUsers.push(u);});
+    // ONLINE-ONLY: no offline queue — _adminQueue removed
+    // (was used to pre-credit queued check-ins; sheet is now sole source of truth)
     const todayIsWeekend=new Date().getDay()===0;
     // Users with a survey today were definitely present (survey only submits at checkout)
     const todaySurveyUsernames=new Set(todaySurveys.map(s=>s.username));
@@ -2303,9 +2295,7 @@ function renderAdmin(){
             DB.attendance=DB.attendance.filter(r=>r.username!==u.username);
             DB.surveys=(DB.surveys||[]).filter(r=>r.username!==u.username);
             DB.absences=(DB.absences||[]).filter(r=>r.username!==u.username);
-            // FIX: purge deleted user's records from queue — prevents re-upload of deleted data on next flush
-            const dq=loadQueue().filter(item=>!item.data||item.data.username!==u.username);
-            saveQueue(dq);
+            // ONLINE-ONLY: no queue — deleted user's records are gone from in-memory DB
             save(DB);syncToSheet();refresh();
           });
           btns.appendChild(vBtn);btns.appendChild(eBtn);btns.appendChild(dBtn);row.appendChild(btns);userListWrap.appendChild(row);
@@ -2784,13 +2774,7 @@ function renderAdmin(){
         DB.attendance=DB.attendance.map(r=>r.username===u.username?{...r,username:uid}:r);
         DB.surveys=(DB.surveys||[]).map(s=>s.username===u.username?{...s,username:uid}:s);
         DB.absences=(DB.absences||[]).map(a=>a.username===u.username?{...a,username:uid}:a);
-        // FIX: also rename username in any pending queue items — prevents orphan records on sheet
-        const rq=loadQueue();
-        const rqUpdated=rq.map(item=>{
-          if(item.data&&item.data.username===u.username) return {...item,data:{...item.data,username:uid}};
-          return item;
-        });
-        saveQueue(rqUpdated);
+        // ONLINE-ONLY: no queue — no pending items to rename
       }
       save(DB);syncToSheet();ov.remove();refresh();
     });
@@ -2822,8 +2806,7 @@ function renderAdmin(){
     // Only save if something changed AND we are an admin session.
     // This runs at startup before SESSION is fully confirmed, so guard explicitly.
     // Users never write attendance data to localStorage — sheet is sole source of truth.
-    const _sess = (()=>{ try{ const s=JSON.parse(localStorage.getItem("vibeSession")||"null"); return s; }catch(_){ return null; } })();
-    if(DB.absences.length !== before && _sess && _sess.role === "admin") save(DB);
+    // ONLINE-ONLY: save() is a no-op — in-memory change only, sheet updated separately
   }
 })();
 
@@ -2873,21 +2856,22 @@ function safeRoute(){
   }
   catch(e){
     console.error("VIBE: startup crash",e);
-    SESSION=null; clearSession();
+    // Do NOT clear SESSION — let user stay logged in even if render fails on first load
     try{ route(); }catch(_){ document.getElementById("app").innerHTML='<div style="color:#e8eaf6;font-family:Sora,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh">App failed to load. Please refresh the page.</div>'; }
   }
 }
-const timeout=setTimeout(safeRoute, 5000);
-(async()=>{
-  try{
-    await loadFromSheet();
+// If SESSION already exists (returning user), route immediately — don't make them wait
+// ONLINE-ONLY: always load sheet first for ALL roles — DB starts empty every page load.
+// Routing before sheet loads = empty dashboard for returning users / admins.
+// Skeleton UI is already shown (loadDiv) while we wait.
+{
+  const timeout=setTimeout(safeRoute, 10000); // 10s max wait
+  (async()=>{
+    try{ await loadFromSheet(); }catch(_){}
     clearTimeout(timeout);
     safeRoute();
-  } catch(_){
-    clearTimeout(timeout);
-    safeRoute();
-  }
-})();
+  })();
+}
 
 
 
