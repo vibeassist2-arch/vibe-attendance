@@ -1376,11 +1376,23 @@ function renderLogin(){
     if(found.role==="admin"){
       btn.disabled=true;btn.textContent="Syncing data…";
       // FIX: flush queue before loading so sheet has latest data
-      flushQueue().catch(()=>{}).finally(()=>withLoginTimeout(loadFromSheet()).finally(()=>{
+      // Use 15s timeout for admin login — Google Sheets can be slow on first cold start (new device / no cache)
+      flushQueue().catch(()=>{}).finally(()=>withLoginTimeout(loadFromSheet(), 15000).finally(()=>{
         const u2=DB.users.find(x=>x.username===found.username)||found;
         SESSION={username:u2.username,fullName:u2.fullName&&u2.fullName.trim()?u2.fullName.trim():u2.username,role:"admin"};
         saveSession(SESSION);
         route();
+        // FIX NEW DEVICE: If sheet load timed out (DB still has no staff), retry once after render
+        // so dashboard auto-refreshes with real data instead of staying at zero
+        if(DB.users.filter(u=>u.role!=="admin").length===0){
+          setTimeout(async()=>{
+            try{
+              const loaded=await loadFromSheet();
+              if(loaded && typeof window._adminRefresh==="function") window._adminRefresh();
+              else if(loaded) try{ route(); }catch(_){}
+            }catch(_){}
+          }, 3000);
+        }
       }));
       return;
     }
@@ -3855,7 +3867,9 @@ function safeRoute(){
     try{ route(); }catch(_){ document.getElementById("app").innerHTML='<div style="color:#e8eaf6;font-family:Sora,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh">App failed to load. Please refresh the page.</div>'; }
   }
 }
-const timeout=setTimeout(safeRoute, 5000);
+// Use longer timeout on new devices (no localStorage = first visit) so sheet has time to load
+const _hasLocalData = !!localStorage.getItem(KEY);
+const timeout=setTimeout(safeRoute, _hasLocalData ? 5000 : 12000);
 (async()=>{
   // Only flush queue at startup for admin — users have no queue
   try{ if(navigator.onLine && SESSION && SESSION.role==="admin") await flushQueue(); } catch(_){}
