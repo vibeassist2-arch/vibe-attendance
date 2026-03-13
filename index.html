@@ -352,8 +352,8 @@ function showToast(msg, type="info", duration=4000){
 
 // FIX: saveQueue now returns boolean so callers can detect storage failure
 function saveQueue(q){
-  // USER ONLINE-ONLY: queue is admin-only — never write queue for user sessions
-  if(SESSION && SESSION.role !== "admin") return false;
+  // USER ONLINE-ONLY: queue is admin-only — never write queue for user/null sessions
+  if(!SESSION || SESSION.role !== "admin") return false;
   try {
     localStorage.setItem(QUEUE_KEY, JSON.stringify(q));
     return true;
@@ -385,12 +385,12 @@ let _queueRunning = false;
 async function flushQueue(){
   const url = getScriptUrl();
   if(_queueRunning || !url || !navigator.onLine) return;
-  // USER ONLINE-ONLY: queue is admin-only — hard block for user sessions
-  if(SESSION && SESSION.role !== "admin") return;
+  // USER ONLINE-ONLY: queue is admin-only — hard block for user/null sessions
+  if(!SESSION || SESSION.role !== "admin") return;
   _queueRunning = true;
   try {
     // removeAbsence items are always fired directly — never queue them
-    // Drop any that snuck in (e.g. from older code paths)
+    // Drop any that snuck in (defensive — verifyAndPurgeQueue may add them via old code paths)
     const _preClean = loadQueue();
     const _hasRemove = _preClean.some(i => i.action === "removeAbsence");
     if(_hasRemove) saveQueue(_preClean.filter(i => i.action !== "removeAbsence"));
@@ -455,9 +455,9 @@ async function gsPost(body) {
   const url = getScriptUrl();
   if (!url) return { ok: false, error: "No Script URL" };
   // USER ONLINE-ONLY: users never use the queue — they post directly to sheet
-  if(SESSION && SESSION.role !== "admin"){
-    console.warn("VIBE: gsPost blocked for user session — use direct fetch instead");
-    return { ok: false, error: "User sessions must use direct fetch, not gsPost" };
+  if(!SESSION || SESSION.role !== "admin"){
+    console.warn("VIBE: gsPost blocked for non-admin session — use direct fetch instead");
+    return { ok: false, error: "Non-admin sessions must use direct fetch, not gsPost" };
   }
   const q = loadQueue();
   q.push({...body, ts: Date.now()}); // ts enables 7-day TTL purge
@@ -474,6 +474,7 @@ async function gsPost(body) {
 // ── VERIFY & PURGE: drop queue items already confirmed on sheet ───────────────
 // Called when queue is stuck — compares queue IDs against sheet data and removes confirmed ones
 async function verifyAndPurgeQueue(){
+  if(!SESSION || SESSION.role !== "admin") return 0; // admin-only
   const q = loadQueue();
   if(!q.length) return 0;
 
@@ -515,11 +516,14 @@ async function verifyAndPurgeQueue(){
     saveQueue(afterLocalPurge);
     // Also remove from DB.absences so Today Absent list clears immediately
     DB.absences = (DB.absences||[]).filter(a => !(a.date===todayStr && localToDrop.has(a.username)));
-    // Queue removeAbsence so the sheet gets cleaned too
-    localToDrop.forEach(uname => {
-      const already = loadQueue().some(i => i.action==="removeAbsence" && i.data?.username===uname && i.data?.date===todayStr);
-      if(!already) gsPost({ action:"removeAbsence", data:{ username:uname, date:todayStr } });
-    });
+    // Fire removeAbsence directly to sheet (bypass queue — removeAbsence items are never queued)
+    const _rmUrl = getScriptUrl();
+    if(_rmUrl){
+      localToDrop.forEach(uname => {
+        fetch(_rmUrl, { method:"POST", redirect:"follow", headers:{"Content-Type":"text/plain"},
+          body: JSON.stringify({ action:"removeAbsence", data:{ username:uname, date:todayStr } }) }).catch(()=>{});
+      });
+    }
     save(DB);
   }
 
@@ -749,13 +753,15 @@ function startAutoSync() {
   autoSyncInterval = setInterval(async () => {
     // Admin poll (startAdminPoll) handles frequent sync — this 2-min fallback
     // only kicks in if the main poll somehow stalled (e.g. tab was hidden for a long time)
-    if (SESSION && SESSION.role === "admin" && getScriptUrl() && !document.hidden) {
+    if (SESSION && SESSION.role === "admin" && getScriptUrl() && !document.hidden && navigator.onLine) {
       if(typeof window._doAdminSync==="function") window._doAdminSync(false);
     }
   }, 2 * 60 * 1000); // 2-min safety net
 }
 
 async function syncToSheet() {
+  // Guard: syncToSheet is admin-only — never overwrite sheet with user's in-memory DB
+  if(!SESSION || SESSION.role !== "admin") return;
   const _syncUrl = getScriptUrl();
   if (!_syncUrl) return;
   // Send directly (not via queue) to avoid ordering issues with queued attendance records
@@ -1112,7 +1118,12 @@ function loadData(){
 }
 const LS_LIMIT = 5 * 1024 * 1024; // 5MB
 function getStorageUsage(){
-  try{ return JSON.stringify(DB).length; } catch(e){ return 0; }
+  // Measure actual localStorage bytes for accurate storage % display
+  try{
+    const stored = localStorage.getItem(KEY);
+    if(stored) return stored.length;
+    return JSON.stringify(DB).length; // fallback if not yet persisted
+  } catch(e){ return 0; }
 }
 function storagePercent(){ return Math.round(getStorageUsage()/LS_LIMIT*100); }
 
@@ -1131,7 +1142,8 @@ function archiveOldData(d, months=6){
 function save(d){
   // USER: never persist attendance/surveys/absences to localStorage.
   // Sheet is the sole source of truth. Session token is stored separately via saveSession().
-  if(SESSION && SESSION.role !== "admin") return;
+  // Also block if SESSION is null (app init / logged out state)
+  if(!SESSION || SESSION.role !== "admin") return;
   try{
     let str = JSON.stringify(d);
     const pct = str.length / LS_LIMIT * 100;
@@ -2717,12 +2729,13 @@ function renderAdmin(){
   // ─────────────────────────────────────────────────────────────────────────
   function getAdminPollMs(){
     const t=new Date(),tot=t.getHours()*60+t.getMinutes();
-    return (tot>=480 && tot<=660) ? 6000 : 15000; // 8:00-11:00 AM = peak
+    return (tot>=480 && tot<=780) ? 6000 : 15000; // 8:00 AM-1:00 PM = peak (covers late check-ins)
   }
 
   let _adminSyncing=false;
   async function doAdminSync(force){
-    if(_adminSyncing && !force) return;
+    // If already syncing, skip regardless of force — let in-progress sync finish
+    if(_adminSyncing) return;
     _adminSyncing=true;
     try{
       await flushQueue();
@@ -2742,7 +2755,7 @@ function renderAdmin(){
       })();
       const u2=DB.users.find(x=>x.username===SESSION?.username);
       if(u2?.fullName?.trim()) SESSION.fullName=u2.fullName.trim();
-      if(SESSION) try{if(typeof window._adminRefresh==="function")window._adminRefresh();}catch(_){}
+      if(SESSION && typeof window._adminRefresh==="function") try{window._adminRefresh();}catch(_){}
     }finally{ _adminSyncing=false; }
   }
 
@@ -3425,20 +3438,28 @@ function renderAdmin(){
             const outLoc=r.outLoc||(outRec?.location)||null;
             const inLoc=r.loc||(inRec?.location)||null;
 
-            // Helper: build location cell with office name + tick/cross badge
+            // Helper: build location cell with office name + geo badge (tick/cross + distance)
             function locCell(rec, rawLoc, accentColor){
-              // Try rawLoc first, then rec.location, then rec.outLocation as fallbacks
-              const loc=rawLoc||(rec?.location)||( rec?.outLocation)||null;
-              if(!loc&&!rec) return "<span style='color:var(--muted)'>—</span>";
+              const loc=rawLoc||(rec?.location)||(rec?.outLocation)||null;
+              if(!loc&&!rec) return "<span style='color:var(--muted)'>\u2014</span>";
               const lat=loc?.lat, lng=loc?.lng;
-              if(!lat||!lng) return "<span style='color:var(--muted)'>—</span>";
-              const mapsUrl=`https://maps.google.com/?q=${lat},${lng}`;
-              const coordStr=`${parseFloat(lat).toFixed(4)}, ${parseFloat(lng).toFixed(4)}`;
+              if(!lat||!lng) return "<span style='color:var(--muted)'>\u2014</span>";
+              const mapsUrl="https://maps.google.com/?q="+lat+","+lng;
+              const coordStr=parseFloat(lat).toFixed(4)+", "+parseFloat(lng).toFixed(4);
               const officeName=rec?.geoName&&rec.geoName!=="No office location set"&&rec.geoName!==""?rec.geoName:"";
-              const officeBadge=officeName
-                ?`<div style="font-size:.7rem;font-weight:700;color:var(--accent);margin-bottom:2px">🏢 ${officeName}</div>`:"";
-              return `${officeBadge}<a href="${mapsUrl}" target="_blank" style="font-size:.75rem;font-family:var(--mono);color:${accentColor};text-decoration:none;display:flex;align-items:center;gap:3px">📍 ${coordStr}</a>`;
-
+              let geoBadge="";
+              if(officeName){
+                const geoOk=rec?.geoOk===true||rec?.geoOk==="true"||rec?.geoOk===1||rec?.geoOk==="1";
+                const dist=rec?.geoDist!=null?parseInt(rec.geoDist):null;
+                const distStr=dist!=null?" \u00b7 "+dist+"m":"";
+                if(geoOk){
+                  geoBadge="<span style=\"display:inline-flex;align-items:center;gap:3px;font-size:.68rem;font-weight:700;color:#38d9a9;background:#38d9a918;border:1px solid #38d9a944;border-radius:5px;padding:1px 5px;margin-bottom:3px\">\u2705 In Range"+distStr+"</span>";
+                } else {
+                  geoBadge="<span style=\"display:inline-flex;align-items:center;gap:3px;font-size:.68rem;font-weight:700;color:#ff5f6d;background:#ff5f6d18;border:1px solid #ff5f6d44;border-radius:5px;padding:1px 5px;margin-bottom:3px\">"+(dist!=null?"❌ "+dist+"m away":"❌ Out of Range")+"</span>";
+                }
+              }
+              const officeBadge=officeName?"<div style=\"font-size:.7rem;font-weight:700;color:var(--accent);margin-bottom:2px\">\u{1f3e2} "+officeName+"</div>":"";
+              return "<div>"+officeBadge+(geoBadge?"<div style=\"margin-bottom:2px\">"+geoBadge+"</div>":"")+"<a href=\""+mapsUrl+"\" target=\"_blank\" style=\"font-size:.75rem;font-family:var(--mono);color:"+accentColor+";text-decoration:none;display:flex;align-items:center;gap:3px\">\u{1f4cd} "+coordStr+"</a></div>";
             }
 
             const cells=[
