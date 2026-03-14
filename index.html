@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <!-- VIBE v20260312.fix14 — removed pending/sync UI; fixed ReferenceError in doAdminSync (updateAdminSyncBadge removed) -->
+<!-- SW FIX v20260314 — permanent fix: unregister broken SW on load + probe sw.js before registering -->
 <html lang="en">
 <head>
 <meta charset="UTF-8"/>
@@ -404,9 +405,6 @@ let _lastCheckIn = 0;
 function canCheckIn(){
   const now = Date.now();
   if(now - _lastCheckIn < 5000) return false;
-  // Block if user already has a check-in today in DB (prevents double check-in on rapid page reload)
-  // FIX Bug 2: Use localDateStr() consistently — toDateString() is locale-formatted and
-  // can mismatch with timezone-aware date comparisons used everywhere else in the codebase
   if(SESSION && SESSION.role !== "admin"){
     const todayStr=localDateStr(new Date());
     const hasCheckIn=DB.attendance.some(r=>r.username===SESSION.username&&r.type==="in"&&localDateStr(new Date(r.timestamp))===todayStr);
@@ -422,15 +420,13 @@ function stampCheckOut(){ _lastCheckOut = Date.now(); }
 async function markAbsences() {
   const today = new Date();
   const todayStr = localDateStr(today);
-  // Skip Sunday only — Saturday is a working day
   if (today.getDay() === 0) return;
 
   const nowMin = today.getHours() * 60 + today.getMinutes();
-  if (nowMin < 630) return; // Only after 10:30 AM
+  if (nowMin < 630) return;
 
   if (!DB.absences) DB.absences = [];
 
-  // ONLINE-ONLY: no queue guard needed — load directly from sheet
   try {
     const loaded = await loadFromSheet();
     if (!loaded) {
@@ -458,7 +454,6 @@ async function markAbsences() {
     const existingAbs = DB.absences.find(a => a.username === u.username && a.date === todayStr);
     if (isPresent && existingAbs) {
       DB.absences = DB.absences.filter(a => !(a.username === u.username && a.date === todayStr));
-      // Fire directly to sheet
       const url = getScriptUrl();
       if(url) fetch(url, { method:"POST", redirect:"follow", headers:{"Content-Type":"text/plain"},
         body: JSON.stringify({ action:"removeAbsence", data:{ username: u.username, date: todayStr } }) }).catch(()=>{});
@@ -468,12 +463,10 @@ async function markAbsences() {
       gsPost({ action: "addAbsence", data: newAbs });
     }
   });
-  // ONLINE-ONLY: save() is a no-op — sheet is source of truth
 }
 
 setInterval(async()=>{
   if(!SESSION || SESSION.role !== "admin") return;
-  // ONLINE-ONLY: markAbsences calls loadFromSheet internally
   markAbsences();
 }, 60000);
 
@@ -481,18 +474,15 @@ let autoSyncInterval = null;
 function startAutoSync() {
   if (autoSyncInterval) clearInterval(autoSyncInterval);
   autoSyncInterval = setInterval(async () => {
-    // Admin poll (startAdminPoll) handles frequent sync — this 2-min fallback
-    // only kicks in if the main poll somehow stalled (e.g. tab was hidden for a long time)
     if (SESSION && SESSION.role === "admin" && getScriptUrl() && !document.hidden) {
       if(typeof window._doAdminSync==="function") window._doAdminSync(false);
     }
-  }, 2 * 60 * 1000); // 2-min safety net
+  }, 2 * 60 * 1000);
 }
 
 async function syncToSheet() {
   const _syncUrl = getScriptUrl();
   if (!_syncUrl) return;
-  // Send directly (not via queue) to avoid ordering issues with queued attendance records
   const payload = { action:"fullSync", data: { users: DB.users, surveys: DB.surveys, attendance: DB.attendance, absences: DB.absences, officeLocations: DB.officeLocations } };
   try {
     const _sc = new AbortController();
@@ -502,8 +492,6 @@ async function syncToSheet() {
     const text = await res.text();
     try { return JSON.parse(text); } catch { return { ok: true }; }
   } catch(e) {
-    // FIX: do NOT queue fullSync — queued fullSync can overwrite newer sheet data
-    // with stale local DB when it eventually flushes. Just report failure.
     console.warn("syncToSheet failed:", e);
     return { ok: false, error: e.message };
   }
@@ -517,7 +505,6 @@ async function loadFromSheet() {
     const result = await gsFetch({ action:"getAll" });
     if (!result || !result.ok) return false;
 
-    // Helper functions to safely handle function values from Google Sheets
     const safeString = (val, fallback = "") => {
       if (val === null || val === undefined) return fallback;
       if (typeof val === 'function') return fallback;
@@ -560,7 +547,6 @@ async function loadFromSheet() {
       DB.users = [...merged, ...localAdmins];
     }
 
-    // Update SESSION fields if user data changed on sheet
     if (SESSION) {
       const sessionUser = DB.users.find(u => u.username === SESSION.username);
       if (sessionUser) {
@@ -568,7 +554,6 @@ async function loadFromSheet() {
       }
     }
 
-    // Helper for safe numeric parsing
     const safeParseFloat = (val, fallback = 0) => {
       const num = parseFloat(val);
       return isNaN(num) ? fallback : num;
@@ -580,11 +565,8 @@ async function loadFromSheet() {
       const validLoc = (r.lat && r.lng && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) ? {lat, lng, workLocation: safeString(r.workLocation, "")} : null;
       const validOutLoc = (r.outLat && r.outLng && outLat >= -90 && outLat <= 90 && outLng >= -180 && outLng <= 180) ? {lat: outLat, lng: outLng} : null;
       const rType = safeString(r.type, "").toLowerCase();
-      // FIX 1: Prioritize explicit sheet type, then local DB record type, then default "in"
-      // Checkout records always have type:"out" explicitly — never guess from lat
       const localRec = r.id ? DB.attendance.find(x => x.id && String(x.id) === String(r.id)) : null;
       const inferredType = rType || localRec?.type || "in";
-      // Parse geoOk correctly — sheet stores it as string "true"/"false"
       const geoOk = r.geoOk === true || r.geoOk === "true" || r.geoOk === 1 || r.geoOk === "1";
       return {
         id: safeString(r.id, ""),
@@ -600,8 +582,6 @@ async function loadFromSheet() {
       };
     }).filter(r => r.username && r.timestamp);
 
-    // ONLINE-ONLY: sheet is sole source of truth — use sheet data directly, no local merge
-    // Still run dedup/orphan logic to handle sheet echo artifacts
     const byUserDay = {};
     sheetAttend.forEach(r => {
       const key = r.username + "__" + new Date(r.timestamp).toDateString();
@@ -609,7 +589,6 @@ async function loadFromSheet() {
       byUserDay[key].push(r);
     });
 
-    // Adopt orphan "out" records — an "out" with no same-day check-in gets matched to nearest prior check-in
     const orphanOuts = [];
     Object.entries(byUserDay).forEach(([key, recs]) => {
       const ins = recs.filter(r => r.type === "in");
@@ -652,7 +631,6 @@ async function loadFromSheet() {
 
     const sheetSurveys = (result.surveys||[]).map(s => {
       const ts = parseInt(s.timestamp)||0;
-      // Derive date from timestamp first, then fall back to date field
       let d = "";
       try {
         if (ts) {
@@ -663,7 +641,6 @@ async function loadFromSheet() {
       } catch (e) {
         d = safeString(s.date, "").slice(0,10);
       }
-      // If date is still empty, skip this record — can't reliably dedup without a date
       if(!d) return null;
       return { id: safeString(s.id, ""), username: safeString(s.username, ""), date: d, timestamp: ts, policy: parseInt(s.policy)||0, rsa: parseInt(s.rsa)||0, gpa: parseInt(s.gpa)||0 };
     }).filter(s => s && s.username && s.date);
@@ -676,14 +653,11 @@ async function loadFromSheet() {
       else {
         const existTotal = existing.policy + existing.rsa + existing.gpa;
         const newTotal = s.policy + s.rsa + s.gpa;
-        // Prefer higher total; on tie, prefer newer timestamp
         if (newTotal > existTotal || (newTotal === existTotal && s.timestamp > existing.timestamp)) surveyMap[key] = s;
       }
     });
-    // ONLINE-ONLY: sheet is sole source of truth for surveys
     DB.surveys = Object.values(surveyMap);
 
-    // Load absences from sheet — sheet is sole source of truth
     const sheetAbsences = (result.absences||[]).map(a => {
       return {
         id: safeString(a.id, ""), 
@@ -694,13 +668,11 @@ async function loadFromSheet() {
     }).filter(a => a.username && a.date);
     DB.absences = sheetAbsences;
 
-    // Clean up orphan records for deleted users
     const activeUsernames = new Set(DB.users.map(u => u.username));
     DB.absences = DB.absences.filter(a => activeUsernames.has(a.username));
     DB.surveys = DB.surveys.filter(s => activeUsernames.has(s.username));
     DB.attendance = DB.attendance.filter(r => activeUsernames.has(r.username));
 
-    // ONLINE-ONLY: DB is memory-only, no localStorage write
     return true;
   } catch(e) { console.error("loadFromSheet error:", e); return false; }
   finally { _loadRunning = false; }
@@ -708,10 +680,8 @@ async function loadFromSheet() {
 
 function def(){return{users:[{username:"admin",password:"admin123",role:"admin"}],attendance:[],surveys:[],absences:[],officeLocations:[]}}
 
-// ONLINE-ONLY: loadData always returns empty DB — all data comes from loadFromSheet()
 function loadData(){ return def(); }
 
-// ONLINE-ONLY: save is a no-op — sheet is sole source of truth, no localStorage
 function getStorageUsage(){ return 0; }
 function storagePercent(){ return 0; }
 function archiveOldData(d){ return d; }
@@ -726,7 +696,6 @@ function localDateStr(date){
   }
 }
 
-// Safe date creation from timestamp — returns null if invalid
 function safeDate(timestamp) {
   try {
     if (timestamp === null || timestamp === undefined) return null;
@@ -747,7 +716,6 @@ function haversineDistance(lat1,lng1,lat2,lng2){
   const a=Math.sin(dLat/2)**2+Math.cos(toRad(lat1))*Math.cos(toRad(lat2))*Math.sin(dLng/2)**2;
   return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
 }
-// checkUserGeofence: only uses personally assigned location — no global office fallback
 function checkUserGeofence(userLat,userLng,username){
   const u=DB.users.find(x=>x.username===username);
   if(u&&u.geoLat&&u.geoLng){
@@ -758,16 +726,15 @@ function checkUserGeofence(userLat,userLng,username){
     const name=u.officeName||"";
     return{ok:d<=radius,name,dist:Math.round(d),radius};
   }
-  // No location assigned — allow check-in freely, no geofence applied
   return{ok:true,name:"",dist:null,noLocationSet:true};
 }
 
 // ── WORK TIMING HELPERS ───────────────────────────────────────────────────────
-const WORK_START_H=9,WORK_START_M=0;   // 9:00 AM
-const WORK_END_H=18,WORK_END_M=0;      // 6:00 PM (used for early-departure reference only)
-const FULL_DAY_MIN=8*60;               // 8 hours = full day
-const HALF_DAY_MIN=4*60;               // 4 hours = half day / permission threshold
-const HALF_DAY_LATE_MIN=4*60;          // 4 hours late = half day on arrival
+const WORK_START_H=9,WORK_START_M=0;
+const WORK_END_H=18,WORK_END_M=0;
+const FULL_DAY_MIN=8*60;
+const HALF_DAY_MIN=4*60;
+const HALF_DAY_LATE_MIN=4*60;
 
 function getArrivalStatus(tsMs){
   if(!tsMs)return null;
@@ -783,7 +750,6 @@ function getArrivalStatus(tsMs){
 function getDepartureStatus(tsMs, checkInTs){
   if(!tsMs)return null;
   if(!checkInTs){
-    // No check-in time — fall back to clock-out time comparison
     const d=new Date(tsMs);
     const outMin=d.getHours()*60+d.getMinutes();
     const endMin=WORK_END_H*60+WORK_END_M;
@@ -793,21 +759,16 @@ function getDepartureStatus(tsMs, checkInTs){
   const workedMin=Math.round(workedMs/60000);
   if(workedMin>=FULL_DAY_MIN) return{type:"full",label:"Full Day"};
   if(workedMin>=HALF_DAY_MIN) return{type:"permission",label:"Permission"};
-  // Less than 4 hours — show actual worked time
   const wh=Math.floor(workedMin/60),wm=workedMin%60;
   return{type:"permission",label:wh>0?(wm>0?`${wh}h ${wm}m`:`${wh}h`):(`${wm}m`)};
 }
 function localMonthStr(date){const d=date||new Date();return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`}
 
 let DB = loadData();
-// Session persistence — session token only (no data)
 const SESSION_KEY = "vibeSession";
 function saveSession(s){ try{ localStorage.setItem(SESSION_KEY, JSON.stringify(s)); }catch(e){} }
 function clearSession(){ try{ localStorage.removeItem(SESSION_KEY); }catch(e){} }
 function restoreSession(){
-  // ONLINE-ONLY: DB starts empty, so we can't verify user against DB.users here.
-  // Return the stored session as-is; loadFromSheet() will populate DB.users
-  // and the route() call will verify the session is still valid.
   try{
     const raw = localStorage.getItem(SESSION_KEY);
     if(!raw) return null;
@@ -819,7 +780,6 @@ function restoreSession(){
 let SESSION = restoreSession();
 
 function getLocation(){
-  // Returns {lat,lng} on success or {error:"denied"|"timeout"|"unavailable"|"unsupported"} on failure
   return new Promise((res)=>{
     if(!navigator.geolocation){res({error:"unsupported"});return;}
     navigator.geolocation.getCurrentPosition(
@@ -862,22 +822,15 @@ function render(node){const app=document.getElementById("app");app.innerHTML="";
 
 function route(){
   if(SESSION){
-    // ONLINE-ONLY: DB starts empty — only populated after loadFromSheet().
-    // NEVER clear a session just because DB.users is empty (sign-in loop bug).
-    // Only invalidate if the DB has users loaded AND this user genuinely isn't in it.
     if(DB.users && DB.users.length > 0 && SESSION.role !== "admin"){
       const stillExists = DB.users.find(u => u.username === SESSION.username);
       if(!stillExists){ SESSION=null; clearSession(); }
     }
-    // Admin session is always trusted — admin always exists on the sheet.
   }
-  // ── USER ONLINE-ONLY GATE ────────────────────────────────────────────────────
-  // Regular users cannot use the app offline — sign them out and show login
   if(SESSION && SESSION.role !== "admin" && !navigator.onLine){
     SESSION=null; clearSession();
     if(autoSyncInterval){clearInterval(autoSyncInterval);autoSyncInterval=null;}
     renderLogin();
-    // Show offline banner on the login page
     setTimeout(()=>{
       const app=document.getElementById("app");
       if(!app)return;
@@ -895,8 +848,6 @@ function route(){
     if(SESSION.role==="admin"){renderAdmin();return;}
     renderUser();
   }catch(e){
-    // ONLINE-ONLY: do NOT clear session on render error — DB may just be loading
-    // Log the error but keep the session alive so the next sync can recover
     console.error("VIBE: render error",e);
     try{renderLogin();}catch(_){}
   }
@@ -936,9 +887,7 @@ function renderLogin(){
       try{
         await loadFromSheet();
       }catch(_){}
-      // Check sheet users first, then fall back to hardcoded admin (for first-time setup)
       let found=DB.users.find(x=>x.username===u&&x.password===p);
-      // If sheet returned no users at all (fresh deploy), allow hardcoded admin/admin123
       if(!found && DB.users.filter(x=>x.role==="admin").length===0){
         const defUser=def().users.find(x=>x.username===u&&x.password===p);
         if(defUser) found=defUser;
@@ -957,21 +906,17 @@ function renderLogin(){
 
   function proceedLogin(found, u, p){
     if(found.role==="admin"){
-      // Route immediately — dashboard loads sheet data on its own via doAdminSync
       SESSION={username:found.username,fullName:found.fullName&&found.fullName.trim()?found.fullName.trim():found.username,role:"admin"};
       saveSession(SESSION);
       route();
       return;
     }
-    // ── USER LOGIN: ONLINE ONLY ───────────────────────────────────────────────
-    // Users must be online to log in — they cannot use the app offline
     if(!navigator.onLine){
       errBox.textContent="No internet connection. Please connect to the internet and try again.";
       errBox.classList.remove("hidden");
       btn.disabled=false;btn.textContent="Sign In";
       return;
     }
-    // Route immediately — user dash loads sheet data on its own
     const fn=found.fullName&&found.fullName.trim()?found.fullName.trim():found.username.charAt(0).toUpperCase()+found.username.slice(1).toLowerCase();
     SESSION={username:found.username,fullName:fn,role:"user"};
     saveSession(SESSION);
@@ -980,7 +925,6 @@ function renderLogin(){
   }
   btn.addEventListener("click",doLogin);
   [inU,inP].forEach(i=>i.addEventListener("keydown",e=>{if(e.key==="Enter")doLogin()}));
-  // FIX: removed unused locWarn element (was always hidden, never used)
   [logo,sub,errBox,lbU,inU,lbP,pwWrap,btn].forEach(x=>card.appendChild(x));
   wrap.appendChild(card);render(wrap);
 }
@@ -1011,7 +955,6 @@ function showSurvey(onSubmit, onCancel){
   }
   [i1,i2,i3].forEach(i=>i.addEventListener("input",checkFill));
   submitBtn.addEventListener("click",()=>{
-    // FIX Bug 7: Warn (but don't block) if all three counts are 0 — likely an accidental submit
     const p=parseInt(i1.value)||0, r=parseInt(i2.value)||0, g=parseInt(i3.value)||0;
     if(p===0&&r===0&&g===0){
       if(!confirm("All counts are 0. Are you sure you want to submit with zero entries?")) return;
@@ -1027,19 +970,14 @@ function showSurvey(onSubmit, onCancel){
 // ── USER DASH ─────────────────────────────────────────────────────────────────
 function renderUser(){
   if(!SESSION||!SESSION.username){renderLogin();return;}
-  // ONLINE-ONLY: DB loads async from sheet — don't kick user if DB not yet populated
-  // ── HARD KILL all admin background tasks — prevents stale admin intervals
-  // showing queue badges or firing sync calls while a user is logged in ──────
   if(window._adminPollInterval){clearInterval(window._adminPollInterval);window._adminPollInterval=null;}
   if(window._adminPollTimeout){clearTimeout(window._adminPollTimeout);window._adminPollTimeout=null;}
   if(window._adminBadgeInterval){clearInterval(window._adminBadgeInterval);window._adminBadgeInterval=null;}
   window._adminRefresh=null; window._doAdminSync=null;
-  // ──────────────────────────────────────────────────────────────────────────
   const myRecs=()=>DB.attendance.filter(r=>r.username===SESSION.username).sort((a,b)=>b.timestamp-a.timestamp);
   const todayRecs=()=>{
     const s=new Date().toDateString();
     const recs=myRecs().filter(r=>new Date(r.timestamp).toDateString()===s);
-    // Remove ghost check-ins: any check-in that appears AFTER the latest checkout
     const sessionCheckoutTs=parseInt(sessionStorage.getItem("vibeLastCheckout_"+SESSION.username)||"0");
     const outs=recs.filter(r=>r.type==="out");
     const lastOutTs=outs.length?Math.max(...outs.map(r=>r.timestamp)):0;
@@ -1054,10 +992,8 @@ function renderUser(){
   };
   const isIn=()=>{
     const t=todayRecs();
-    // Check sessionStorage first — most reliable ground truth for this session
     const sessionCheckoutTs=parseInt(sessionStorage.getItem("vibeLastCheckout_"+SESSION.username)||"0");
     if(sessionCheckoutTs){
-      // User checked out this session — only IN if there's a check-in strictly AFTER that checkout
       const ins=t.filter(r=>r.type==="in"&&r.timestamp>sessionCheckoutTs);
       return ins.length>0;
     }
@@ -1074,16 +1010,13 @@ function renderUser(){
   const tb=el("div","topbar");
   tb.appendChild(el("div","topbar-brand","📋 AttendanceVibe"));
   const tbR=el("div","topbar-right");
-  // Show full name if available
   const meUser = DB.users.find(u => u.username === SESSION.username);
-  // Show fullName if set, otherwise show username styled nicely
   const displayName = SESSION.fullName && SESSION.fullName.trim() ? SESSION.fullName.trim() : (meUser && meUser.fullName && meUser.fullName.trim() ? meUser.fullName.trim() : SESSION.username);
   tbR.appendChild(document.createTextNode(displayName+" "));
   tbR.appendChild(el("span","badge badge-green","User"));
   const soBtn=h("button",{className:"btn btn-ghost btn-sm",style:{marginLeft:".5rem"}},"Sign Out");
   soBtn.addEventListener("click",()=>{
     window._userRefresh=null;window._calMonth=null;
-    // Clear all stale state so next login starts fresh
     delete window._recQuick;delete window._recUser;delete window._recMonth;
     delete window._userSearch;delete window._geoWarn;
     if(autoSyncInterval){clearInterval(autoSyncInterval);autoSyncInterval=null;}
@@ -1093,14 +1026,13 @@ function renderUser(){
   const refBtn=h("button",{className:"btn btn-ghost btn-sm"},"🔄 Refresh");
   refBtn.addEventListener("click",async()=>{
     refBtn.disabled=true;refBtn.textContent="⏳ Syncing…";
-    await loadFromSheet(); // users pull latest from sheet only — no queue to flush
+    await loadFromSheet();
     const u2r=DB.users.find(x=>x.username===SESSION.username);if(u2r&&u2r.fullName&&u2r.fullName.trim())SESSION.fullName=u2r.fullName.trim();
     refBtn.textContent="✅ Done";
     setTimeout(()=>{refBtn.textContent="🔄 Refresh";refBtn.disabled=false;},2000);
     refresh();
   });
   tbR.appendChild(refBtn);tbR.appendChild(soBtn);
-  // Theme toggle
   const themeBtn=h("button",{className:"btn btn-ghost btn-sm",style:{fontSize:"1rem",padding:".35rem .6rem",marginLeft:".25rem"}},document.body.classList.contains("light-mode")?"🌙":"☀️");
   themeBtn.title="Toggle light/dark mode";
   themeBtn.addEventListener("click",()=>{
@@ -1111,10 +1043,8 @@ function renderUser(){
   tbR.appendChild(themeBtn);
   tb.appendChild(tbR);dash.appendChild(tb);
 
-  // ── USER PROFILE CARD ──────────────────────────────────────────────────────
   const meUserProfile=DB.users.find(u=>u.username===SESSION.username);
   const profileCard=h("div",{style:{background:"var(--card)",borderBottom:"1px solid var(--border)",padding:"1rem 1.5rem",display:"flex",alignItems:"center",gap:"1rem"}});
-  // Avatar circle
   const initials=(displayName||"?").split(" ").map(w=>w[0]).join("").slice(0,2).toUpperCase();
   const avatar=h("div",{style:{width:"44px",height:"44px",borderRadius:"50%",background:"linear-gradient(135deg,var(--accent),var(--accent2))",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:"900",fontSize:"1rem",color:"#fff",flexShrink:"0"}},initials);
   const profileInfo=h("div",{style:{flex:"1",minWidth:0}});
@@ -1130,14 +1060,13 @@ function renderUser(){
   profileInfo.appendChild(pMeta);
   profileCard.appendChild(avatar);profileCard.appendChild(profileInfo);
   dash.appendChild(profileCard);
-  // ──────────────────────────────────────────────────────────────────────────
   const content=el("div","content");
   dash.appendChild(content);
   let curTab="today";
   const now=new Date();
   const curMonthKey=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}`;
   let selMonth=curMonthKey;
-  let _checkoutInProgress=false; // survives refresh() calls within same session
+  let _checkoutInProgress=false;
 
   function refresh(){
     window._userRefresh=refresh;
@@ -1179,7 +1108,6 @@ function renderUser(){
     content.appendChild(tabs);
 
     if(curTab==="today"){
-      // ── LOCATION BANNER ──
       const todayIn=todayRecs().find(r=>r.type==="in");
       const meUserForBanner=DB.users.find(u=>u.username===SESSION.username);
       const checkedIn=isIn();
@@ -1187,7 +1115,6 @@ function renderUser(){
       mainBtn.addEventListener("click",()=>{
         if(checkedIn){
           if(_checkoutInProgress||!isIn()||!canCheckOut()){refresh();return;}
-          // ── USER ONLINE-ONLY: block check-out when offline ─────────────────
           if(!navigator.onLine){
             const oldEb=content.querySelector(".loc-err-banner");if(oldEb)oldEb.remove();
             const eb=h("div",{className:"loc-err-banner geo-banner geo-warn",style:{marginTop:".75rem"}});
@@ -1195,14 +1122,12 @@ function renderUser(){
             mainBtn.insertAdjacentElement("afterend",eb);
             return;
           }
-          // FIX: don't stamp debounce yet — stamp only when record is actually written
           _checkoutInProgress=true;
           mainBtn.disabled=true;mainBtn.textContent="Opening survey…";
           showSurvey(answers=>{
             mainBtn.textContent="Checking out…";
             getLocation().then(async loc=>{
               if(loc && loc.error){
-                // Location failed — cancel checkout, reset state
                 _checkoutInProgress=false;
                 _lastCheckOut=0;
                 mainBtn.disabled=false;mainBtn.textContent="⏹ Check Out";
@@ -1218,13 +1143,11 @@ function renderUser(){
               const checkInTs2=todayCheckins2.length?Math.min(...todayCheckins2.map(r=>r.timestamp)):Date.now();
               const surveyDate2=localDateStr(new Date(checkInTs2));
               const _tsNow=Date.now();
-              // FIX: composite IDs prevent collision across users at same millisecond
               const _surId=String(_tsNow)+"_sur_"+SESSION.username;
               const _outId=String(_tsNow)+"_out_"+SESSION.username;
               const sur={id:_surId,username:SESSION.username,timestamp:_tsNow,date:surveyDate2,...answers};
               const geo2=checkUserGeofence(loc.lat,loc.lng,SESSION.username);
               const rec_out={id:_outId,username:SESSION.username,type:"out",timestamp:_tsNow+1,location:loc,geoOk:geo2.ok,geoName:geo2.name,geoDist:geo2.dist??null,noLocationSet:false};
-              // USER ONLINE-ONLY: post directly to sheet — no queue
               mainBtn.textContent="Syncing…";
               const _gsUrl2=getScriptUrl();
               let _surOk=false,_outOk=false;
@@ -1252,11 +1175,9 @@ function renderUser(){
                 mainBtn.insertAdjacentElement("afterend",eb3);
                 return;
               }
-              stampCheckOut(); // stamp debounce only when record is actually committed
-              // Only update in-memory DB after server confirms — no localStorage write for users
+              stampCheckOut();
               DB.surveys.push(sur);
               DB.attendance.push(rec_out);
-              // USER: sheet is the only persistent store — DB stays in memory only
               sessionStorage.setItem("vibeLastCheckout_"+SESSION.username, String(_tsNow));
               showToast("Checked out! ✅ Data synced to sheet.", "success", 4000);
               delete window._geoWarn;
@@ -1265,13 +1186,11 @@ function renderUser(){
               refresh();
             });
           }, ()=>{
-            // Survey cancelled — reset so user can try again
             _checkoutInProgress=false;
             mainBtn.disabled=false;mainBtn.textContent="⏹ Check Out";
           });
         } else {
-          if(!canCheckIn()){ return; } // debounce — prevent double tap
-          // ── USER ONLINE-ONLY: block check-in when offline ──────────────────
+          if(!canCheckIn()){ return; }
           if(!navigator.onLine){
             const oldEb=content.querySelector(".loc-err-banner");if(oldEb)oldEb.remove();
             const eb=h("div",{className:"loc-err-banner geo-banner geo-warn",style:{marginTop:".75rem"}});
@@ -1279,13 +1198,13 @@ function renderUser(){
             mainBtn.insertAdjacentElement("afterend",eb);
             return;
           }
-          stampCheckIn(); // stamp now so rapid taps are blocked
+          stampCheckIn();
           mainBtn.disabled=true;mainBtn.innerHTML='<span class="spinner"></span>Getting location…';
           const meUserRec=DB.users.find(u=>u.username===SESSION.username);
           const userWorkLoc=meUserRec?.location||"";
           getLocation().then(async loc=>{
             if(loc && loc.error){
-              _lastCheckIn=0; // reset debounce — let user retry after fixing GPS
+              _lastCheckIn=0;
               mainBtn.disabled=false;mainBtn.textContent="▶ Check In";
               const msgs={denied:"Location access denied. Allow location permission in your browser/phone settings, then try again.",timeout:"Location timed out. Move to an open area with better GPS signal, then try again.",unavailable:"Location unavailable. Please enable GPS on your device and try again.",unsupported:"This device/browser does not support location. Cannot check in."};
               const msg=msgs[loc.error]||"Could not get your location. Please try again.";
@@ -1297,10 +1216,8 @@ function renderUser(){
             }
             const geo=checkUserGeofence(loc.lat,loc.lng,SESSION.username);
             const _tsIn=Date.now();
-            // USER ONLINE-ONLY: composite ID prevents collision when two users check in at same millisecond
             const _inId=String(_tsIn)+"_"+SESSION.username;
             const rec_in={id:_inId,username:SESSION.username,type:"in",timestamp:_tsIn,location:{...loc,workLocation:userWorkLoc},geoOk:geo.ok,geoName:geo.name,geoDist:geo.dist??null,noLocationSet:false};
-            // Post directly to sheet — no local queue for users
             mainBtn.innerHTML='<span class="spinner"></span>Syncing…';
             const _gsUrl=getScriptUrl();
             let _postOk=false;
@@ -1313,7 +1230,7 @@ function renderUser(){
               try{const _j=JSON.parse(_txt);_postOk=!!_j.ok;}catch(_){_postOk=true;}
             }catch(e){_postOk=false;}
             if(!_postOk){
-              _lastCheckIn=0; // reset debounce so user can retry
+              _lastCheckIn=0;
               mainBtn.disabled=false;mainBtn.textContent="▶ Check In";
               const oldEb2=content.querySelector(".loc-err-banner");if(oldEb2)oldEb2.remove();
               const eb2=h("div",{className:"loc-err-banner geo-banner geo-fail",style:{marginTop:".75rem"}});
@@ -1321,9 +1238,7 @@ function renderUser(){
               mainBtn.insertAdjacentElement("afterend",eb2);
               return;
             }
-            // Only update in-memory DB after server confirms — sheet is source of truth for users
             DB.attendance.push(rec_in);
-            // USER: no localStorage write — DB stays in memory; sheet is the only persistent store
             showToast("Checked in! ✅ Synced to sheet.", "success", 4000);
             delete window._geoWarn;
             const prevEb=document.querySelector(".loc-err-banner");if(prevEb)prevEb.remove();
@@ -1333,7 +1248,6 @@ function renderUser(){
       });
       content.appendChild(mainBtn);
 
-      // Clear stale geo warning on checkout
       if(!isIn()) delete window._geoWarn;
 
       const st=el("div","section-title","Today's Activity",{marginTop:"1.5rem"});
@@ -1341,17 +1255,13 @@ function renderUser(){
       const tr=todayRecs();
       if(!tr.length){content.appendChild(el("div","empty","No records today. Check in to get started!"))}
       else{
-        // Build today's day summary
         const todayDayMap={in:null,out:null,inRec:null,outRec:null,outLoc:null};
-        // First pass: earliest check-in
         tr.filter(r=>r.type==="in").forEach(r=>{
           if(!todayDayMap.in||r.timestamp<todayDayMap.in){todayDayMap.in=r.timestamp;todayDayMap.inRec=r;}
         });
-        // Second pass: latest checkout from DB records
         tr.filter(r=>r.type==="out").forEach(r=>{
           if(!todayDayMap.out||r.timestamp>todayDayMap.out){todayDayMap.out=r.timestamp;todayDayMap.outRec=r;todayDayMap.outLoc=r.location||null;}
         });
-        // Also check sessionStorage — if user checked out this session and it's more recent, use it
         const _sessionOut=parseInt(sessionStorage.getItem("vibeLastCheckout_"+SESSION.username)||"0");
         if(_sessionOut&&_sessionOut>(todayDayMap.out||0)){
           const _sessionOutRec=myRecs().find(r=>r.type==="out"&&r.timestamp===_sessionOut)||myRecs().find(r=>r.type==="out"&&Math.abs(r.timestamp-_sessionOut)<2000);
@@ -1365,7 +1275,6 @@ function renderUser(){
         const inLoc=inRec?.location||null;
         const outLoc=todayDayMap.outLoc||(outRec?.location)||null;
 
-        // Rich summary card
         const summaryCard=h("div",{style:{background:"var(--card)",border:"1px solid var(--border)",borderRadius:"12px",overflow:"hidden",marginBottom:"1rem"}});
         const sGrid=h("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"0"}});
 
@@ -1386,15 +1295,12 @@ function renderUser(){
         sGrid.appendChild(summaryCell("🚪","Departure", depVal, depColor, false));
         summaryCard.appendChild(sGrid);
 
-        // Location row
         const locRow=h("div",{style:{padding:"1rem",borderTop:"1px solid var(--border)",display:"grid",gridTemplateColumns:"1fr 1fr",gap:"1rem"}});
         function locInfo(rec, rawLoc, label, color){
           const wrap=h("div",{});
           wrap.appendChild(h("div",{style:{fontSize:".7rem",color:"var(--muted)",fontWeight:"700",textTransform:"uppercase",letterSpacing:".07em",marginBottom:".3rem"}},"📍 "+label));
           const lat=rawLoc?.lat, lng=rawLoc?.lng;
           if(lat&&lng){
-            const coordStr=`${lat.toFixed(4)}, ${lng.toFixed(4)}`;
-            const mapsUrl=`https://maps.google.com/?q=${lat},${lng}`;
             const officeName=rec?.geoName&&rec.geoName!=="No office location set"&&rec.geoName!==""?rec.geoName:"";
             if(officeName) wrap.appendChild(h("div",{style:{fontSize:".8rem",fontWeight:"700",color:color,marginBottom:"2px"}},officeName));
             else wrap.appendChild(h("div",{style:{fontSize:".8rem",color:"var(--muted)"}}, "—"));
@@ -1408,13 +1314,11 @@ function renderUser(){
         summaryCard.appendChild(locRow);
         content.appendChild(summaryCard);
 
-        // Individual record timeline
         tr.forEach(r=>{
           const rc=el("div","record-card");
           const dot=el("span","status-dot "+(r.type==="in"?"dot-in":"dot-out"));
           const info=h("div",{style:{flex:1}});
           const label=h("div",{style:{fontWeight:"600",fontSize:".88rem"}},r.type==="in"?"✅ Checked In":"🔴 Checked Out");
-          // FIX: use optional chaining to prevent crash when location is null
           const locLbl=r.geoName&&r.geoName!=="No office location set"&&r.geoName!==""
             ?`📍 ${r.geoName}`
             :"No location";
@@ -1446,13 +1350,11 @@ function renderUser(){
       content.appendChild(g3);
 
       const dayMap={};
-      // First pass: check-ins
       mRecs.filter(r=>r.type==="in").forEach(r=>{
         const k=new Date(r.timestamp).toDateString();
         if(!dayMap[k])dayMap[k]={date:new Date(r.timestamp),in:null,out:null,loc:null,outLoc:null,inRec:null,outRec:null};
         if(!dayMap[k].in||r.timestamp<dayMap[k].in){
           dayMap[k].in=r.timestamp;dayMap[k].loc=r.location;dayMap[k].inRec=r;
-          // FIX: build proper outRec stub with coordinates so Out Location renders
           if(r.outLocation&&!dayMap[k].outLoc){
             dayMap[k].outLoc=r.outLocation;
             if(!dayMap[k].outRec)dayMap[k].outRec={location:r.outLocation,geoName:r.geoName||"",geoOk:r.geoOk||false,geoDist:r.geoDist??null};
@@ -1460,8 +1362,6 @@ function renderUser(){
           if(r.outTimestamp&&!dayMap[k].out)dayMap[k].out=r.outTimestamp;
         }
       });
-      // Second pass: always apply the LATEST checkout per day
-      // FIX: match by toDateString() of checkout directly (same key format) — avoids false mismatches
       mRecs.filter(r=>r.type==="out").forEach(r=>{
         const outKey=new Date(r.timestamp).toDateString();
         const target=dayMap[outKey]||null;
@@ -1485,25 +1385,18 @@ function renderUser(){
           const hrsColor=!mins?"var(--muted)":hrsVal>=8?"var(--gpa)":hrsVal>=4?"var(--warn)":"var(--danger)";
           const hrsBg=!mins?"transparent":hrsVal>=8?"#38d9a922":hrsVal>=4?"#ffd16622":"#ff5f6d22";
           const hrsBorder=!mins?"transparent":hrsVal>=8?"#38d9a944":hrsVal>=4?"#ffd16644":"#ff5f6d44";
-          const hrsCell=mins?`<span style="font-size:.72rem;padding:.15rem .45rem;border-radius:6px;background:${hrsBg};color:${hrsColor};border:1px solid ${hrsBorder};font-family:var(--mono);font-weight:700">${hrs}</span>`:`<span style="color:var(--muted);font-size:.75rem">—</span>`;
           const arr=getArrivalStatus(d.in);
           const dep=getDepartureStatus(d.out, d.in);
           const arrCell=arr?`<span class="timing-pill tp-${arr.type}">${arr.label}</span>`:"—";
           const depCell=dep?`<span class="timing-pill tp-${dep.type==="full"?"ontime":dep.type}">${dep.label}</span>`:"—";
           const geoRec=d.inRec||myRecs().find(r=>r.type==="in"&&r.timestamp===d.in);
           const inLoc=d.loc||(geoRec?.location)||null;
-          // Only show office name if GPS coordinates exist
           let inGeoName=inLoc?.lat&&geoRec?.geoName&&geoRec.geoName!=="No office location set"&&geoRec.geoName!==""?geoRec.geoName:"";
-          let inGeoOk=!!geoRec?.geoOk, inGeoDist=geoRec?.geoDist??null;
-          const inDistStr=inGeoDist!=null?` · ${inGeoDist}m`:"";
           const inGeoCell=inLoc?.lat
             ?`<a href="https://maps.google.com/?q=${inLoc.lat},${inLoc.lng}" target="_blank" style="font-size:.75rem;font-family:var(--mono);color:var(--accent2);text-decoration:none">📍 ${parseFloat(inLoc.lat).toFixed(4)}, ${parseFloat(inLoc.lng).toFixed(4)}</a>${inGeoName?`<div style="font-size:.7rem;color:var(--gpa);font-weight:700">🏢 ${inGeoName}</div>`:""}`
             :`<span style="color:var(--muted);font-size:.75rem">—</span>`;
           const outLoc=d.outLoc||(d.outRec?.location)||null;
-          // Only show office name if GPS coordinates exist
           let outGeoName=outLoc?.lat&&d.outRec?.geoName&&d.outRec.geoName!=="No office location set"&&d.outRec.geoName!==""?d.outRec.geoName:"";
-          let outGeoOk=!!d.outRec?.geoOk, outGeoDist=d.outRec?.geoDist??null;
-          const outDistStr=outGeoDist!=null?` · ${outGeoDist}m`:"";
           const outGeoCell=outLoc?.lat
             ?`<a href="https://maps.google.com/?q=${outLoc.lat},${outLoc.lng}" target="_blank" style="font-size:.75rem;font-family:var(--mono);color:var(--danger);text-decoration:none">📍 ${parseFloat(outLoc.lat).toFixed(4)}, ${parseFloat(outLoc.lng).toFixed(4)}</a>${outGeoName?`<div style="font-size:.7rem;color:var(--gpa);font-weight:700">🏢 ${outGeoName}</div>`:""}`
             :`<span style="color:var(--muted);font-size:.75rem">—</span>`;
@@ -1537,9 +1430,7 @@ function renderUser(){
       }
     }
 
-    // ── CALENDAR TAB ──────────────────────────────────────────────────────────
     if(curTab==="calendar"){
-      // Month navigator
       if(!window._calMonth)window._calMonth=curMKS;
       const calNav=h("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"1rem"}});
       const prevBtn=h("button",{className:"btn btn-ghost btn-sm"},"◀");
@@ -1552,12 +1443,10 @@ function renderUser(){
       nextBtn.addEventListener("click",()=>{
         const d=new Date(window._calMonth+"-01");d.setMonth(d.getMonth()+1);
         window._calMonth=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;refresh();});
-      // FIX: disable next button when already at current month — no future navigation
       if(window._calMonth>=curMKS) nextBtn.disabled=true;
       calNav.appendChild(prevBtn);calNav.appendChild(calTitle);calNav.appendChild(nextBtn);
       content.appendChild(calNav);
 
-      // Build attendance map for this month
       const calRecs=myRecs().filter(r=>{const d=new Date(r.timestamp);return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`===window._calMonth});
       const calDayMap={};
       calRecs.forEach(r=>{
@@ -1568,18 +1457,16 @@ function renderUser(){
       });
       const calAbsent=new Set((DB.absences||[]).filter(a=>a.username===SESSION.username&&a.date&&a.date.startsWith(window._calMonth)).map(a=>a.date));
 
-      // Calendar grid
       const parts = (window._calMonth || "").split("-");
-      if (parts.length < 2) return; // Invalid month format, skip rendering
+      if (parts.length < 2) return;
       const calYear=parseInt(parts[0]);
       const calMonthIdx=parseInt(parts[1])-1;
-      if (isNaN(calYear) || isNaN(calMonthIdx)) return; // Invalid month values
+      if (isNaN(calYear) || isNaN(calMonthIdx)) return;
       const firstDay=new Date(calYear,calMonthIdx,1).getDay();
       const daysInMonth=new Date(calYear,calMonthIdx+1,0).getDate();
       const todayDateStr=localDateStr(new Date());
 
       const calWrap=h("div",{style:{background:"var(--card)",borderRadius:"14px",border:"1px solid var(--border)",padding:"1rem"}});
-      // Day headers
       const dayHeaders=h("div",{style:{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:"2px",marginBottom:"4px"}});
       ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"].forEach(d=>{
         dayHeaders.appendChild(h("div",{style:{textAlign:"center",fontSize:".7rem",fontWeight:"700",color:"var(--muted)",padding:".3rem 0"}},d));
@@ -1587,11 +1474,8 @@ function renderUser(){
       calWrap.appendChild(dayHeaders);
 
       const calGrid=h("div",{style:{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:"3px"}});
-
-      // Empty cells before first day
       for(let i=0;i<firstDay;i++) calGrid.appendChild(h("div",{}));
 
-      // Day cells
       for(let day=1;day<=daysInMonth;day++){
         const dateStr=`${window._calMonth}-${String(day).padStart(2,"0")}`;
         const dayData=calDayMap[dateStr];
@@ -1600,7 +1484,7 @@ function renderUser(){
         const isWeekend=new Date(calYear,calMonthIdx,day).getDay()===0;
         const isFuture=dateStr>todayDateStr;
 
-        let bg="transparent",color="var(--text)",border="1px solid transparent",dot=null;
+        let bg="transparent",color="var(--text)",border="1px solid transparent";
         if(isToday){border="2px solid var(--accent)";color="var(--accent)";}
         if(isFuture){color="var(--muted)";}
         else if(isWeekend&&!dayData){color="var(--muted)";}
@@ -1614,16 +1498,13 @@ function renderUser(){
           transition:"all .15s",minHeight:"2.2rem",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center"
         }},String(day));
 
-        // Show check-in time as tiny label
         if(dayData?.in){
           const timeStr=new Date(dayData.in).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});
           cell.appendChild(h("div",{style:{fontSize:".55rem",color:"var(--accent2)",fontFamily:"var(--mono)",marginTop:"1px"}},timeStr));
         }
 
-        // Click to show detail popup
         if(dayData||isAbsent){
           cell.addEventListener("click",()=>{
-            // Remove existing popup
             document.querySelectorAll(".cal-popup").forEach(p=>p.remove());
             const popup=el("div","cal-popup");
             popup.style.cssText=`position:fixed;inset:0;background:#00000088;display:flex;align-items:center;justify-content:center;z-index:200;padding:1rem`;
@@ -1645,7 +1526,6 @@ function renderUser(){
                 row.appendChild(h("span",{style:{color:col,fontFamily:"var(--mono)",fontWeight:"700",fontSize:".85rem"}},val));
                 box.appendChild(row);
               });
-              // Survey data for that day
               const survey=(DB.surveys||[]).find(s=>s.username===SESSION.username&&s.date===dateStr);
               if(survey){
                 box.appendChild(h("div",{style:{marginTop:".8rem",fontSize:".78rem",fontWeight:"700",color:"var(--muted)",letterSpacing:".06em",textTransform:"uppercase"}},"Survey"));
@@ -1668,7 +1548,6 @@ function renderUser(){
       }
       calWrap.appendChild(calGrid);
 
-      // Legend
       const legend=h("div",{style:{display:"flex",gap:".75rem",flexWrap:"wrap",marginTop:"1rem",fontSize:".72rem"}});
       [["#38d9a922","#38d9a944","var(--gpa)","Full Day"],["#4f8ef722","#4f8ef744","var(--accent)","Checked In"],["#ff5f6d22","#ff5f6d44","var(--danger)","Absent"]].forEach(([bg,border,col,lbl])=>{
         const item=h("div",{style:{display:"flex",alignItems:"center",gap:".3rem"}});
@@ -1728,12 +1607,9 @@ function openSurveyEditModal(survey, onSave) {
   ov.appendChild(mo);document.body.appendChild(ov);
 }
 
-// ONLINE-ONLY: queue inspector removed — no offline queue exists
 function openQueueInspector(onClose){ if(onClose) onClose(); }
 
-
-
-// ── USER DATA MODAL — admin view of any user's full synced data ───────────────
+// ── USER DATA MODAL ───────────────────────────────────────────────────────────
 function openUserDataModal(u, allAttend, allSurveys){
   const ov=el("div","modal-overlay");
   const mo=el("div","modal",null,{maxWidth:"560px"});
@@ -1748,12 +1624,10 @@ function openUserDataModal(u, allAttend, allSurveys){
   if(u.location)subEl.appendChild(h("span",{},"📍 "+u.location));
   mo.appendChild(titleEl);mo.appendChild(subEl);
 
-  // Get this user's data
   const userAttend=allAttend.filter(r=>r.username===u.username).sort((a,b)=>b.timestamp-a.timestamp);
   const userSurveys=(allSurveys||[]).filter(s=>s.username===u.username).sort((a,b)=>(b.date||"").localeCompare(a.date||""));
   const userAbsences=(DB.absences||[]).filter(a=>a.username===u.username).sort((a,b)=>(b.date||"").localeCompare(a.date||""));
 
-  // Summary stats
   const now=new Date();
   const curMon=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}`;
   const presentDays=new Set(userAttend.filter(r=>r.type==="in").map(r=>new Date(r.timestamp).toDateString())).size;
@@ -1776,7 +1650,6 @@ function openUserDataModal(u, allAttend, allSurveys){
   statsGrid.appendChild(statBox(monthRsa+" / "+monthGpa,"RSA / GPA This Month","var(--rsa)"));
   mo.appendChild(statsGrid);
 
-  // Tabs inside modal
   let modalTab="attendance";
   const tabRow=h("div",{style:{display:"flex",gap:".4rem",marginBottom:"1rem",flexWrap:"wrap"}});
   const tabDefs=[["attendance","📋 Attendance ("+userAttend.filter(r=>r.type==="in").length+" days)"],["surveys","📜 Surveys ("+userSurveys.length+")"],["absences","❌ Absences ("+userAbsences.length+")"]];
@@ -1785,7 +1658,6 @@ function openUserDataModal(u, allAttend, allSurveys){
 
   function renderModalTab(){
     tabBody.innerHTML="";
-    // Update tab styles
     tabRow.querySelectorAll("button").forEach((b,i)=>{
       b.style.background=tabDefs[i][0]===modalTab?"var(--accent)":"transparent";
       b.style.color=tabDefs[i][0]===modalTab?"#fff":"var(--muted)";
@@ -1794,7 +1666,6 @@ function openUserDataModal(u, allAttend, allSurveys){
     });
 
     if(modalTab==="attendance"){
-      // Group by date — show check-in + check-out per day
       const byDay={};
       userAttend.forEach(r=>{
         const dk=new Date(r.timestamp).toDateString();
@@ -1879,7 +1750,6 @@ function openUserDataModal(u, allAttend, allSurveys){
   });
   renderModalTab();
 
-  // Force-sync button so admin can pull freshest data for this user
   const syncRowEl=h("div",{style:{marginTop:"1rem",paddingTop:"1rem",borderTop:"1px solid var(--border)",display:"flex",gap:".5rem",alignItems:"center"}});
   const syncUserBtn=h("button",{className:"btn btn-ghost btn-sm"},"🔄 Sync Latest Data");
   syncUserBtn.addEventListener("click",async()=>{
@@ -1907,7 +1777,6 @@ function renderAdmin(){
   let dlMonth="";
   const dash=el("div","dash");
 
-  // VIBE Header
   const hdr=el("div","vibe-header");
   const logoWrap=h("div",{});
   const logoText=h("div",{className:"vibe-logo-text"});
@@ -1918,7 +1787,6 @@ function renderAdmin(){
   hdrR.appendChild(h("span",{style:{fontSize:".8rem",color:"#64748b",whiteSpace:"nowrap"}},SESSION.username));
   hdrR.appendChild(h("span",{style:{background:"#2563eb",color:"#fff",fontSize:".65rem",padding:".15rem .5rem",borderRadius:"20px",fontWeight:"700",whiteSpace:"nowrap"}},"Admin"));
   const soBtn=h("button",{style:{padding:".35rem .7rem",border:"1.5px solid #e5e7eb",borderRadius:"8px",background:"#fff",color:"#64748b",fontFamily:"var(--font)",fontSize:".75rem",cursor:"pointer",fontWeight:"600",whiteSpace:"nowrap"}},"Sign Out");
-  // Theme toggle
   const adminThemeBtn=h("button",{style:{padding:".35rem .6rem",border:"1.5px solid #d1d5db",borderRadius:"8px",background:"transparent",color:"inherit",fontFamily:"var(--font)",fontSize:".9rem",cursor:"pointer",whiteSpace:"nowrap",lineHeight:"1"}},document.body.classList.contains("light-mode")?"🌙":"☀️");
   adminThemeBtn.title="Toggle light/dark mode";
   adminThemeBtn.addEventListener("click",()=>{
@@ -1933,8 +1801,6 @@ function renderAdmin(){
 
   const content=el("div","content");dash.appendChild(content);
 
-  // ── ADMIN SYNC ENGINE ─────────────────────────────────────────────────────
-  // ONLINE-ONLY: just poll the sheet directly. Peak 8:00-11:00 AM = 6s, off-peak = 15s.
   function getAdminPollMs(){
     const t=new Date(),tot=t.getHours()*60+t.getMinutes();
     return (tot>=480 && tot<=660) ? 6000 : 15000;
@@ -1952,7 +1818,6 @@ function renderAdmin(){
     }finally{ _adminSyncing=false; }
   }
 
-  // Clear any old poll timer from a previous renderAdmin() call
   if(window._adminPollInterval){clearInterval(window._adminPollInterval);window._adminPollInterval=null;}
   if(window._adminPollTimeout){clearTimeout(window._adminPollTimeout);window._adminPollTimeout=null;}
 
@@ -1962,17 +1827,15 @@ function renderAdmin(){
     _pollMs=getAdminPollMs();
     window._adminPollInterval=setInterval(async()=>{
       if(!SESSION||SESSION.role!=="admin"){clearInterval(window._adminPollInterval);return;}
-      // Restart if peak/off-peak boundary crossed
       const newMs=getAdminPollMs();
       if(newMs!==_pollMs){clearInterval(window._adminPollInterval);startAdminPoll();return;}
       await doAdminSync(false);
     }, _pollMs);
   }
 
-  // Immediate sync on load, then start poll
   content.innerHTML='<div style="display:flex;align-items:center;justify-content:center;min-height:60vh;color:var(--muted);font-family:var(--font);font-size:.95rem">⏳ Loading data from Google Sheets…</div>';
   (async()=>{ await doAdminSync(true); refresh(); startAdminPoll(); })();
-  window._doAdminSync = doAdminSync; // expose for visibilitychange handler
+  window._doAdminSync = doAdminSync;
 
   soBtn.addEventListener("click",()=>{
     if(window._adminPollInterval){clearInterval(window._adminPollInterval);window._adminPollInterval=null;}
@@ -1987,10 +1850,8 @@ function renderAdmin(){
     window._adminRefresh=refresh;
     content.innerHTML="";
     const regularUsers=DB.users.filter(u=>u.role!=="admin");
-    // ONLINE-ONLY: DB is always fresh from sheet — no queue merging needed
     let allAttend = [...DB.attendance].sort((a,b)=>b.timestamp-a.timestamp);
 
-    // ── ADMIN TYPE-CORRECTION: fix checkout rows mistyped as "in" by sheet ──
     const _adByUD = {};
     allAttend.forEach(r => {
       const dk = r.username+"__"+new Date(r.timestamp).toDateString();
@@ -2001,25 +1862,18 @@ function renderAdmin(){
     const todayStr=localDateStr();
     function normDate(d){if(!d)return"";const s=String(d);return s.includes("T")?s.slice(0,10):s.slice(0,10);}
     const todaySurveys=allSurveys.filter(s=>normDate(s.date)===todayStr);
-    // FIX: use localDateStr(timestamp) for today comparison — avoids UTC vs local timezone mismatch
-    // where a check-in at 8:55AM IST stored as UTC has different toDateString() than device local time
-    const todayLocalStr = todayStr; // "YYYY-MM-DD" in device local time
+    const todayLocalStr = todayStr;
     const todayInUsers=[...new Set(
       allAttend
         .filter(r=>(r.type==="in"||r.type==="out") && localDateStr(new Date(r.timestamp))===todayLocalStr)
         .map(r=>r.username)
     )];
-    // Also check raw queue — user with pending (not yet uploaded) check-in must not appear absent
-    // ONLINE-ONLY: no offline queue — _adminQueue removed
-    // (was used to pre-credit queued check-ins; sheet is now sole source of truth)
     const todayIsWeekend=new Date().getDay()===0;
-    // Users with a survey today were definitely present (survey only submits at checkout)
     const todaySurveyUsernames=new Set(todaySurveys.map(s=>s.username));
     const todayAbsent=todayIsWeekend?[]:regularUsers.filter(u=>
       !todayInUsers.includes(u.username) &&
       !todaySurveyUsernames.has(u.username)
     );
-    // FIX: totalPolicy should be current month only — not all-time — to match card label
     const curMon=localMonthStr(new Date());
     const thisMonthSurveys=allSurveys.filter(s=>(s.date||"").startsWith(curMon));
     const totalPolicy=thisMonthSurveys.reduce((s,r)=>s+(parseInt(r.policy)||0),0);
@@ -2027,7 +1881,6 @@ function renderAdmin(){
     const todayRsa=todaySurveys.reduce((s,r)=>s+(parseInt(r.rsa)||0),0);
     const todayGpa=todaySurveys.reduce((s,r)=>s+(parseInt(r.gpa)||0),0);
 
-    // HOME STAT CARDS
     const homeGrid=h("div",{style:{display:"grid",gridTemplateColumns:"repeat(2,1fr)",gap:"1rem",margin:"1.5rem 0 .8rem"},className:"home-cards"});
     function makePillList(names, bg, col, emptyMsg) {
       const LIMIT = 6;
@@ -2108,7 +1961,6 @@ function renderAdmin(){
     }
     homeGrid.appendChild(c2);
 
-    // ── Today: Present vs Survey Submitted ──
     const todaySurveyUsers=new Set((allSurveys||[]).filter(s=>normDate(s.date)===todayStr).map(s=>s.username));
     const todaySurveyCount=todayInUsers.filter(u=>todaySurveyUsers.has(u)).length;
     const todayMissingUsers=todayInUsers.filter(u=>!todaySurveyUsers.has(u));
@@ -2161,9 +2013,7 @@ function renderAdmin(){
     });
     c3.appendChild(p3);homeGrid.appendChild(c3);
 
-    // ── Location card — policy counts per working location (today) ──
     const locPolicyMap={};
-    // First seed all locations from today's check-ins (so 0-policy locations show)
     todayInUsers.forEach(uname=>{
       const uInfo=regularUsers.find(u=>u.username===uname);
       const locRaw=(uInfo&&uInfo.location&&uInfo.location.trim())?uInfo.location.trim():"Unassigned";
@@ -2171,7 +2021,6 @@ function renderAdmin(){
       const locDisplay=locKey==="unassigned"?"Unassigned":(locRaw.charAt(0).toUpperCase()+locRaw.slice(1).toLowerCase());
       if(!locPolicyMap[locKey])locPolicyMap[locKey]={label:locDisplay,policy:0,rsa:0,gpa:0};
     });
-    // Then add survey counts
     todaySurveys.forEach(s=>{
       const uInfo=regularUsers.find(u=>u.username===s.username);
       const locRaw=(uInfo&&uInfo.location&&uInfo.location.trim())?uInfo.location.trim():"Unassigned";
@@ -2219,7 +2068,6 @@ function renderAdmin(){
       `📅 ${new Date().toLocaleDateString("en-GB",{weekday:"long",day:"2-digit",month:"long",year:"numeric"})} · ${regularUsers.length} total staff`);
     content.appendChild(ds);
 
-    // NAV TABS
     const navRow=h("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:".6rem",marginBottom:"1.5rem"}});
     [["users","👥 Users"],["records","📋 Attendance"],["export","📜 Policy Details"]].forEach(([key,lbl])=>{
       const btn=h("button",{className:"home-nav-btn",style:{background:curTab===key?"#2563eb":"#fff",color:curTab===key?"#fff":"#374151",boxShadow:curTab===key?"0 4px 14px #2563eb44":"0 1px 4px #0000001a",width:"100%",textAlign:"center"}},lbl);
@@ -2228,9 +2076,7 @@ function renderAdmin(){
     });
     content.appendChild(navRow);
 
-    // ── USERS TAB ──
     if(curTab==="users"){
-      // ── CREATE USER FORM (new field order: Full Name → User ID → Password) ──
       const fc=el("div","create-user-card");
       const formTitle=h("h2",{});
       formTitle.innerHTML='👤 Create New User';
@@ -2240,7 +2086,6 @@ function renderAdmin(){
       const sucB=el("div","alert alert-success hidden","");
       fc.appendChild(errB);fc.appendChild(sucB);
 
-      // Helper to build a labeled field with a step badge
       function makeField(stepNum, icon, labelText, inputAttrs) {
         const fg=el("div","field-group");
         const lbl=h("label",{});
@@ -2256,7 +2101,6 @@ function renderAdmin(){
       const {fg:fg2, inp:iUID}  = makeField(2,"🪪","User ID",{type:"text",placeholder:"e.g. EMP001"});
       const {fg:fg3, inp:iPW}   = makeField(3,"🔑","Password",{type:"password",placeholder:"Set a password"});
 
-      // Optional fields (designation & location) — collapsible for cleanliness
       const optToggle=h("button",{type:"button",style:{background:"none",border:"none",color:"var(--muted)",fontFamily:"var(--font)",fontSize:".8rem",cursor:"pointer",padding:"0 0 .8rem",display:"flex",alignItems:"center",gap:".3rem"}},"＋ Add designation & location (optional)");
       const optFields=h("div",{style:{display:"none"}});
       const {fg:fg4, inp:iDS} = makeField("","🏷","Designation",{type:"text",placeholder:"e.g. Sales Executive"});
@@ -2280,7 +2124,6 @@ function renderAdmin(){
         if(!name){errB.textContent="Full name is required.";errB.classList.remove("hidden");return}
         if(!uid){errB.textContent="User ID is required.";errB.classList.remove("hidden");return}
         if(!pw){errB.textContent="Password is required.";errB.classList.remove("hidden");return}
-        // Use User ID as the login username
         if(DB.users.find(x=>x.username===uid)){errB.textContent="User ID already exists. Choose a different one.";errB.classList.remove("hidden");return}
         DB.users.push({username:uid,password:pw,fullName:name,userId:uid,designation:des,location:loc2,role:"user",geoLat:"",geoLng:"",geoRadius:200,officeName:""});
         save(DB);syncToSheet();
@@ -2292,8 +2135,6 @@ function renderAdmin(){
       [fg1,fg2,fg3,optToggle,optFields,addBtn].forEach(x=>fc.appendChild(x));
       content.appendChild(fc);
 
-
-      // User list with search
       const userListHeader=h("div",{style:{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:".6rem",marginBottom:".8rem",marginTop:"1.5rem"}});
       const userTitle=el("div","section-title",`All Users (${regularUsers.length})`);
       userTitle.style.margin="0";
@@ -2354,7 +2195,6 @@ function renderAdmin(){
           info.appendChild(nameEl);info.appendChild(metaRow);
           row.appendChild(info);
           const btns=h("div",{style:{display:"flex",gap:".5rem",flexShrink:0,flexWrap:"wrap"}});
-          // ── View Data button — shows full attendance/survey history for this user ──
           const vBtn=h("button",{className:"btn btn-primary btn-sm"},"👁 View");
           vBtn.addEventListener("click",()=>openUserDataModal(u, allAttend, allSurveys));
           const eBtn=h("button",{className:"btn btn-ghost btn-sm"},"✏️ Edit");
@@ -2366,7 +2206,6 @@ function renderAdmin(){
             DB.attendance=DB.attendance.filter(r=>r.username!==u.username);
             DB.surveys=(DB.surveys||[]).filter(r=>r.username!==u.username);
             DB.absences=(DB.absences||[]).filter(r=>r.username!==u.username);
-            // ONLINE-ONLY: no queue — deleted user's records are gone from in-memory DB
             save(DB);syncToSheet();refresh();
           });
           btns.appendChild(vBtn);btns.appendChild(eBtn);btns.appendChild(dBtn);row.appendChild(btns);userListWrap.appendChild(row);
@@ -2375,10 +2214,8 @@ function renderAdmin(){
 
       renderUserList(window._userSearch||"");
       searchInp.addEventListener("input",()=>{window._userSearch=searchInp.value;renderUserList(searchInp.value);});
-
     }
 
-    // ── RECORDS TAB ──
     if(curTab==="records"){
       const now2=new Date();
       const curMK=`${now2.getFullYear()}-${String(now2.getMonth()+1).padStart(2,"0")}`;
@@ -2386,10 +2223,8 @@ function renderAdmin(){
       if(!months.includes(curMK))months.unshift(curMK);
       if(!window._recMonth)window._recMonth=curMK;
       if(!window._recUser)window._recUser="all";
-      // _recQuick: "today"|"yesterday"|"week"|"month"|null (null = use month dropdown)
       if(window._recQuick===undefined)window._recQuick="today";
 
-      // ── Quick filter buttons ──────────────────────────────────────────────────
       const quickFilters=[
         {key:"today",     label:"📅 Today"},
         {key:"yesterday", label:"⏮ Yesterday"},
@@ -2410,7 +2245,6 @@ function renderAdmin(){
       });
       content.appendChild(qRow);
 
-      // ── Month + User selects (hidden when quick filter active, shown only for custom) ──
       const bar=el("div","month-bar");bar.style.display=window._recQuick?"none":"flex";
       const ml=h("label",{},"Month:");ml.style.margin="0";
       const ms=h("select",{});months.forEach(m=>{const o=h("option",{value:m},new Date(m+"-01").toLocaleString("default",{month:"long",year:"numeric"}));if(m===window._recMonth)o.selected=true;ms.appendChild(o)});
@@ -2424,7 +2258,6 @@ function renderAdmin(){
       us.addEventListener("change",()=>{window._recUser=us.value;refresh()});
       [ml,ms,ul,us].forEach(x=>bar.appendChild(x));
 
-      // ── User filter row (always visible) ─────────────────────────────────────
       const uRow=h("div",{style:{display:"flex",alignItems:"center",gap:".5rem",marginBottom:"1rem",flexWrap:"wrap"}});
       const ul2=h("label",{style:{fontSize:".8rem",color:"var(--muted)",fontWeight:"700",margin:"0"}},"👤 User:");
       const us2=h("select",{style:{width:"auto",minWidth:"180px",marginBottom:"0",padding:".45rem .9rem",fontSize:".85rem"}});
@@ -2437,7 +2270,6 @@ function renderAdmin(){
       content.appendChild(uRow);
       content.appendChild(bar);
 
-      // ── Compute date range from quick filter ──────────────────────────────────
       const todayStart=new Date(now2.getFullYear(),now2.getMonth(),now2.getDate()).getTime();
       const todayEnd=todayStart+86400000-1;
       const ystStart=todayStart-86400000;
@@ -2445,7 +2277,6 @@ function renderAdmin(){
       const weekStart=todayStart-6*86400000;
       const monthStart=new Date(now2.getFullYear(),now2.getMonth(),1).getTime();
       const monthEnd=new Date(now2.getFullYear(),now2.getMonth()+1,0,23,59,59,999).getTime();
-
       const lastMonthStart=new Date(now2.getFullYear(),now2.getMonth()-1,1).getTime();
       const lastMonthEnd=new Date(now2.getFullYear(),now2.getMonth(),0,23,59,59,999).getTime();
 
@@ -2459,35 +2290,28 @@ function renderAdmin(){
       }
 
       const filteredIn=allAttend.filter(r=>r.type==="in"&&inQuickRange(r.timestamp)&&(window._recUser==="all"||r.username===window._recUser));
-      // Build a set of username+date keys (and also username+nextDay for overnight shifts)
       const filteredInKeys=new Set();
       filteredIn.forEach(r=>{
         const d=new Date(r.timestamp);
         filteredInKeys.add(r.username+"__"+d.toDateString());
-        // Also include next calendar day in case checkout crosses midnight
         const next=new Date(d); next.setDate(next.getDate()+1);
         filteredInKeys.add(r.username+"__"+next.toDateString());
       });
-      // Grab checkout records for any matching day
       const filteredOut=allAttend.filter(r=>r.type==="out"&&(window._recUser==="all"||r.username===window._recUser)&&filteredInKeys.has(r.username+"__"+new Date(r.timestamp).toDateString()));
       const filtered=[...filteredIn,...filteredOut];
 
       const dayMap2={};
-      // First pass: build entries from check-in records
       filteredIn.forEach(r=>{
         const k=r.username+"__"+new Date(r.timestamp).toDateString();
         if(!dayMap2[k])dayMap2[k]={username:r.username,date:new Date(r.timestamp),in:null,out:null,loc:null,outLoc:null,inRec:null,outRec:null};
         if(!dayMap2[k].in||r.timestamp<dayMap2[k].in){
           dayMap2[k].in=r.timestamp;dayMap2[k].loc=r.location;dayMap2[k].inRec=r;
-          // FIX: if check-in row has embedded outTimestamp/outLocation (sheet stores both in one row),
-          // populate outLoc correctly with actual location data — not a bare stub
           if(r.outTimestamp&&!dayMap2[k].out){
             dayMap2[k].out=r.outTimestamp;
           }
           if(r.outLocation&&!dayMap2[k].outLoc){
             dayMap2[k].outLoc=r.outLocation;
             if(!dayMap2[k].outRec){
-              // Build a proper outRec stub with actual coordinates so locCell() can render them
               dayMap2[k].outRec={
                 location:r.outLocation,
                 geoName:r.geoName||"",
@@ -2498,25 +2322,19 @@ function renderAdmin(){
           }
         }
       });
-      // Second pass: apply checkout records — always take the LATEST checkout per day
-      // FIX: match by username+date string directly (same key format as dayMap2) so checkout
-      // records for same calendar day always link correctly regardless of time
       filteredOut.forEach(r=>{
         const outDayKey=r.username+"__"+new Date(r.timestamp).toDateString();
-        // Direct key match first (fastest, most reliable)
         let target=dayMap2[outDayKey]||null;
-        // Fallback: scan all entries for this user in case check-in was stored under a different date key
         if(!target){
           const matchKey=Object.keys(dayMap2).find(k2=>
             k2.startsWith(r.username+"__")&&
-            Math.abs(dayMap2[k2].in - r.timestamp) < 24*60*60*1000 // within 24h of check-in
+            Math.abs(dayMap2[k2].in - r.timestamp) < 24*60*60*1000
           );
           target=matchKey?dayMap2[matchKey]:null;
         }
-        if(!target)return; // orphan checkout with no matching check-in — skip
+        if(!target)return;
         if(!target.out||r.timestamp>target.out){
           target.out=r.timestamp;
-          // FIX: prefer r.location (the checkout GPS point) then r.outLocation fallback
           target.outLoc=r.location||r.outLocation||null;
           target.outRec=r;
         }
@@ -2536,8 +2354,6 @@ function renderAdmin(){
       content.appendChild(sg);
 
       const absentRecs=(DB.absences||[]).filter(a=>{
-        // FIX Bug 5: Anchor absence at T12:00:00 (not T00:00:00) so it lands safely
-        // in the middle of the day, preventing off-by-one exclusions at range boundaries
         const aDate=new Date(a.date+"T12:00:00");
         const aTs=aDate.getTime();
         const isWeekend=aDate.getDay()===0;
@@ -2594,11 +2410,9 @@ function renderAdmin(){
             const depCell=dep?`<span class="timing-pill tp-${dep.type==="full"?"ontime":dep.type}">${dep.label}</span>`:"—";
             const inRec=r.inRec||allAttend.find(x=>x.username===r.username&&x.type==="in"&&x.timestamp===r.in);
             const outRec=r.outRec||allAttend.find(x=>x.username===r.username&&x.type==="out"&&x.timestamp===r.out);
-            // Ensure outLoc is always populated from outRec if not already set
             const outLoc=r.outLoc||(outRec?.location)||null;
             const inLoc=r.loc||(inRec?.location)||null;
 
-            // Helper: build location cell with office name + tick/cross badge
             function locCell(rec, rawLoc, accentColor){
               if(!rawLoc&&!rec) return "<span style='color:var(--muted)'>—</span>";
               const lat=rawLoc?.lat, lng=rawLoc?.lng;
@@ -2623,7 +2437,6 @@ function renderAdmin(){
             ];
             tr2.innerHTML=cells.join("");tbody.appendChild(tr2);
           });
-          // Update pagination bar
           pgBar.innerHTML="";
           const total=Math.ceil(rows.length/PAGE);
           const info=h("span",{style:{fontSize:".8rem",color:"var(--muted)"}},`Showing ${pg*PAGE+1}–${Math.min((pg+1)*PAGE,rows.length)} of ${rows.length} records`);
@@ -2674,7 +2487,6 @@ function renderAdmin(){
       });
       content.appendChild(cg2);
 
-      // Survey entries — default to today only, toggle to show all
       if(typeof window._surveyShowAll === "undefined") window._surveyShowAll = false;
       const allSurveysSorted=[...allSurveys].sort((a,b)=>b.timestamp-a.timestamp);
       const todaySurveysSorted=allSurveysSorted.filter(s=>normDate(s.date)===todayStr);
@@ -2696,7 +2508,6 @@ function renderAdmin(){
           const uInfo=regularUsers.find(u=>u.username===s.username);
           const displayN=(uInfo&&uInfo.fullName)?uInfo.fullName:s.username;
           const card=h("div",{style:{background:"var(--card)",border:"1px solid var(--border)",borderRadius:"12px",padding:".75rem 1rem"}});
-          // Top row: name + date
           const topRow=h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:".5rem"}});
           const nameCol=h("div",{});
           nameCol.appendChild(h("div",{style:{fontWeight:"700",fontSize:".9rem",color:"var(--text)"}},displayN));
@@ -2704,7 +2515,6 @@ function renderAdmin(){
           const dateTag=h("div",{style:{fontSize:".72rem",color:"var(--muted)",fontFamily:"var(--mono)",background:"var(--bg)",padding:".2rem .5rem",borderRadius:"6px",whiteSpace:"nowrap"}},s.date);
           topRow.appendChild(nameCol);topRow.appendChild(dateTag);
           card.appendChild(topRow);
-          // Bottom row: pills + edit
           const botRow=h("div",{style:{display:"flex",alignItems:"center",gap:".4rem",flexWrap:"wrap"}});
           [["Policy",parseInt(s.policy)||0,"pill-pend"],["RSA",parseInt(s.rsa)||0,"pill-yes"],["GPA",parseInt(s.gpa)||0,"pill-gpa"]].forEach(([icon,val,cls])=>{
             botRow.appendChild(h("span",{className:"pill "+cls},`${icon} ${val}`));
@@ -2719,7 +2529,6 @@ function renderAdmin(){
         tw.appendChild(cardList);content.appendChild(tw);
       }
 
-      // Per-user month totals
       const now2x=new Date();const curMKx=`${now2x.getFullYear()}-${String(now2x.getMonth()+1).padStart(2,"0")}`;
       const selMx=dlMonth||curMKx;
       const allMonthsX=[...new Set([...allSurveys.map(s=>s.date?.slice(0,7)).filter(Boolean),...allAttend.map(r=>{const d=new Date(r.timestamp);return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`})])].sort().reverse();
@@ -2751,7 +2560,6 @@ function renderAdmin(){
       });
       tbl2.appendChild(tb3);tw2.appendChild(tbl2);content.appendChild(tw2);
 
-      // Download section
       content.appendChild(el("div","section-title","Download Data"));
       const allMonths2=[...new Set([...allSurveys.map(s=>s.date?.slice(0,7)).filter(Boolean),...allAttend.map(r=>{const d=new Date(r.timestamp);return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`})])].sort().reverse();
       const mbar=el("div","month-bar");
@@ -2827,8 +2635,6 @@ function renderAdmin(){
     const {fg:fg4,inp:iDS}=mf("","🏷","Designation",{type:"text",value:u.designation||""});
     const {fg:fg5,inp:iLoc}=mf("","📍","Working Location Name",{type:"text",value:u.location||""});
 
-    // No geofence section — office name and location are managed per-user by admin only via direct DB
-
     const modalErrBox=el("div","alert alert-error hidden","");
     function showModalErr(msg){modalErrBox.textContent=msg;modalErrBox.classList.remove("hidden");setTimeout(()=>modalErrBox.classList.add("hidden"),4000);}
 
@@ -2839,13 +2645,11 @@ function renderAdmin(){
       if(!uid||!pw){showModalErr("User ID and password required.");return}
       if(uid!==u.username&&DB.users.find(x=>x.username===uid)){showModalErr("User ID already exists.");return}
       const idx=DB.users.findIndex(x=>x.username===u.username);
-      // Preserve existing geoLat/geoLng/geoRadius/officeName — don't wipe them
       DB.users[idx]={...DB.users[idx],username:uid,password:pw,fullName:name,userId:uid,designation:des,location:loc};
       if(uid!==u.username){
         DB.attendance=DB.attendance.map(r=>r.username===u.username?{...r,username:uid}:r);
         DB.surveys=(DB.surveys||[]).map(s=>s.username===u.username?{...s,username:uid}:s);
         DB.absences=(DB.absences||[]).map(a=>a.username===u.username?{...a,username:uid}:a);
-        // ONLINE-ONLY: no queue — no pending items to rename
       }
       save(DB);syncToSheet();ov.remove();refresh();
     });
@@ -2860,30 +2664,18 @@ function renderAdmin(){
 
 // ── START ─────────────────────────────────────────────────────────────────────
 
-// If before 9 AM, clear any today's absences that were wrongly pre-marked
-// Run BEFORE markAbsences to avoid conflicting state
 (function cleanEarlyAbsences(){
   const now = new Date();
-  if (now.getDay() === 0) return; // Skip Sunday only (Saturday is a working day)
-  // Guard against running on empty/corrupt DB — no users = nothing to clean
+  if (now.getDay() === 0) return;
   if (!DB || !DB.users || !DB.users.length) return;
   const nowMin = now.getHours() * 60 + now.getMinutes();
   const startMin = WORK_START_H * 60 + WORK_START_M;
   if (nowMin < startMin) {
     const todayStr = localDateStr(now);
-    const before = (DB.absences||[]).length;
-    // Only remove auto-marked absences, not manually-added ones
     DB.absences = (DB.absences || []).filter(a => !(a.date === todayStr && a.auto === true));
-    // Only save if something changed AND we are an admin session.
-    // This runs at startup before SESSION is fully confirmed, so guard explicitly.
-    // Users never write attendance data to localStorage — sheet is sole source of truth.
-    // ONLINE-ONLY: save() is a no-op — in-memory change only, sheet updated separately
   }
 })();
 
-// markAbsences() now runs after loadFromSheet completes
-
-// Default to light mode — only switch to dark if user explicitly chose it
 if(localStorage.getItem("vibeTheme")!=="dark") document.body.classList.add("light-mode");
 
 const loadDiv=document.createElement("div");
@@ -2921,22 +2713,16 @@ loadDiv.innerHTML=`
 document.getElementById("app").appendChild(loadDiv);
 function safeRoute(){
   try{
-    // ONLINE-ONLY: markAbsences for admin — no queue check needed
     if(SESSION && SESSION.role === "admin") markAbsences();
     route();
   }
   catch(e){
     console.error("VIBE: startup crash",e);
-    // Do NOT clear SESSION — let user stay logged in even if render fails on first load
     try{ route(); }catch(_){ document.getElementById("app").innerHTML='<div style="color:#e8eaf6;font-family:Sora,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh">App failed to load. Please refresh the page.</div>'; }
   }
 }
-// If SESSION already exists (returning user), route immediately — don't make them wait
-// ONLINE-ONLY: always load sheet first for ALL roles — DB starts empty every page load.
-// Routing before sheet loads = empty dashboard for returning users / admins.
-// Skeleton UI is already shown (loadDiv) while we wait.
 {
-  const timeout=setTimeout(safeRoute, 10000); // 10s max wait
+  const timeout=setTimeout(safeRoute, 10000);
   (async()=>{
     try{ await loadFromSheet(); }catch(_){}
     clearTimeout(timeout);
@@ -2944,39 +2730,45 @@ function safeRoute(){
   })();
 }
 
-
-
-
-
+// ── PERMANENT FIX: ServiceWorker — unregister broken SW, probe before registering ──
+// Fixes: "ServiceWorker script evaluation failed" + "GS GET AbortError"
+// Root cause: a broken/stale sw.js intercepts and aborts fetch() calls to Google Sheets.
+// Solution: unregister ALL existing SWs on every page load, then re-register only if sw.js
+// is actually reachable and valid. This self-heals on every page load without manual action.
 if('serviceWorker' in navigator){
   const host = window.location.hostname;
   const isRealHost = window.location.protocol === 'https:'
     && host !== 'www.claudeusercontent.com'
     && host !== ''
     && host !== 'localhost';
+
+  // Step 1: Unregister ALL existing ServiceWorkers immediately (before anything else).
+  // This clears any broken SW that could be intercepting fetch() calls.
+  navigator.serviceWorker.getRegistrations().then(regs=>{
+    regs.forEach(reg=>reg.unregister().catch(()=>{}));
+  }).catch(()=>{});
+
   if(isRealHost){
-    // FIX: attach FLUSH_QUEUE listener at top level BEFORE registration completes
-    // so background sync events that fire early (e.g. on page load) are never missed
-    navigator.serviceWorker.addEventListener('message',e=>{
-      if(e.data?.type==='FLUSH_QUEUE') flushQueue();
-    });
-    window.addEventListener('load',()=>{
+    // Step 2: After unregistrations settle, probe sw.js before re-registering.
+    // If sw.js is missing or returns an error, skip registration entirely —
+    // avoids the "script evaluation failed" error that caused the original bug.
+    window.addEventListener('load', async ()=>{
+      let swOk = false;
+      try {
+        const probe = await fetch('./sw.js', { method:'HEAD', cache:'no-store' });
+        swOk = probe.ok;
+      } catch(_){ swOk = false; }
+
+      if(!swOk){
+        console.warn('VIBE: sw.js not reachable — skipping ServiceWorker registration. Google Sheets fetch will work normally.');
+        return;
+      }
+
       navigator.serviceWorker.register('./sw.js')
         .then(reg=>{
           console.log('✅ VIBE SW registered');
-          // Note: FLUSH_QUEUE listener already attached above — no duplicate needed
-
-          // ── Force update check in background — never interrupt active session ──
           reg.update();
-
-          // Track whether a controller existed BEFORE this page load
-          // controllerchange on first install = no previous controller = skip reload
           const hadControllerOnLoad = !!navigator.serviceWorker.controller;
-
-          // Do NOT activate waiting SW immediately — would fire controllerchange and reload mid-session
-          // It activates on next page open naturally
-
-          // Listen for a new SW installing — notify user, let THEM tap to reload
           reg.addEventListener('updatefound',()=>{
             const newSW=reg.installing;
             if(!newSW) return;
@@ -2991,19 +2783,15 @@ if('serviceWorker' in navigator){
               }
             });
           });
-
-          // Only reload on controllerchange if there was already a controller on load
-          // Prevents first-install activation from kicking logged-in users to login screen
           let refreshing=false;
           navigator.serviceWorker.addEventListener('controllerchange',()=>{
             if(!refreshing&&hadControllerOnLoad){ refreshing=true; window.location.reload(); }
           });
         })
-        .catch(e=>console.log('SW error:',e));
+        .catch(e=>console.warn('VIBE: SW registration failed:',e));
     });
   }
 }
-
 </script>
 </body>
 </html>
