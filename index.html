@@ -1081,11 +1081,30 @@ function renderUser(){
     const monthPolicyU=monthSurveysU.reduce((s,r)=>s+(parseInt(r.policy)||0),0);
     const monthRsaU=monthSurveysU.reduce((s,r)=>s+(parseInt(r.rsa)||0),0);
     const monthGpaU=monthSurveysU.reduce((s,r)=>s+(parseInt(r.gpa)||0),0);
-    const absentDays=(DB.absences||[]).filter(a=>{
-      if(a.username!==SESSION.username||!a.date||!a.date.startsWith(curMKS))return false;
-      const d=new Date(a.date+"T12:00:00");
-      return d.getDay()!==0;
-    }).length;
+    // FIXED: Compute absent days directly from attendance data — do NOT rely on DB.absences
+    // which only gets populated if markAbsences() ran (requires admin after 10:30 AM).
+    // Instead, enumerate every working day in current month up to yesterday and check for check-in.
+    const absentDays=(()=>{
+      const today=nowS;
+      const year=parseInt(curMKS.split("-")[0]);
+      const month=parseInt(curMKS.split("-")[1])-1;
+      const daysInMonth=new Date(year,month+1,0).getDate();
+      const lastDay=Math.min(daysInMonth, today.getDate());
+      // Build set of dates user checked in or submitted a survey this month
+      const presentDates=new Set([
+        ...allRecs.filter(r=>r.type==="in").map(r=>localDateStr(new Date(r.timestamp))),
+        ...(DB.surveys||[]).filter(s=>s.username===SESSION.username).map(s=>s.date)
+      ]);
+      let count=0;
+      for(let d=1;d<=lastDay;d++){
+        const dateStr=curMKS+"-"+String(d).padStart(2,"0");
+        const dow=new Date(year,month,d).getDay();
+        if(dow===0) continue; // skip Sunday only (Saturday is a working day)
+        if(dateStr===localDateStr(today)) continue; // don't count today (user may check in later)
+        if(!presentDates.has(dateStr)) count++;
+      }
+      return count;
+    })();
     const monthLblU=nowS.toLocaleString("default",{month:"long",year:"numeric"});
 
     const grid=el("div","grid2",null,{marginBottom:".8rem"});
@@ -1452,10 +1471,38 @@ function renderUser(){
       calRecs.forEach(r=>{
         const k=localDateStr(new Date(r.timestamp));
         if(!calDayMap[k])calDayMap[k]={in:null,out:null};
-        if(r.type==="in"&&(!calDayMap[k].in||r.timestamp<calDayMap[k].in))calDayMap[k].in=r.timestamp;
-        if(r.type==="out"&&(!calDayMap[k].out||r.timestamp>calDayMap[k].out))calDayMap[k].out=r.timestamp;
+        if(r.type==="in"&&(!calDayMap[k].in||r.timestamp<calDayMap[k].in)){
+          calDayMap[k].in=r.timestamp;
+          // Also capture outTimestamp embedded in check-in row (some sheet layouts store both in one row)
+          if(r.outTimestamp&&(!calDayMap[k].out||r.outTimestamp>calDayMap[k].out)) calDayMap[k].out=r.outTimestamp;
+        }
+        if(r.type==="out"&&(!calDayMap[k].out||r.timestamp>calDayMap[k].out)) calDayMap[k].out=r.timestamp;
       });
-      const calAbsent=new Set((DB.absences||[]).filter(a=>a.username===SESSION.username&&a.date&&a.date.startsWith(window._calMonth)).map(a=>a.date));
+      // FIX: Mark a day as "full day" (green) if the user submitted a survey for that date
+      // (survey is only submitted at checkout, so its presence = full checkout happened)
+      const calSurveyDates=new Set((DB.surveys||[]).filter(s=>s.username===SESSION.username&&(s.date||"").startsWith(window._calMonth)).map(s=>s.date));
+      calSurveyDates.forEach(date=>{
+        if(!calDayMap[date])calDayMap[date]={in:null,out:null};
+        if(!calDayMap[date].out) calDayMap[date].out=1; // sentinel: survey = checked out
+      });
+      // FIX: Compute absent dates on-the-fly instead of relying on DB.absences
+      // DB.absences only gets written if admin was logged in after 10:30 AM — unreliable.
+      const calAbsent=(()=>{
+        const s=new Set();
+        const todayStr=localDateStr(new Date());
+        const calParts=(window._calMonth||"").split("-");
+        if(calParts.length<2)return s;
+        const cy=parseInt(calParts[0]),cm=parseInt(calParts[1])-1;
+        const dim=new Date(cy,cm+1,0).getDate();
+        for(let d=1;d<=dim;d++){
+          const ds=window._calMonth+"-"+String(d).padStart(2,"0");
+          if(ds>=todayStr)continue; // skip today and future
+          const dow=new Date(cy,cm,d).getDay();
+          if(dow===0)continue; // skip Sunday
+          if(!calDayMap[ds])s.add(ds);
+        }
+        return s;
+      })();
 
       const parts = (window._calMonth || "").split("-");
       if (parts.length < 2) return;
@@ -1493,7 +1540,7 @@ function renderUser(){
         else if(isAbsent){bg="#ff5f6d22";color="var(--danger)";border="1px solid #ff5f6d44";}
 
         const cell=h("div",{style:{
-          textAlign:"center",borderRadius:"8px",padding:".4rem .1rem",cursor:dayData?"pointer":"default",
+          textAlign:"center",borderRadius:"8px",padding:".4rem .1rem",cursor:(dayData||isAbsent)?"pointer":"default",
           background:bg,border,color,fontSize:".85rem",fontWeight:isToday?"800":"600",
           transition:"all .15s",minHeight:"2.2rem",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center"
         }},String(day));
@@ -1635,7 +1682,28 @@ function openUserDataModal(u, allAttend, allSurveys){
   const monthPolicy=monthSurveys.reduce((s,r)=>s+(parseInt(r.policy)||0),0);
   const monthRsa=monthSurveys.reduce((s,r)=>s+(parseInt(r.rsa)||0),0);
   const monthGpa=monthSurveys.reduce((s,r)=>s+(parseInt(r.gpa)||0),0);
-  const monthAbsences=userAbsences.filter(a=>(a.date||"").startsWith(curMon)).length;
+  // FIXED: Compute absent days from attendance data — do NOT rely on DB.absences
+  // (only written if admin was logged in after 10:30 AM — unreliable)
+  const monthAbsences=(()=>{
+    const today=now;
+    const year=parseInt(curMon.split("-")[0]);
+    const month=parseInt(curMon.split("-")[1])-1;
+    const daysInMonth=new Date(year,month+1,0).getDate();
+    const lastDay=Math.min(daysInMonth,today.getDate());
+    const presentDates=new Set([
+      ...userAttend.filter(r=>r.type==="in").map(r=>localDateStr(new Date(r.timestamp))),
+      ...userSurveys.map(s=>s.date)
+    ]);
+    let count=0;
+    for(let d=1;d<=lastDay;d++){
+      const dateStr=curMon+"-"+String(d).padStart(2,"0");
+      const dow=new Date(year,month,d).getDay();
+      if(dow===0)continue; // skip Sunday
+      if(dateStr===localDateStr(today))continue; // skip today
+      if(!presentDates.has(dateStr))count++;
+    }
+    return count;
+  })();
 
   const statsGrid=h("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:".6rem",marginBottom:"1.2rem"}});
   function statBox(num,lbl,col){
@@ -1652,7 +1720,7 @@ function openUserDataModal(u, allAttend, allSurveys){
 
   let modalTab="attendance";
   const tabRow=h("div",{style:{display:"flex",gap:".4rem",marginBottom:"1rem",flexWrap:"wrap"}});
-  const tabDefs=[["attendance","📋 Attendance ("+userAttend.filter(r=>r.type==="in").length+" days)"],["surveys","📜 Surveys ("+userSurveys.length+")"],["absences","❌ Absences ("+userAbsences.length+")"]];
+  const tabDefs=[["attendance","📋 Attendance ("+userAttend.filter(r=>r.type==="in").length+" days)"],["surveys","📜 Surveys ("+userSurveys.length+")"],["absences","❌ Absences ("+monthAbsences+")"]];
   const tabBody=h("div",{});
   mo.appendChild(tabRow);mo.appendChild(tabBody);
 
@@ -1722,19 +1790,38 @@ function openUserDataModal(u, allAttend, allSurveys){
       wrap.appendChild(tbl);tabBody.appendChild(wrap);
 
     } else if(modalTab==="absences"){
-      if(!userAbsences.length){tabBody.appendChild(el("div","empty","No absences recorded."));return;}
+      // FIXED: Compute absent date list from attendance — same logic as monthAbsences count
+      const computedAbsentDates=(()=>{
+        const today=new Date();
+        const year=parseInt(curMon.split("-")[0]);
+        const month=parseInt(curMon.split("-")[1])-1;
+        const daysInMonth=new Date(year,month+1,0).getDate();
+        const lastDay=Math.min(daysInMonth,today.getDate());
+        const presentDates=new Set([
+          ...userAttend.filter(r=>r.type==="in").map(r=>localDateStr(new Date(r.timestamp))),
+          ...userSurveys.map(s=>s.date)
+        ]);
+        const dates=[];
+        for(let d=1;d<=lastDay;d++){
+          const dateStr=curMon+"-"+String(d).padStart(2,"0");
+          const dow=new Date(year,month,d).getDay();
+          if(dow===0)continue;
+          if(dateStr===localDateStr(today))continue;
+          if(!presentDates.has(dateStr))dates.push(dateStr);
+        }
+        return dates.reverse(); // most recent first
+      })();
+      if(!computedAbsentDates.length){tabBody.appendChild(el("div","empty","No absences recorded."));return;}
       const tbl=h("table",{style:{width:"100%",borderCollapse:"collapse",fontSize:".82rem"}});
       const thead=h("thead",{});
       thead.innerHTML="<tr><th class='attend-th'>Date</th><th class='attend-th'>Type</th></tr>";
       tbl.appendChild(thead);
       const tbody=h("tbody",{});
-      userAbsences.forEach(a=>{
+      computedAbsentDates.forEach(dateStr=>{
         const tr=h("tr",{});
-        const typeLabel=a.auto?"Auto-marked":"Manual";
-        const typeColor=a.auto?"var(--warn)":"var(--danger)";
         tr.innerHTML=`
-          <td class='attend-td'>${a.date}</td>
-          <td class='attend-td'><span style='color:${typeColor};font-weight:700;font-size:.78rem'>${typeLabel}</span></td>`;
+          <td class='attend-td'>${dateStr}</td>
+          <td class='attend-td'><span style='color:var(--danger);font-weight:700;font-size:.78rem'>🔴 Absent</span></td>`;
         tbody.appendChild(tr);
       });
       tbl.appendChild(tbody);
