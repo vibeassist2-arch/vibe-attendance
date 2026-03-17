@@ -247,10 +247,13 @@ select option{background:var(--surface);color:var(--text)}
 <script>
 // ── VIBE v20260313.online — FULLY ONLINE. No localStorage for data. Google Sheets is sole source of truth for ALL roles. ────
 const KEY = "vibeAttendanceData";
-const DEFAULT_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbztylXBLNoCHL6YSL5DvkrQTrSEIpgZt1soSxYZSB9ir7GLyJtj1_psM-g1yr3mmVev/exec";
+const DEFAULT_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyaPo1tdtbl9S_kEoddoMNBlhJxwBilFuPU7A_PbCyVAG0PdB2oiNORmhG98TQC3vaw/exec";
 
-// Securely get the script URL — never accept arbitrary URLs from localStorage
+// ── API KEY: paste the value from setupApiKey() here after first deployment ──
+const DEFAULT_API_KEY = "5c6d46fe-1ffc-4615-9e8b-96051031a4a3";
+
 function getScriptUrl() { return DEFAULT_SCRIPT_URL; }
+function getApiKey()    { return DEFAULT_API_KEY; }
 let SCRIPT_URL = DEFAULT_SCRIPT_URL;
 
 // HTML escape function to prevent XSS attacks
@@ -269,7 +272,9 @@ async function gsFetch(params) {
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 8000);
-    const res = await fetch(url + "?" + new URLSearchParams(params), { method: "GET", redirect: "follow", signal: controller.signal });
+    // Include API key and current user in every GET request
+    const fullParams = { ...params, key: getApiKey(), user: SESSION ? SESSION.username : "anonymous" };
+    const res = await fetch(url + "?" + new URLSearchParams(fullParams), { method: "GET", redirect: "follow", signal: controller.signal });
     clearTimeout(timer);
     const text = await res.text();
     try {
@@ -357,7 +362,9 @@ async function gsPost(body) {
   try {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), 10000);
-    const res = await fetch(url, { method:"POST", redirect:"follow", headers:{"Content-Type":"text/plain"}, body:JSON.stringify(body), signal:ctrl.signal });
+    // Inject API key and username into every POST body
+    const secureBody = { ...body, apiKey: getApiKey(), username: body.username || (body.data && body.data.username) || (SESSION ? SESSION.username : "") };
+    const res = await fetch(url, { method:"POST", redirect:"follow", headers:{"Content-Type":"text/plain"}, body:JSON.stringify(secureBody), signal:ctrl.signal });
     clearTimeout(t);
     const text = await res.text();
     try { return JSON.parse(text); } catch(_) { return { ok: true }; }
@@ -779,11 +786,40 @@ function restoreSession(){
 }
 let SESSION = restoreSession();
 
+// ── SERVER TIME (Fix: client clock manipulation) ──────────────────────────────
+// Fetches verified UTC time from a trusted public API.
+// Falls back to Date.now() only if the network call fails, and sets a drift flag.
+async function getServerTime(){
+  const t0=Date.now();
+  try{
+    const ctrl=new AbortController();
+    const tmr=setTimeout(()=>ctrl.abort(),5000);
+    // Use worldtimeapi — returns {"unixtime": ...} in UTC milliseconds
+    const res=await fetch("https://worldtimeapi.org/api/ip",{method:"GET",signal:ctrl.signal});
+    clearTimeout(tmr);
+    const json=await res.json();
+    // unixtime is in seconds — convert to ms; add half RTT to correct for network latency
+    const rtt=Date.now()-t0;
+    const serverMs=(json.unixtime*1000)+(rtt/2);
+    const drift=Math.round(serverMs-Date.now());
+    return{serverMs:Math.round(serverMs),drift,trusted:true};
+  }catch(e){
+    // Network failed — fall back to local clock, mark as untrusted
+    return{serverMs:Date.now(),drift:0,trusted:false};
+  }
+}
+
+// ── LOCATION (Fix: capture GPS hardware timestamp for cross-check) ────────────
 function getLocation(){
   return new Promise((res)=>{
     if(!navigator.geolocation){res({error:"unsupported"});return;}
     navigator.geolocation.getCurrentPosition(
-      p=>{const lat=p.coords.latitude,lng=p.coords.longitude;if(lat<-90||lat>90||lng<-180||lng>180){res({error:"unavailable"});return;}res({lat,lng});},
+      p=>{
+        const lat=p.coords.latitude,lng=p.coords.longitude;
+        if(lat<-90||lat>90||lng<-180||lng>180){res({error:"unavailable"});return;}
+        // p.timestamp is the GPS hardware timestamp (ms since epoch) — capture it for drift check
+        res({lat,lng,gpsTs:p.timestamp||null});
+      },
       (err)=>{ if(err.code===1)res({error:"denied"}); else if(err.code===3)res({error:"timeout"}); else res({error:"unavailable"}); },
       {timeout:12000,enableHighAccuracy:true,maximumAge:0}
     );
@@ -1131,7 +1167,7 @@ function renderUser(){
       const meUserForBanner=DB.users.find(u=>u.username===SESSION.username);
       const checkedIn=isIn();
       const mainBtn=h("button",{className:"btn "+(checkedIn?"btn-danger":"btn-success")},checkedIn?"⏹ Check Out":"▶ Check In");
-      mainBtn.addEventListener("click",()=>{
+      mainBtn.addEventListener("click",async()=>{
         if(checkedIn){
           if(_checkoutInProgress||!isIn()||!canCheckOut()){refresh();return;}
           if(!navigator.onLine){
@@ -1144,6 +1180,9 @@ function renderUser(){
           _checkoutInProgress=true;
           mainBtn.disabled=true;mainBtn.textContent="Opening survey…";
           showSurvey(answers=>{
+            mainBtn.textContent="Verifying time…";
+            // FIX 1 & 2: Fetch server time before checkout
+            getServerTime().then(_stOut=>{
             mainBtn.textContent="Checking out…";
             getLocation().then(async loc=>{
               if(loc && loc.error){
@@ -1159,27 +1198,38 @@ function renderUser(){
                 return;
               }
               const todayCheckins2=DB.attendance.filter(r=>r.username===SESSION.username&&r.type==="in"&&new Date(r.timestamp).toDateString()===new Date().toDateString());
-              const checkInTs2=todayCheckins2.length?Math.min(...todayCheckins2.map(r=>r.timestamp)):Date.now();
+              const checkInTs2=todayCheckins2.length?Math.min(...todayCheckins2.map(r=>r.timestamp)):_stOut.serverMs;
               const surveyDate2=localDateStr(new Date(checkInTs2));
-              const _tsNow=Date.now();
+              // FIX 1: Use server-verified timestamp
+              const _tsNow=_stOut.serverMs;
+              const _clientTsOut=Date.now();
+              const _clockDriftMsOut=_clientTsOut-_tsNow;
+              const _gpsDriftMsOut=loc.gpsTs?Math.round(loc.gpsTs-_tsNow):null;
               const _surId=String(_tsNow)+"_sur_"+SESSION.username;
               const _outId=String(_tsNow)+"_out_"+SESSION.username;
               const sur={id:_surId,username:SESSION.username,timestamp:_tsNow,date:surveyDate2,...answers};
               const geo2=checkUserGeofence(loc.lat,loc.lng,SESSION.username);
-              const rec_out={id:_outId,username:SESSION.username,type:"out",timestamp:_tsNow+1,location:loc,geoOk:geo2.ok,geoName:geo2.name,geoDist:geo2.dist??null,noLocationSet:false};
+              const rec_out={
+                id:_outId,username:SESSION.username,type:"out",timestamp:_tsNow+1,location:loc,
+                geoOk:geo2.ok,geoName:geo2.name,geoDist:geo2.dist??null,noLocationSet:false,
+                clientTs:_clientTsOut,
+                serverTsTrusted:_stOut.trusted,
+                clockDriftMs:_clockDriftMsOut,
+                gpsDriftMs:_gpsDriftMsOut
+              };
               mainBtn.textContent="Syncing…";
               const _gsUrl2=getScriptUrl();
               let _surOk=false,_outOk=false;
               try{
                 const _c1=new AbortController();const _t1=setTimeout(()=>_c1.abort(),10000);
-                const _r1=await fetch(_gsUrl2,{method:"POST",redirect:"follow",headers:{"Content-Type":"text/plain"},body:JSON.stringify({action:"addSurvey",data:sur}),signal:_c1.signal});
+                const _r1=await fetch(_gsUrl2,{method:"POST",redirect:"follow",headers:{"Content-Type":"text/plain"},body:JSON.stringify({action:"addSurvey",data:sur,apiKey:getApiKey(),username:SESSION.username}),signal:_c1.signal});
                 clearTimeout(_t1);
                 const _tx1=await _r1.text();
                 try{const _j1=JSON.parse(_tx1);_surOk=!!_j1.ok;}catch(_){_surOk=true;}
               }catch(e){_surOk=false;}
               try{
                 const _c2=new AbortController();const _t2=setTimeout(()=>_c2.abort(),10000);
-                const _r2=await fetch(_gsUrl2,{method:"POST",redirect:"follow",headers:{"Content-Type":"text/plain"},body:JSON.stringify({action:"addAttendance",data:{...rec_out,lat:loc.lat,lng:loc.lng,outLat:loc.lat,outLng:loc.lng}}),signal:_c2.signal});
+                const _r2=await fetch(_gsUrl2,{method:"POST",redirect:"follow",headers:{"Content-Type":"text/plain"},body:JSON.stringify({action:"addAttendance",data:{...rec_out,lat:loc.lat,lng:loc.lng,outLat:loc.lat,outLng:loc.lng},apiKey:getApiKey(),username:SESSION.username}),signal:_c2.signal});
                 clearTimeout(_t2);
                 const _tx2=await _r2.text();
                 try{const _j2=JSON.parse(_tx2);_outOk=!!_j2.ok;}catch(_){_outOk=true;}
@@ -1203,7 +1253,8 @@ function renderUser(){
               const prevEb=document.querySelector(".loc-err-banner");if(prevEb)prevEb.remove();
               _checkoutInProgress=false;
               refresh();
-            });
+            }); // end getLocation
+            }); // end getServerTime
           }, ()=>{
             _checkoutInProgress=false;
             mainBtn.disabled=false;mainBtn.textContent="⏹ Check Out";
@@ -1218,9 +1269,12 @@ function renderUser(){
             return;
           }
           stampCheckIn();
-          mainBtn.disabled=true;mainBtn.innerHTML='<span class="spinner"></span>Getting location…';
+          mainBtn.disabled=true;mainBtn.innerHTML='<span class="spinner"></span>Verifying time…';
           const meUserRec=DB.users.find(u=>u.username===SESSION.username);
           const userWorkLoc=meUserRec?.location||"";
+          // FIX 1 & 2: Fetch server time BEFORE getting location so timestamp is trusted
+          const _serverTimeResult=await getServerTime();
+          mainBtn.innerHTML='<span class="spinner"></span>Getting location…';
           getLocation().then(async loc=>{
             if(loc && loc.error){
               _lastCheckIn=0;
@@ -1234,16 +1288,31 @@ function renderUser(){
               return;
             }
             const geo=checkUserGeofence(loc.lat,loc.lng,SESSION.username);
-            const _tsIn=Date.now();
+            // FIX 1: Use server-verified timestamp instead of local Date.now()
+            const _tsIn=_serverTimeResult.serverMs;
             const _inId=String(_tsIn)+"_"+SESSION.username;
-            const rec_in={id:_inId,username:SESSION.username,type:"in",timestamp:_tsIn,location:{...loc,workLocation:userWorkLoc},geoOk:geo.ok,geoName:geo.name,geoDist:geo.dist??null,noLocationSet:false};
+            // FIX 2: Calculate clock drift between client and server
+            const _clientTs=Date.now();
+            const _clockDriftMs=_clientTs-_tsIn; // positive = client clock is ahead
+            // FIX 3: Calculate GPS hardware timestamp drift
+            const _gpsDriftMs=loc.gpsTs?Math.round(loc.gpsTs-_tsIn):null;
+            const rec_in={
+              id:_inId,username:SESSION.username,type:"in",timestamp:_tsIn,
+              location:{...loc,workLocation:userWorkLoc},
+              geoOk:geo.ok,geoName:geo.name,geoDist:geo.dist??null,noLocationSet:false,
+              // Security audit fields
+              clientTs:_clientTs,                          // what the user's clock said
+              serverTsTrusted:_serverTimeResult.trusted,  // false = server unreachable, fell back to client
+              clockDriftMs:_clockDriftMs,                 // how far client clock is off (ms)
+              gpsDriftMs:_gpsDriftMs                      // GPS hardware ts vs server ts (ms)
+            };
             mainBtn.innerHTML='<span class="spinner"></span>Syncing…';
             const _gsUrl=getScriptUrl();
             let _postOk=false;
             try{
               const _ctrl=new AbortController();
               const _tmr=setTimeout(()=>_ctrl.abort(),10000);
-              const _res=await fetch(_gsUrl,{method:"POST",redirect:"follow",headers:{"Content-Type":"text/plain"},body:JSON.stringify({action:"addAttendance",data:{...rec_in,lat:loc.lat,lng:loc.lng,workLocation:userWorkLoc}}),signal:_ctrl.signal});
+              const _res=await fetch(_gsUrl,{method:"POST",redirect:"follow",headers:{"Content-Type":"text/plain"},body:JSON.stringify({action:"addAttendance",data:{...rec_in,lat:loc.lat,lng:loc.lng,workLocation:userWorkLoc},apiKey:getApiKey(),username:SESSION.username}),signal:_ctrl.signal});
               clearTimeout(_tmr);
               const _txt=await _res.text();
               try{const _j=JSON.parse(_txt);_postOk=!!_j.ok;}catch(_){_postOk=true;}
@@ -2474,7 +2543,7 @@ function renderAdmin(){
         const tbl=document.createElement("table");tbl.style.width="100%";tbl.style.borderCollapse="collapse";tbl.style.fontSize=".85rem";
         const thead=document.createElement("thead");
         const hrow=document.createElement("tr");
-        ["Date","Name / ID","Check In","Check Out","⏰ Arrival","🚪 Departure","📍 In Location","📍 Out Location"].forEach(h2=>{const th=h("th",{className:"attend-th"},h2);hrow.appendChild(th)});
+        ["Date","Name / ID","Check In","Check Out","⏰ Arrival","🚪 Departure","📍 In Location","📍 Out Location","🔒 Trust"].forEach(h2=>{const th=h("th",{className:"attend-th"},h2);hrow.appendChild(th)});
         thead.appendChild(hrow);tbl.appendChild(thead);
         const tbody=document.createElement("tbody");
 
@@ -2512,6 +2581,35 @@ function renderAdmin(){
               return `${officeBadge}<a href="${mapsUrl}" target="_blank" style="font-size:.75rem;font-family:var(--mono);color:${accentColor};text-decoration:none;display:flex;align-items:center;gap:3px">📍 ${coordStr}</a>`;
             }
 
+            // FIX: Build trust/security cell based on audit fields in the record
+            function trustCell(rec){
+              if(!rec) return "<td class='attend-td'><span style='color:var(--muted);font-size:.72rem'>—</span></td>";
+              const drift=rec.clockDriftMs;
+              const trusted=rec.serverTsTrusted;
+              const gpsDrift=rec.gpsDriftMs;
+              // No audit fields = old record before fix
+              if(drift===undefined&&trusted===undefined){
+                return "<td class='attend-td'><span style='font-size:.7rem;color:var(--muted);padding:.15rem .4rem;border-radius:6px;background:#ffffff0a'>Legacy</span></td>";
+              }
+              const issues=[];
+              if(trusted===false) issues.push("⚠️ Unverified time");
+              // Clock drift > 5 min is suspicious
+              if(drift!==undefined&&Math.abs(drift)>5*60*1000){
+                const dMins=Math.round(Math.abs(drift)/60000);
+                const dir=drift>0?"ahead":"behind";
+                issues.push(`🕐 Clock ${dMins}m ${dir}`);
+              }
+              // GPS timestamp differs from server time by >10 min
+              if(gpsDrift!==null&&gpsDrift!==undefined&&Math.abs(gpsDrift)>10*60*1000){
+                const gpsMins=Math.round(Math.abs(gpsDrift)/60000);
+                issues.push(`📍 GPS Δ${gpsMins}m`);
+              }
+              if(!issues.length){
+                return "<td class='attend-td'><span style='font-size:.72rem;font-weight:700;color:#38d9a9;padding:.15rem .5rem;border-radius:6px;background:#38d9a922;border:1px solid #38d9a944'>✓ Verified</span></td>";
+              }
+              return "<td class='attend-td'><span style='font-size:.7rem;font-weight:700;color:#ff5f6d;padding:.15rem .5rem;border-radius:6px;background:#ff5f6d22;border:1px solid #ff5f6d44;display:block;line-height:1.5'>"+issues.join("<br>")+"</span></td>";
+            }
+
             const cells=[
               `<td class="attend-td" style="font-family:var(--mono);font-size:.8rem;white-space:nowrap">${r.date.toLocaleDateString("en-GB",{weekday:"short",day:"2-digit",month:"short",year:"numeric"})}</td>`,
               `<td class="attend-td"><span style="font-weight:700;color:var(--accent)">${displayN}</span><div style="font-size:.7rem;color:var(--muted);font-family:var(--mono)">${r.username}${uInfo?.designation?" · "+uInfo.designation:""}</div></td>`,
@@ -2522,7 +2620,42 @@ function renderAdmin(){
               `<td class="attend-td">${locCell(inRec, inLoc, "var(--accent2)")}</td>`,
               `<td class="attend-td">${locCell(outRec, outLoc, "var(--danger)")}</td>`,
             ];
-            tr2.innerHTML=cells.join("");tbody.appendChild(tr2);
+            tr2.innerHTML=cells.join("");
+            // Append trust cell as a proper DOM element (avoids innerHTML injection from drift values)
+            const trustTd=document.createElement("td");
+            trustTd.className="attend-td";
+            const trustContent=document.createElement("div");
+            if(!inRec){
+              trustContent.innerHTML="<span style='color:var(--muted);font-size:.72rem'>—</span>";
+            } else {
+              const drift=inRec.clockDriftMs;
+              const trusted=inRec.serverTsTrusted;
+              const gpsDrift=inRec.gpsDriftMs;
+              if(drift===undefined&&trusted===undefined){
+                trustContent.innerHTML="<span style='font-size:.7rem;color:var(--muted);padding:.15rem .4rem;border-radius:6px;background:#ffffff0a'>Legacy</span>";
+              } else {
+                const issues=[];
+                if(trusted===false) issues.push("⚠️ Unverified time");
+                if(drift!==undefined&&Math.abs(drift)>5*60*1000){
+                  const dMins=Math.round(Math.abs(drift)/60000);
+                  issues.push(`🕐 Clock ${dMins}m ${drift>0?"ahead":"behind"}`);
+                }
+                if(gpsDrift!=null&&Math.abs(gpsDrift)>10*60*1000){
+                  issues.push(`📍 GPS Δ${Math.round(Math.abs(gpsDrift)/60000)}m`);
+                }
+                if(!issues.length){
+                  trustContent.innerHTML="<span style='font-size:.72rem;font-weight:700;color:#38d9a9;padding:.15rem .5rem;border-radius:6px;background:#38d9a922;border:1px solid #38d9a944'>✓ Verified</span>";
+                } else {
+                  const span=document.createElement("span");
+                  span.style.cssText="font-size:.7rem;font-weight:700;color:#ff5f6d;padding:.2rem .5rem;border-radius:6px;background:#ff5f6d22;border:1px solid #ff5f6d44;display:block;line-height:1.6";
+                  span.textContent=issues.join(" | ");
+                  trustContent.appendChild(span);
+                }
+              }
+            }
+            trustTd.appendChild(trustContent);
+            tr2.appendChild(trustTd);
+            tbody.appendChild(tr2);
           });
           pgBar.innerHTML="";
           const total=Math.ceil(rows.length/PAGE);
