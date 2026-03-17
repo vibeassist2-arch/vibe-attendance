@@ -170,6 +170,7 @@ select option{background:var(--surface);color:var(--text)}
 @media(max-width:600px){
   .grid2,.grid3{grid-template-columns:1fr}
   .home-cards{grid-template-columns:1fr 1fr!important}
+  #userListGrid{grid-template-columns:1fr!important}
 
   /* Header fix */
   .vibe-header{padding:.6rem .9rem;gap:.5rem;flex-wrap:nowrap}
@@ -461,9 +462,8 @@ async function markAbsences() {
     const existingAbs = DB.absences.find(a => a.username === u.username && a.date === todayStr);
     if (isPresent && existingAbs) {
       DB.absences = DB.absences.filter(a => !(a.username === u.username && a.date === todayStr));
-      const url = getScriptUrl();
-      if(url) fetch(url, { method:"POST", redirect:"follow", headers:{"Content-Type":"text/plain"},
-        body: JSON.stringify({ action:"removeAbsence", data:{ username: u.username, date: todayStr } }) }).catch(()=>{});
+      // Use gsPost so apiKey is injected automatically
+      gsPost({ action:"removeAbsence", data:{ username: u.username, date: todayStr } }).catch(()=>{});
     } else if (!isPresent && !existingAbs) {
       const newAbs = { id: String(Date.now())+"_abs_"+idx, username: u.username, date: todayStr, auto: true };
       DB.absences.push(newAbs);
@@ -490,7 +490,13 @@ function startAutoSync() {
 async function syncToSheet() {
   const _syncUrl = getScriptUrl();
   if (!_syncUrl) return;
-  const payload = { action:"fullSync", data: { users: DB.users, surveys: DB.surveys, attendance: DB.attendance, absences: DB.absences, officeLocations: DB.officeLocations } };
+  // Include apiKey and username so server accepts the request
+  const payload = {
+    action:"fullSync",
+    apiKey: getApiKey(),
+    username: SESSION ? SESSION.username : "admin",
+    data: { users: DB.users, surveys: DB.surveys, attendance: DB.attendance, absences: DB.absences, officeLocations: DB.officeLocations }
+  };
   try {
     const _sc = new AbortController();
     const _st = setTimeout(() => _sc.abort(), 8000);
@@ -725,15 +731,22 @@ function haversineDistance(lat1,lng1,lat2,lng2){
 }
 function checkUserGeofence(userLat,userLng,username){
   const u=DB.users.find(x=>x.username===username);
-  if(u&&u.geoLat&&u.geoLng){
-    const lat = parseFloat(u.geoLat), lng = parseFloat(u.geoLng);
-    if (isNaN(lat) || isNaN(lng)) return {ok:false,name:"",dist:0,radius:200};
-    const d=haversineDistance(userLat,userLng,lat,lng);
-    const radius=parseInt(u.geoRadius)||200;
-    const name=u.officeName||"";
-    return{ok:d<=radius,name,dist:Math.round(d),radius};
+  if(u){
+    // Trim and check — sheet may return whitespace strings or "0"
+    const rawLat=String(u.geoLat||"").trim();
+    const rawLng=String(u.geoLng||"").trim();
+    if(rawLat && rawLng && rawLat!=="0" && rawLng!=="0"){
+      const lat=parseFloat(rawLat), lng=parseFloat(rawLng);
+      if(!isNaN(lat)&&!isNaN(lng)&&lat>=-90&&lat<=90&&lng>=-180&&lng<=180){
+        const d=haversineDistance(userLat,userLng,lat,lng);
+        const radius=parseInt(u.geoRadius)||200;
+        const name=String(u.officeName||u.location||"").trim();
+        return{ok:d<=radius,name,dist:Math.round(d),radius,noLocationSet:false};
+      }
+    }
   }
-  return{ok:true,name:"",dist:null,noLocationSet:true};
+  // No valid location set → allow freely, no block
+  return{ok:true,name:"",dist:null,radius:200,noLocationSet:true};
 }
 
 // ── WORK TIMING HELPERS ───────────────────────────────────────────────────────
@@ -1021,7 +1034,7 @@ function renderUser(){
     if(!cutoff)return recs;
     return recs.filter(r=>{
       if(r.type==="out")return true;
-      if(r.timestamp<=cutoff)return true;
+      if(r.timestamp<cutoff)return true;         // strictly before cutoff (was <=, causing bug)
       if(r.timestamp-cutoff>5*60*1000)return true;
       return false;
     });
@@ -1168,7 +1181,9 @@ function renderUser(){
       const checkedIn=isIn();
       const mainBtn=h("button",{className:"btn "+(checkedIn?"btn-danger":"btn-success")},checkedIn?"⏹ Check Out":"▶ Check In");
       mainBtn.addEventListener("click",async()=>{
-        if(checkedIn){
+        // Bug 3 fix: re-evaluate isIn() live at click time, not the stale closure
+        const currentlyIn=isIn();
+        if(currentlyIn){
           if(_checkoutInProgress||!isIn()||!canCheckOut()){refresh();return;}
           if(!navigator.onLine){
             const oldEb=content.querySelector(".loc-err-banner");if(oldEb)oldEb.remove();
@@ -1181,10 +1196,12 @@ function renderUser(){
           mainBtn.disabled=true;mainBtn.textContent="Opening survey…";
           showSurvey(answers=>{
             mainBtn.textContent="Verifying time…";
-            // FIX 1 & 2: Fetch server time before checkout
-            getServerTime().then(_stOut=>{
+            // Wrap entire async chain so _checkoutInProgress always resets on any error
+            (async()=>{
+            try{
+            const _stOut=await getServerTime();
             mainBtn.textContent="Checking out…";
-            getLocation().then(async loc=>{
+            const loc=await getLocation();
               if(loc && loc.error){
                 _checkoutInProgress=false;
                 _lastCheckOut=0;
@@ -1209,6 +1226,30 @@ function renderUser(){
               const _outId=String(_tsNow)+"_out_"+SESSION.username;
               const sur={id:_surId,username:SESSION.username,timestamp:_tsNow,date:surveyDate2,...answers};
               const geo2=checkUserGeofence(loc.lat,loc.lng,SESSION.username);
+
+              // ── GEOFENCE HARD BLOCK (checkout) ───────────────────────────────
+              if(!geo2.noLocationSet && !geo2.ok){
+                _checkoutInProgress=false;
+                _lastCheckOut=0;
+                mainBtn.disabled=true; // keep disabled — user CANNOT bypass
+                mainBtn.textContent="⏹ Check Out";
+                const oldEbGo=content.querySelector(".loc-err-banner");if(oldEbGo)oldEbGo.remove();
+                const ebGo=h("div",{className:"loc-err-banner geo-banner geo-fail",style:{marginTop:".75rem"}});
+                const officeLblO=geo2.name?`<strong>${geo2.name}</strong>`:"your office";
+                const distLblO=geo2.dist!==null?`You are <strong>${geo2.dist}m away</strong> (limit: ${geo2.radius}m).`:"";
+                ebGo.innerHTML=`<span class='geo-icon' style='font-size:1.5rem'>📍</span><div><strong>Too Far From Office</strong><br>You must be within <strong>${geo2.radius}m</strong> of ${officeLblO} to check out.<br>${distLblO}<br><span style='font-size:.8rem;opacity:.8;margin-top:.3rem;display:block'>Move closer and tap Retry.</span></div>`;
+                const retryBtnO=h("button",{style:{marginTop:".6rem",padding:".4rem 1rem",borderRadius:"8px",border:"1.5px solid #ff5f6d",background:"transparent",color:"#ff5f6d",fontFamily:"var(--font)",fontSize:".82rem",fontWeight:"700",cursor:"pointer",display:"block"}},"🔄 Retry");
+                retryBtnO.addEventListener("click",()=>{
+                  ebGo.remove();
+                  _checkoutInProgress=false;
+                  _lastCheckOut=0;
+                  mainBtn.disabled=false;
+                  mainBtn.textContent="⏹ Check Out";
+                });
+                ebGo.appendChild(retryBtnO);
+                mainBtn.insertAdjacentElement("afterend",ebGo);
+                return;
+              }
               const rec_out={
                 id:_outId,username:SESSION.username,type:"out",timestamp:_tsNow+1,location:loc,
                 geoOk:geo2.ok,geoName:geo2.name,geoDist:geo2.dist??null,noLocationSet:false,
@@ -1253,13 +1294,21 @@ function renderUser(){
               const prevEb=document.querySelector(".loc-err-banner");if(prevEb)prevEb.remove();
               _checkoutInProgress=false;
               refresh();
-            }); // end getLocation
-            }); // end getServerTime
+            } catch(_unexpectedErr){
+              // Bug 5: always reset state on any unexpected error
+              console.error("Checkout unexpected error:", _unexpectedErr);
+              _checkoutInProgress=false; _lastCheckOut=0;
+              mainBtn.disabled=false; mainBtn.textContent="⏹ Check Out";
+              showToast("Something went wrong. Please try again.", "error", 4000);
+            }
+            })(); // end async IIFE
           }, ()=>{
             _checkoutInProgress=false;
             mainBtn.disabled=false;mainBtn.textContent="⏹ Check Out";
           });
         } else {
+          // Bug 3 fix: use live currentlyIn not stale checkedIn
+          if(currentlyIn){ refresh(); return; }
           if(!canCheckIn()){ return; }
           if(!navigator.onLine){
             const oldEb=content.querySelector(".loc-err-banner");if(oldEb)oldEb.remove();
@@ -1288,6 +1337,31 @@ function renderUser(){
               return;
             }
             const geo=checkUserGeofence(loc.lat,loc.lng,SESSION.username);
+
+            // ── GEOFENCE HARD BLOCK ───────────────────────────────────────────
+            // Location set by admin AND user is outside radius → BLOCK completely.
+            // noLocationSet = true means admin never set a location → allow freely.
+            if(!geo.noLocationSet && !geo.ok){
+              _lastCheckIn=0;
+              mainBtn.disabled=true; // keep disabled — user CANNOT bypass by clicking again
+              mainBtn.textContent="▶ Check In";
+              const oldEbG=content.querySelector(".loc-err-banner");if(oldEbG)oldEbG.remove();
+              const ebG=h("div",{className:"loc-err-banner geo-banner geo-fail",style:{marginTop:".75rem"}});
+              const officeLbl=geo.name?`<strong>${geo.name}</strong>`:"your office";
+              const distLbl=geo.dist!==null?`You are <strong>${geo.dist}m away</strong> (limit: ${geo.radius}m).`:"";
+              ebG.innerHTML=`<span class='geo-icon' style='font-size:1.5rem'>📍</span><div><strong>Too Far From Office</strong><br>You must be within <strong>${geo.radius}m</strong> of ${officeLbl} to check in.<br>${distLbl}<br><span style='font-size:.8rem;opacity:.8;margin-top:.3rem;display:block'>Move closer and tap Retry.</span></div>`;
+              // Add retry button inside the banner
+              const retryBtn=h("button",{style:{marginTop:".6rem",padding:".4rem 1rem",borderRadius:"8px",border:"1.5px solid #ff5f6d",background:"transparent",color:"#ff5f6d",fontFamily:"var(--font)",fontSize:".82rem",fontWeight:"700",cursor:"pointer",display:"block"}},"🔄 Retry");
+              retryBtn.addEventListener("click",()=>{
+                ebG.remove();
+                mainBtn.disabled=false;
+                mainBtn.textContent="▶ Check In";
+                _lastCheckIn=0;
+              });
+              ebG.appendChild(retryBtn);
+              mainBtn.insertAdjacentElement("afterend",ebG);
+              return;
+            }
             // FIX 1: Use server-verified timestamp instead of local Date.now()
             const _tsIn=_serverTimeResult.serverMs;
             const _inId=String(_tsIn)+"_"+SESSION.username;
@@ -2305,7 +2379,7 @@ function renderAdmin(){
       userListHeader.appendChild(searchWrap);
       content.appendChild(userListHeader);
 
-      const userListWrap=h("div",{});
+      const userListWrap=h("div",{id:"userListGrid",style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:".75rem"}});
       content.appendChild(userListWrap);
 
       function renderUserList(query=""){
@@ -2320,24 +2394,52 @@ function renderAdmin(){
         });
         userTitle.textContent=`All Users (${filtered.length}${q?" found":""} of ${regularUsers.length})`;
         if(!filtered.length){
-          userListWrap.appendChild(el("div","empty",q?`No users match "${query}".`:"No users yet."));
+          const emptyDiv=el("div","empty",q?`No users match "${query}".`:"No users yet.");
+          emptyDiv.style.gridColumn="1/-1";
+          userListWrap.appendChild(emptyDiv);
           return;
         }
         filtered.forEach(u=>{
-          const row=el("div","user-row");
-          const info=h("div",{style:{flex:1,minWidth:0}});
-          const nameEl=el("div","uname",(u.fullName&&u.fullName.trim()?u.fullName.trim():(u.username.charAt(0).toUpperCase()+u.username.slice(1).toLowerCase())));
-          const metaRow=h("div",{style:{display:"flex",alignItems:"center",gap:".5rem",flexWrap:"wrap",marginTop:".2rem"}});
-          metaRow.appendChild(h("span",{style:{fontSize:".72rem",color:"var(--accent)",fontFamily:"var(--mono)",background:"#4f8ef722",border:"1px solid #4f8ef744",borderRadius:"6px",padding:".1rem .45rem"}},"ID: "+(u.userId||u.username)));
-          if(u.designation)metaRow.appendChild(h("span",{style:{fontSize:".72rem",color:"var(--muted)"}},"🏷 "+u.designation));
-          if(u.location)metaRow.appendChild(h("span",{style:{fontSize:".72rem",color:"var(--muted)"}},"📍 "+u.location));
-          let pwVisible = false;
-          const pwPill=h("span",{style:{fontSize:".7rem",background:"#ffd16622",color:"var(--warn)",border:"1px solid #ffd16644",borderRadius:"6px",padding:".1rem .45rem",fontFamily:"var(--mono)",cursor:"pointer",userSelect:"none",display:"inline-flex",alignItems:"center",gap:".3rem"}});
+          // ── USER CARD (2-column grid item) ──────────────────────────────────
+          const card=h("div",{style:{
+            background:"var(--card)",border:"1px solid var(--border)",borderRadius:"14px",
+            padding:"1rem 1.1rem",display:"flex",flexDirection:"column",gap:".6rem",
+            transition:"box-shadow .15s"
+          }});
+
+          // Top: name + geo badge
+          const topRow=h("div",{style:{display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:".5rem"}});
+          const nameEl=h("div",{style:{fontWeight:"700",fontSize:".95rem",color:"var(--text)",lineHeight:"1.3"}},
+            u.fullName&&u.fullName.trim()?u.fullName.trim():(u.username.charAt(0).toUpperCase()+u.username.slice(1).toLowerCase()));
+
+          // Geo badge — green if set, amber if not
+          const geoBadge=h("span",{style:{
+            fontSize:".65rem",fontWeight:"700",padding:".15rem .5rem",borderRadius:"20px",
+            whiteSpace:"nowrap",flexShrink:"0",
+            ...(u.geoLat&&u.geoLng
+              ?{background:"#38d9a922",color:"var(--accent2)",border:"1px solid #38d9a944"}
+              :{background:"#ffd16622",color:"var(--warn)",border:"1px solid #ffd16644"})
+          }},u.geoLat&&u.geoLng?"🎯 "+( u.geoRadius||200)+"m":"⚠️ No geo");
+          topRow.appendChild(nameEl);topRow.appendChild(geoBadge);
+          card.appendChild(topRow);
+
+          // Meta row: ID, designation, location
+          const metaWrap=h("div",{style:{display:"flex",flexDirection:"column",gap:".25rem"}});
+          metaWrap.appendChild(h("span",{style:{fontSize:".72rem",color:"var(--accent)",fontFamily:"var(--mono)",background:"#4f8ef722",border:"1px solid #4f8ef744",borderRadius:"6px",padding:".1rem .45rem",display:"inline-block",width:"fit-content"}},"ID: "+(u.userId||u.username)));
+          if(u.designation)metaWrap.appendChild(h("span",{style:{fontSize:".72rem",color:"var(--muted)"}},"🏷 "+u.designation));
+          if(u.location)metaWrap.appendChild(h("span",{style:{fontSize:".72rem",color:"var(--muted)"}},"📍 "+u.location));
+
+          // Geo coords if set
+          if(u.geoLat&&u.geoLng){
+            metaWrap.appendChild(h("span",{style:{fontSize:".7rem",color:"var(--accent2)",fontFamily:"var(--mono)"}},"🗺 "+parseFloat(u.geoLat).toFixed(4)+", "+parseFloat(u.geoLng).toFixed(4)));
+          }
+
+          // Password pill
+          let pwVisible=false;
+          const pwPill=h("span",{style:{fontSize:".7rem",background:"#ffd16622",color:"var(--warn)",border:"1px solid #ffd16644",borderRadius:"6px",padding:".1rem .45rem",fontFamily:"var(--mono)",cursor:"pointer",userSelect:"none",display:"inline-flex",alignItems:"center",gap:".3rem",width:"fit-content"}});
           const pwText=h("span",{},"••••••");
           const pwEye=h("span",{style:{fontSize:".8rem"}},"👁");
-          pwPill.appendChild(h("span",{},"🔑 "));
-          pwPill.appendChild(pwText);
-          pwPill.appendChild(pwEye);
+          pwPill.appendChild(h("span",{},"🔑 "));pwPill.appendChild(pwText);pwPill.appendChild(pwEye);
           pwPill.title="Tap to show/hide password";
           pwPill.addEventListener("click",()=>{
             pwVisible=!pwVisible;
@@ -2347,15 +2449,16 @@ function renderAdmin(){
             pwPill.style.color=pwVisible?"var(--danger)":"var(--warn)";
             pwPill.style.border=pwVisible?"1px solid #ff5f6d44":"1px solid #ffd16644";
           });
-          metaRow.appendChild(pwPill);
-          info.appendChild(nameEl);info.appendChild(metaRow);
-          row.appendChild(info);
-          const btns=h("div",{style:{display:"flex",gap:".5rem",flexShrink:0,flexWrap:"wrap"}});
-          const vBtn=h("button",{className:"btn btn-primary btn-sm"},"👁 View");
+          metaWrap.appendChild(pwPill);
+          card.appendChild(metaWrap);
+
+          // Action buttons
+          const btns=h("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:".35rem",marginTop:"auto"}});
+          const vBtn=h("button",{className:"btn btn-primary btn-sm",style:{fontSize:".75rem",padding:".35rem .4rem"}},"👁 View");
           vBtn.addEventListener("click",()=>openUserDataModal(u, allAttend, allSurveys));
-          const eBtn=h("button",{className:"btn btn-ghost btn-sm"},"✏️ Edit");
+          const eBtn=h("button",{className:"btn btn-ghost btn-sm",style:{fontSize:".75rem",padding:".35rem .4rem"}},"✏️ Edit");
           eBtn.addEventListener("click",()=>openEditModal(u));
-          const dBtn=h("button",{className:"btn btn-danger btn-sm"},"Delete");
+          const dBtn=h("button",{className:"btn btn-danger btn-sm",style:{fontSize:".75rem",padding:".35rem .4rem"}},"🗑 Del");
           dBtn.addEventListener("click",()=>{
             if(!confirm(`Delete "${u.fullName||u.username}"?`))return;
             DB.users=DB.users.filter(x=>x.username!==u.username);
@@ -2364,7 +2467,9 @@ function renderAdmin(){
             DB.absences=(DB.absences||[]).filter(r=>r.username!==u.username);
             save(DB);syncToSheet();refresh();
           });
-          btns.appendChild(vBtn);btns.appendChild(eBtn);btns.appendChild(dBtn);row.appendChild(btns);userListWrap.appendChild(row);
+          btns.appendChild(vBtn);btns.appendChild(eBtn);btns.appendChild(dBtn);
+          card.appendChild(btns);
+          userListWrap.appendChild(card);
         });
       }
 
@@ -2833,49 +2938,301 @@ function renderAdmin(){
   }
   function openEditModal(u){
     const ov=el("div","modal-overlay");
-    const mo=el("div","modal",null,{maxWidth:"440px"});
+    const mo=el("div","modal",null,{maxWidth:"680px",width:"96vw"});
     const xb=h("button",{className:"x-btn"},"✕");xb.addEventListener("click",()=>ov.remove());
     mo.appendChild(xb);
-    mo.appendChild(h("div",{style:{fontSize:"1.5rem",marginBottom:".4rem"}},"✏️"));
-    mo.appendChild(h("h2",{},"Edit User"));
-    mo.appendChild(el("div","sub","Editing: "+(u.fullName&&u.fullName.trim()?u.fullName.trim():(u.username.charAt(0).toUpperCase()+u.username.slice(1).toLowerCase()))));
-
-    function mf(stepNum,icon,labelTxt,inputAttrs){
-      const fg=el("div","field-group");
-      const lbl=h("label",{});
-      if(stepNum){const sb=el("span","field-step",String(stepNum));lbl.appendChild(sb);lbl.appendChild(document.createTextNode(" "));}
-      lbl.appendChild(document.createTextNode(icon+" "+labelTxt));
-      const inp=h("input",inputAttrs);
-      fg.appendChild(lbl);fg.appendChild(inp);
-      return {fg,inp};
-    }
-    const {fg:fg1,inp:iName}=mf(1,"👤","Full Name",{type:"text",value:u.fullName||""});
-    const {fg:fg2,inp:iUID}=mf(2,"🪪","User ID (Login Username)",{type:"text",value:u.userId||u.username});
-    const {fg:fg3,inp:iPW}=mf(3,"🔑","Password",{type:"password",value:u.password});
-    const {fg:fg4,inp:iDS}=mf("","🏷","Designation",{type:"text",value:u.designation||""});
-    const {fg:fg5,inp:iLoc}=mf("","📍","Working Location Name",{type:"text",value:u.location||""});
+    mo.appendChild(h("h2",{},"✏️ Edit User"));
+    mo.appendChild(el("div","sub","Editing: "+(u.fullName&&u.fullName.trim()?u.fullName.trim():u.username)));
 
     const modalErrBox=el("div","alert alert-error hidden","");
     function showModalErr(msg){modalErrBox.textContent=msg;modalErrBox.classList.remove("hidden");setTimeout(()=>modalErrBox.classList.add("hidden"),4000);}
 
-    const sb=h("button",{className:"btn btn-primary",style:{marginTop:".5rem"}},"💾 Save Changes");
+    // ── 2-COLUMN GRID ────────────────────────────────────────────────────────
+    const grid=h("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"1.2rem",marginBottom:"1rem"}});
+
+    // ── LEFT COLUMN: User Details ────────────────────────────────────────────
+    const leftCol=h("div",{});
+    leftCol.appendChild(h("div",{style:{fontSize:".72rem",fontWeight:"700",color:"var(--muted)",letterSpacing:".08em",textTransform:"uppercase",marginBottom:".75rem",paddingBottom:".4rem",borderBottom:"1px solid var(--border)"}},"👤 User Details"));
+
+    function mf(icon,labelTxt,inputAttrs){
+      const fg=el("div","field-group");
+      const lbl=h("label",{});lbl.textContent=icon+" "+labelTxt;
+      const inp=h("input",inputAttrs);inp.style.marginBottom="0";
+      fg.appendChild(lbl);fg.appendChild(inp);
+      return {fg,inp};
+    }
+    const {fg:fg1,inp:iName}=mf("👤","Full Name",{type:"text",value:u.fullName||""});
+    const {fg:fg2,inp:iUID} =mf("🪪","User ID (Login Username)",{type:"text",value:u.userId||u.username});
+    const {fg:fg3,inp:iPW}  =mf("🔑","Password",{type:"password",value:u.password||""});
+    const {fg:fg4,inp:iDS}  =mf("🏷","Designation",{type:"text",value:u.designation||""});
+    const {fg:fg5,inp:iLoc} =mf("📍","Working Location Name",{type:"text",value:u.location||""});
+    [fg1,fg2,fg3,fg4,fg5].forEach(x=>{x.style.marginBottom=".9rem";leftCol.appendChild(x);});
+
+    // ── RIGHT COLUMN: Google Maps Location ───────────────────────────────────
+    const rightCol=h("div",{});
+    rightCol.appendChild(h("div",{style:{fontSize:".72rem",fontWeight:"700",color:"var(--muted)",letterSpacing:".08em",textTransform:"uppercase",marginBottom:".75rem",paddingBottom:".4rem",borderBottom:"1px solid var(--border)"}},"📍 Office Location (Geofence)"));
+
+    // Status badge showing current geo status
+    const geoStatus=h("div",{style:{fontSize:".78rem",padding:".4rem .75rem",borderRadius:"8px",marginBottom:".75rem",
+      background:u.geoLat&&u.geoLng?"#38d9a922":"#ffd16622",
+      color:u.geoLat&&u.geoLng?"var(--accent2)":"var(--warn)",
+      border:u.geoLat&&u.geoLng?"1px solid #38d9a944":"1px solid #ffd16644"}},
+      u.geoLat&&u.geoLng
+        ?`✅ Location set — ${parseFloat(u.geoLat).toFixed(4)}, ${parseFloat(u.geoLng).toFixed(4)} (${u.geoRadius||200}m radius)`
+        :"⚠️ No location set — geofence check disabled"
+    );
+    rightCol.appendChild(geoStatus);
+
+    // Map preview iframe
+    const mapWrap=h("div",{style:{borderRadius:"10px",overflow:"hidden",border:"1px solid var(--border)",marginBottom:".75rem",background:"var(--surface)",height:"180px",position:"relative"}});
+    let _mapLat=parseFloat(u.geoLat)||13.0827; // default to Chennai
+    let _mapLng=parseFloat(u.geoLng)||80.2707;
+    let _hasLocation=!!(u.geoLat&&u.geoLng);
+
+    function buildMapUrl(lat,lng){
+      return `https://maps.google.com/maps?q=${lat},${lng}&z=17&output=embed`;
+    }
+    const mapIframe=h("iframe",{
+      src:_hasLocation?buildMapUrl(_mapLat,_mapLng):"about:blank",
+      style:{width:"100%",height:"100%",border:"none"},
+      allowfullscreen:"",
+      loading:"lazy"
+    });
+    if(!_hasLocation){
+      mapIframe.style.display="none";
+      const mapPlaceholder=h("div",{style:{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",height:"100%",gap:".5rem",color:"var(--muted)",fontSize:".85rem"}});
+      mapPlaceholder.innerHTML="🗺️<br><span>Search or enter coordinates<br>to set office location</span>";
+      mapPlaceholder.style.textAlign="center";
+      mapWrap.appendChild(mapPlaceholder);
+    }
+    mapWrap.appendChild(mapIframe);
+    rightCol.appendChild(mapWrap);
+
+    // ── SMART PASTE INPUT ─────────────────────────────────────────────────────
+    // Accepts ANY Google Maps format:
+    //   • https://maps.google.com/?q=13.0827,80.2707
+    //   • https://www.google.com/maps/place/.../@13.0827,80.2707,17z/...
+    //   • https://maps.app.goo.gl/xxxx  (short link — shown as hint)
+    //   • 13.0827, 80.2707  (plain coords)
+    //   • 13.0827 80.2707   (space-separated)
+    //   • 13°04'57.7"N 80°16'13.7"E  (DMS format)
+    function parseGoogleMapsInput(raw){
+      const s=raw.trim();
+      // 1. @lat,lng in URL (most Google Maps share URLs)
+      let m=s.match(/@(-?\d+\.?\d*),(-?\d+\.?\d*)/);
+      if(m)return{lat:parseFloat(m[1]),lng:parseFloat(m[2])};
+      // 2. ?q=lat,lng
+      m=s.match(/[?&]q=(-?\d+\.?\d*),(-?\d+\.?\d*)/);
+      if(m)return{lat:parseFloat(m[1]),lng:parseFloat(m[2])};
+      // 3. /place/.../lat,lng (some share URLs)
+      m=s.match(/place\/[^/]+\/(-?\d+\.?\d*),(-?\d+\.?\d*)/);
+      if(m)return{lat:parseFloat(m[1]),lng:parseFloat(m[2])};
+      // 4. ll=lat,lng
+      m=s.match(/ll=(-?\d+\.?\d*),(-?\d+\.?\d*)/);
+      if(m)return{lat:parseFloat(m[1]),lng:parseFloat(m[2])};
+      // 5. Plain "lat, lng" or "lat lng"
+      m=s.match(/^(-?\d+\.?\d*)[,\s]+(-?\d+\.?\d*)$/);
+      if(m)return{lat:parseFloat(m[1]),lng:parseFloat(m[2])};
+      // 6. DMS: 13°04'57.7"N 80°16'13.7"E
+      m=s.match(/(\d+)°(\d+)'([\d.]+)"([NS])\s+(\d+)°(\d+)'([\d.]+)"([EW])/);
+      if(m){
+        const lat=(parseInt(m[1])+parseInt(m[2])/60+parseFloat(m[3])/3600)*(m[4]==="S"?-1:1);
+        const lng=(parseInt(m[5])+parseInt(m[6])/60+parseFloat(m[7])/3600)*(m[8]==="W"?-1:1);
+        return{lat,lng};
+      }
+      return null;
+    }
+
+    const pasteWrap=h("div",{style:{marginBottom:".65rem"}});
+    const pasteLbl=h("div",{style:{fontSize:".7rem",color:"var(--muted)",fontWeight:"700",letterSpacing:".06em",textTransform:"uppercase",marginBottom:".3rem",display:"flex",alignItems:"center",gap:".4rem"}});
+    pasteLbl.innerHTML='📋 Paste Google Maps Link or Coordinates';
+    const pasteRow=h("div",{style:{display:"flex",gap:".4rem"}});
+    const pasteInp=h("input",{type:"text",placeholder:"Paste Maps URL or 13.0827, 80.2707 …"});
+    pasteInp.style.cssText="flex:1;padding:.6rem .9rem;border-radius:8px;border:1.5px solid var(--border);background:var(--surface);color:var(--text);font-family:var(--mono);font-size:.8rem;outline:none;box-sizing:border-box;min-width:0";
+    const pasteBtn=h("button",{type:"button",style:{padding:".6rem .9rem",borderRadius:"8px",border:"none",background:"var(--accent)",color:"#fff",fontFamily:"var(--font)",fontSize:".8rem",fontWeight:"700",cursor:"pointer",whiteSpace:"nowrap",flexShrink:"0"}},"Set");
+
+    const pasteFeedback=h("div",{style:{fontSize:".75rem",marginTop:".3rem",minHeight:"1rem"}});
+
+    function applyPaste(){
+      const result=parseGoogleMapsInput(pasteInp.value);
+      if(result&&result.lat>=-90&&result.lat<=90&&result.lng>=-180&&result.lng<=180){
+        iLat.value=result.lat.toFixed(6);
+        iLng.value=result.lng.toFixed(6);
+        updateMap(result.lat,result.lng);
+        pasteFeedback.style.color="var(--accent2)";
+        pasteFeedback.textContent="✅ Coordinates set: "+result.lat.toFixed(5)+", "+result.lng.toFixed(5);
+        pasteInp.style.borderColor="var(--accent2)";
+        setTimeout(()=>{pasteInp.value="";pasteInp.style.borderColor="var(--border)";pasteFeedback.textContent="";},3000);
+      } else if(pasteInp.value.trim().includes("goo.gl")||pasteInp.value.trim().includes("maps.app")){
+        // Short link — can't resolve client-side, show hint
+        pasteFeedback.style.color="var(--warn)";
+        pasteFeedback.textContent="⚠️ Short link detected. Open in Maps → Share → Copy full link.";
+        pasteInp.style.borderColor="var(--warn)";
+      } else if(pasteInp.value.trim()){
+        pasteFeedback.style.color="var(--danger)";
+        pasteFeedback.textContent="❌ Not recognised. Try: 13.0827, 80.2707 or paste a full Maps URL.";
+        pasteInp.style.borderColor="var(--danger)";
+        setTimeout(()=>{pasteInp.style.borderColor="var(--border)";pasteFeedback.textContent="";},3000);
+      }
+    }
+    pasteBtn.addEventListener("click",applyPaste);
+    // Auto-parse on paste event (instant, no need to click Set)
+    pasteInp.addEventListener("paste",e=>{
+      setTimeout(()=>applyPaste(),50); // wait for value to populate
+    });
+    pasteInp.addEventListener("keydown",e=>{if(e.key==="Enter"){e.preventDefault();applyPaste();}});
+    pasteRow.appendChild(pasteInp);pasteRow.appendChild(pasteBtn);
+    pasteWrap.appendChild(pasteLbl);pasteWrap.appendChild(pasteRow);pasteWrap.appendChild(pasteFeedback);
+    rightCol.appendChild(pasteWrap);
+
+    // Search address input
+    const searchWrap=h("div",{style:{position:"relative",marginBottom:".65rem"}});
+    const searchAddr=h("input",{type:"text",placeholder:"🔍 Search address (e.g. Anna Nagar Chennai)…"});
+    searchAddr.style.cssText="width:100%;padding:.65rem .9rem;border-radius:8px;border:1.5px solid var(--border);background:var(--surface);color:var(--text);font-family:var(--font);font-size:.83rem;outline:none;box-sizing:border-box";
+    const searchBtn=h("button",{type:"button",style:{position:"absolute",right:".4rem",top:"50%",transform:"translateY(-50%)",background:"var(--accent)",color:"#fff",border:"none",borderRadius:"6px",padding:".3rem .7rem",fontFamily:"var(--font)",fontSize:".75rem",fontWeight:"700",cursor:"pointer"}},"Search");
+    searchWrap.appendChild(searchAddr);searchWrap.appendChild(searchBtn);
+    rightCol.appendChild(searchWrap);
+
+    // Manual lat/lng inputs
+    const coordRow=h("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:".5rem",marginBottom:".65rem"}});
+    const latWrap=h("div",{style:{position:"relative"}});
+    const lngWrap=h("div",{style:{position:"relative"}});
+    const latLbl=h("label",{style:{fontSize:".7rem",color:"var(--muted)",fontWeight:"700",letterSpacing:".06em",textTransform:"uppercase",display:"block",marginBottom:".25rem"}},"Latitude");
+    const lngLbl=h("label",{style:{fontSize:".7rem",color:"var(--muted)",fontWeight:"700",letterSpacing:".06em",textTransform:"uppercase",display:"block",marginBottom:".25rem"}},"Longitude");
+    const iLat=h("input",{type:"number",step:"0.0001",placeholder:"e.g. 13.0827",value:u.geoLat||""});
+    const iLng=h("input",{type:"number",step:"0.0001",placeholder:"e.g. 80.2707",value:u.geoLng||""});
+    iLat.style.cssText=iLng.style.cssText="width:100%;padding:.55rem .75rem;border-radius:8px;border:1.5px solid var(--border);background:var(--surface);color:var(--text);font-family:var(--mono);font-size:.82rem;outline:none;box-sizing:border-box;margin:0";
+    latWrap.appendChild(latLbl);latWrap.appendChild(iLat);
+    lngWrap.appendChild(lngLbl);lngWrap.appendChild(iLng);
+    coordRow.appendChild(latWrap);coordRow.appendChild(lngWrap);
+    rightCol.appendChild(coordRow);
+
+    // Radius + Use My Location row
+    const radiusRow=h("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:".5rem",marginBottom:".65rem"}});
+    const radWrap=h("div",{});
+    const radLbl=h("label",{style:{fontSize:".7rem",color:"var(--muted)",fontWeight:"700",letterSpacing:".06em",textTransform:"uppercase",display:"block",marginBottom:".25rem"}},"Radius (metres)");
+    const iRad=h("input",{type:"number",min:"50",max:"5000",value:u.geoRadius||200,placeholder:"200"});
+    iRad.style.cssText="width:100%;padding:.55rem .75rem;border-radius:8px;border:1.5px solid var(--border);background:var(--surface);color:var(--text);font-family:var(--mono);font-size:.82rem;outline:none;box-sizing:border-box;margin:0";
+    radWrap.appendChild(radLbl);radWrap.appendChild(iRad);
+
+    const myLocWrap=h("div",{style:{display:"flex",alignItems:"flex-end",paddingBottom:"1px"}});
+    const myLocBtn=h("button",{type:"button",style:{width:"100%",padding:".55rem .5rem",borderRadius:"8px",border:"1.5px solid var(--accent)",background:"transparent",color:"var(--accent)",fontFamily:"var(--font)",fontSize:".78rem",fontWeight:"700",cursor:"pointer"}});
+    myLocBtn.innerHTML="📡 Use My Location";
+    myLocWrap.appendChild(myLocBtn);
+    radiusRow.appendChild(radWrap);radiusRow.appendChild(myLocWrap);
+    rightCol.appendChild(radiusRow);
+
+    // Clear location button
+    const clearLocBtn=h("button",{type:"button",style:{width:"100%",padding:".45rem",borderRadius:"8px",border:"1.5px solid #ff5f6d44",background:"transparent",color:"var(--danger)",fontFamily:"var(--font)",fontSize:".78rem",fontWeight:"700",cursor:"pointer",marginBottom:".5rem"}});
+    clearLocBtn.innerHTML="🗑 Clear Location (disable geofence)";
+    rightCol.appendChild(clearLocBtn);
+
+    // ── MAP UPDATE HELPER ─────────────────────────────────────────────────────
+    function updateMap(lat,lng){
+      _mapLat=lat;_mapLng=lng;_hasLocation=true;
+      mapIframe.src=buildMapUrl(lat,lng);
+      mapIframe.style.display="block";
+      const ph=mapWrap.querySelector("div");if(ph)ph.remove();
+      geoStatus.textContent=`✅ Location set — ${parseFloat(lat).toFixed(4)}, ${parseFloat(lng).toFixed(4)} (${iRad.value||200}m radius)`;
+      geoStatus.style.background="#38d9a922";geoStatus.style.color="var(--accent2)";geoStatus.style.border="1px solid #38d9a944";
+    }
+
+    // ── SEARCH ADDRESS ────────────────────────────────────────────────────────
+    async function doSearch(){
+      const q=searchAddr.value.trim();
+      if(!q)return;
+      searchBtn.textContent="…";searchBtn.disabled=true;
+      try{
+        const res=await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(q)}&limit=1`,{headers:{"Accept-Language":"en"}});
+        const json=await res.json();
+        if(json&&json.length){
+          const lat=parseFloat(json[0].lat),lng=parseFloat(json[0].lon);
+          iLat.value=lat.toFixed(6);iLng.value=lng.toFixed(6);
+          updateMap(lat,lng);
+        } else {
+          showModalErr("Address not found. Try a more specific address.");
+        }
+      }catch(e){showModalErr("Search failed. Enter coordinates manually.");}
+      searchBtn.textContent="Search";searchBtn.disabled=false;
+    }
+    searchBtn.addEventListener("click",doSearch);
+    searchAddr.addEventListener("keydown",e=>{if(e.key==="Enter"){e.preventDefault();doSearch();}});
+
+    // ── MANUAL COORD INPUT ────────────────────────────────────────────────────
+    function onCoordInput(){
+      const lat=parseFloat(iLat.value),lng=parseFloat(iLng.value);
+      if(!isNaN(lat)&&!isNaN(lng)&&lat>=-90&&lat<=90&&lng>=-180&&lng<=180){
+        updateMap(lat,lng);
+      }
+    }
+    iLat.addEventListener("change",onCoordInput);
+    iLng.addEventListener("change",onCoordInput);
+    iRad.addEventListener("input",()=>{
+      if(_hasLocation) geoStatus.textContent=`✅ Location set — ${parseFloat(_mapLat).toFixed(4)}, ${parseFloat(_mapLng).toFixed(4)} (${iRad.value||200}m radius)`;
+    });
+
+    // ── USE MY LOCATION ───────────────────────────────────────────────────────
+    myLocBtn.addEventListener("click",()=>{
+      myLocBtn.innerHTML="📡 Getting…";myLocBtn.disabled=true;
+      navigator.geolocation.getCurrentPosition(p=>{
+        const lat=p.coords.latitude,lng=p.coords.longitude;
+        iLat.value=lat.toFixed(6);iLng.value=lng.toFixed(6);
+        updateMap(lat,lng);
+        myLocBtn.innerHTML="📡 Use My Location";myLocBtn.disabled=false;
+      },()=>{
+        showModalErr("Could not get location. Allow permission in your browser.");
+        myLocBtn.innerHTML="📡 Use My Location";myLocBtn.disabled=false;
+      },{timeout:10000,enableHighAccuracy:true});
+    });
+
+    // ── CLEAR LOCATION ────────────────────────────────────────────────────────
+    clearLocBtn.addEventListener("click",()=>{
+      iLat.value="";iLng.value="";_hasLocation=false;
+      mapIframe.src="about:blank";mapIframe.style.display="none";
+      if(!mapWrap.querySelector("div[style]")){
+        const ph=h("div",{style:{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",height:"100%",gap:".5rem",color:"var(--muted)",fontSize:".85rem",textAlign:"center"}});
+        ph.innerHTML="🗺️<br><span>Search or enter coordinates</span>";
+        mapWrap.insertBefore(ph,mapIframe);
+      }
+      geoStatus.textContent="⚠️ No location set — geofence check disabled";
+      geoStatus.style.background="#ffd16622";geoStatus.style.color="var(--warn)";geoStatus.style.border="1px solid #ffd16644";
+    });
+
+    grid.appendChild(leftCol);grid.appendChild(rightCol);
+    mo.appendChild(modalErrBox);
+    mo.appendChild(grid);
+
+    // ── SAVE ──────────────────────────────────────────────────────────────────
+    const sb=h("button",{className:"btn btn-primary",style:{marginTop:".25rem"}},"💾 Save Changes");
     sb.addEventListener("click",()=>{
-      const name=iName.value.trim(),uid=iUID.value.trim(),pw=iPW.value.trim(),des=iDS.value.trim(),loc=iLoc.value.trim();
-      if(!name){showModalErr("Full name is required.");return}
-      if(!uid||!pw){showModalErr("User ID and password required.");return}
-      if(uid!==u.username&&DB.users.find(x=>x.username===uid)){showModalErr("User ID already exists.");return}
+      const name=iName.value.trim(),uid=iUID.value.trim(),pw=iPW.value.trim();
+      const des=iDS.value.trim(),loc=iLoc.value.trim();
+      const lat=iLat.value.trim(),lng=iLng.value.trim();
+      const rad=parseInt(iRad.value)||200;
+      if(!name){showModalErr("Full name is required.");return;}
+      if(!uid||!pw){showModalErr("User ID and password are required.");return;}
+      if(uid!==u.username&&DB.users.find(x=>x.username===uid)){showModalErr("User ID already exists.");return;}
+      if(lat&&(isNaN(parseFloat(lat))||parseFloat(lat)<-90||parseFloat(lat)>90)){showModalErr("Invalid latitude (must be -90 to 90).");return;}
+      if(lng&&(isNaN(parseFloat(lng))||parseFloat(lng)<-180||parseFloat(lng)>180)){showModalErr("Invalid longitude (must be -180 to 180).");return;}
       const idx=DB.users.findIndex(x=>x.username===u.username);
-      DB.users[idx]={...DB.users[idx],username:uid,password:pw,fullName:name,userId:uid,designation:des,location:loc};
+      DB.users[idx]={
+        ...DB.users[idx],
+        username:uid,password:pw,fullName:name,userId:uid,
+        designation:des,location:loc,
+        geoLat:lat||"",geoLng:lng||"",geoRadius:rad,
+        officeName:loc||name
+      };
       if(uid!==u.username){
         DB.attendance=DB.attendance.map(r=>r.username===u.username?{...r,username:uid}:r);
         DB.surveys=(DB.surveys||[]).map(s=>s.username===u.username?{...s,username:uid}:s);
         DB.absences=(DB.absences||[]).map(a=>a.username===u.username?{...a,username:uid}:a);
       }
       save(DB);syncToSheet();ov.remove();refresh();
+      showToast(`✅ ${name} updated — geofence ${lat&&lng?"set to "+rad+"m":"disabled"}.`,"success",4000);
     });
-    const cb=h("button",{className:"btn btn-ghost",style:{marginTop:".6rem"}},"Cancel");
+    const cb=h("button",{className:"btn btn-ghost",style:{marginTop:".5rem"}},"Cancel");
     cb.addEventListener("click",()=>ov.remove());
-    [fg1,fg2,fg3,fg4,fg5,modalErrBox,sb,cb].forEach(x=>mo.appendChild(x));
+    mo.appendChild(sb);mo.appendChild(cb);
     ov.appendChild(mo);document.body.appendChild(ov);
   }
 
