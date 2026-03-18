@@ -248,7 +248,7 @@ select option{background:var(--surface);color:var(--text)}
 <script>
 // ── VIBE v20260318.fix-geo — Full geo misalignment fix: smart coord detection on read + clean validation on write ────
 const KEY = "vibeAttendanceData";
-const DEFAULT_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyvh-Awc9EGnf3TFw8dmm_dMGBJerZJ8PXH0AlfyidFlUwRgLz_WmJhYY8Ay4TpENDN/exec";
+const DEFAULT_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzEMcUcrECFJFX1u6C7rwNyoGK_J0sQXIsemYDX3ab22d0Fows4b01pmlTiLgVhs2eg/exec";
 
 // ── API KEY: paste the value from setupApiKey() here after first deployment ──
 const DEFAULT_API_KEY = "5c6d46fe-1ffc-4615-9e8b-96051031a4a3";
@@ -1001,7 +1001,22 @@ async function getServerTime(){
       return{serverMs,drift,trusted:true};
     }catch(_){}
   }
-  // Both APIs failed — return untrusted
+  // Both external APIs failed — try GAS script as 3rd trusted source
+  try{
+    const t0=Date.now();
+    const ctrl3=new AbortController();
+    setTimeout(()=>ctrl3.abort(),5000);
+    const res3=await fetch(getScriptUrl()+"?action=getTime&key="+getApiKey(),{method:"GET",signal:ctrl3.signal});
+    const j3=await res3.json();
+    if(j3&&j3.ts){
+      const serverMs=Math.round(parseInt(j3.ts)+((Date.now()-t0)/2));
+      if(!isNaN(serverMs)){
+        const drift=Math.round(serverMs-Date.now());
+        return{serverMs,drift,trusted:true};
+      }
+    }
+  }catch(_){}
+  // All 3 sources failed — return untrusted
   return{serverMs:Date.now(),drift:0,trusted:false};
 }
 
@@ -1242,10 +1257,10 @@ function showSurvey(onSubmit, onCancel){
   const {wrap:w3,inp:i3}=field("🎓 Today's GPA Count","q-gpa","e.g. 2");
   const submitBtn=h("button",{className:"btn btn-primary",disabled:true,style:{marginTop:".5rem"}},"Please fill all 3 fields");
   function checkFill(){
-    const ok=i1.value!==""&&i2.value!==""&&i3.value!=="";
+    const ok=i1.value.trim()!==""&&i2.value.trim()!==""&&i3.value.trim()!=="";
     submitBtn.disabled=!ok;submitBtn.textContent=ok?"✓ Submit & Check Out":"Please fill all 3 fields";
   }
-  [i1,i2,i3].forEach(i=>i.addEventListener("input",checkFill));
+  [i1,i2,i3].forEach(i=>{i.addEventListener("input",checkFill);i.addEventListener("change",checkFill);});
   submitBtn.addEventListener("click",()=>{
     const p=parseInt(i1.value)||0, r=parseInt(i2.value)||0, g=parseInt(i3.value)||0;
     if(p===0&&r===0&&g===0){
@@ -1519,11 +1534,11 @@ function renderUser(){
 
               // ── GEOFENCE WARNING ONLY (checkout) ─────────────────────────
               if(!geo2.noLocationSet && !geo2.ok){
+                const distLblO=geo2.dist!==null?`You are <strong>${geo2.dist}m away</strong> (limit: ${geo2.radius}m).`:"";
+                window._geoWarn={msg:`<span class='geo-icon'>⚠️</span><div><strong>Outside Office Area</strong><br>${distLblO} Checkout will still be recorded.</div>`,type:"warn"};
                 const oldEbGo=content.querySelector(".loc-err-banner");if(oldEbGo)oldEbGo.remove();
                 const ebGo=h("div",{className:"loc-err-banner geo-banner geo-warn",style:{marginTop:".75rem"}});
-                const officeLblO=geo2.name?`<strong>${geo2.name}</strong>`:"your office";
-                const distLblO=geo2.dist!==null?`You are <strong>${geo2.dist}m away</strong> (limit: ${geo2.radius}m).`:"";
-                ebGo.innerHTML=`<span class='geo-icon'>⚠️</span><div><strong>Outside Office Area</strong><br>${distLblO} Checkout will still be recorded.</div>`;
+                ebGo.innerHTML=window._geoWarn.msg;
                 mainBtn.insertAdjacentElement("afterend",ebGo);
               }
               const rec_out={
@@ -1674,11 +1689,11 @@ function renderUser(){
 
             // ── GEOFENCE WARNING ONLY (check-in) ────────────────────────────
             if(!geo.noLocationSet && !geo.ok){
+              const distLbl=geo.dist!==null?`You are <strong>${geo.dist}m away</strong> (limit: ${geo.radius}m).`:"";
+              window._geoWarn={msg:`<span class='geo-icon'>⚠️</span><div><strong>Outside Office Area</strong><br>${distLbl} Check-in will still be recorded.</div>`,type:"warn"};
               const oldEbG=content.querySelector(".loc-err-banner");if(oldEbG)oldEbG.remove();
               const ebG=h("div",{className:"loc-err-banner geo-banner geo-warn",style:{marginTop:".75rem"}});
-              const officeLbl=geo.name?`<strong>${geo.name}</strong>`:"your office";
-              const distLbl=geo.dist!==null?`You are <strong>${geo.dist}m away</strong> (limit: ${geo.radius}m).`:"";
-              ebG.innerHTML=`<span class='geo-icon'>⚠️</span><div><strong>Outside Office Area</strong><br>${distLbl} Check-in will still be recorded.</div>`;
+              ebG.innerHTML=window._geoWarn.msg;
               mainBtn.insertAdjacentElement("afterend",ebG);
             }
             // FIX 1: Use server-verified timestamp instead of local Date.now()
@@ -1729,7 +1744,14 @@ function renderUser(){
       });
       content.appendChild(mainBtn);
 
-      if(!isIn()) delete window._geoWarn;
+      // Re-render persistent geo warning if it survived a refresh
+      if(!isIn()){
+        delete window._geoWarn;
+      } else if(window._geoWarn){
+        const ebPersist=h("div",{className:"loc-err-banner geo-banner geo-warn",style:{marginTop:".75rem"}});
+        ebPersist.innerHTML=window._geoWarn.msg;
+        mainBtn.insertAdjacentElement("afterend",ebPersist);
+      }
 
       const st=el("div","section-title","Today's Activity",{marginTop:"1.5rem"});
       content.appendChild(st);
@@ -1883,12 +1905,32 @@ function renderUser(){
             if(!loc?.lat) return `<span style="color:var(--muted);font-size:.75rem">—</span>`;
             const name=_geoLabel(rec, _profileOfficeName);
             const coords=`${parseFloat(loc.lat).toFixed(4)}, ${parseFloat(loc.lng).toFixed(4)}`;
-            return `<div style="display:flex;flex-direction:column;gap:2px">
+            // Distance badge
+            let distBadge="";
+            if(rec?.geoDist!=null&&rec.geoDist!==undefined){
+              const d=parseInt(rec.geoDist);
+              const dLbl=d>=1000?(d/1000).toFixed(1)+"km":d+"m";
+              const isOut=!rec.geoOk;
+              const dColor=isOut?"#ff5f6d":"#38d9a9";
+              const dBg=isOut?"#ff5f6d22":"#38d9a922";
+              const dBorder=isOut?"#ff5f6d44":"#38d9a944";
+              distBadge=`<span style="font-size:.65rem;font-weight:700;padding:.1rem .4rem;border-radius:20px;background:${dBg};color:${dColor};border:1px solid ${dBorder}">${isOut?"⚠️":"✅"} ${dLbl} from office</span>`;
+            } else if(_meU?.geoLat&&_meU?.geoLng){
+              const oLat=parseFloat(_meU.geoLat),oLng=parseFloat(_meU.geoLng);
+              const d=Math.round(haversineDistance(parseFloat(loc.lat),parseFloat(loc.lng),oLat,oLng));
+              const radius=parseInt(_meU.geoRadius)||200;
+              const isOut=d>radius;
+              const dLbl=d>=1000?(d/1000).toFixed(1)+"km":d+"m";
+              const dColor=isOut?"#ff5f6d":"#38d9a9";
+              const dBg=isOut?"#ff5f6d22":"#38d9a922";
+              const dBorder=isOut?"#ff5f6d44":"#38d9a944";
+              distBadge=`<span style="font-size:.65rem;font-weight:700;padding:.1rem .4rem;border-radius:20px;background:${dBg};color:${dColor};border:1px solid ${dBorder}">${isOut?"⚠️":"✅"} ${dLbl} from office</span>`;
+            }
+            return `<div style="display:flex;flex-direction:column;gap:3px">
               ${name?`<span style="font-size:.75rem;font-weight:700;color:${textColor}">🏢 ${name}</span>`:""}
               <a href="https://maps.google.com/?q=${loc.lat},${loc.lng}" target="_blank"
-                style="font-size:.7rem;font-family:var(--mono);color:var(--muted);text-decoration:none;opacity:.8">
-                📍 ${coords}
-              </a>
+                style="font-size:.7rem;font-family:var(--mono);color:var(--muted);text-decoration:none;opacity:.8">📍 ${coords}</a>
+              ${distBadge}
             </div>`;
           }
           let inGeoName=_geoLabel(geoRec, _profileOfficeName);
@@ -2756,8 +2798,26 @@ function renderAdmin(){
       const searchIcon=h("span",{style:{position:"absolute",left:".6rem",top:"50%",transform:"translateY(-50%)",pointerEvents:"none",fontSize:".9rem"}},"🔍");
       searchWrap.appendChild(searchIcon);
       searchWrap.appendChild(searchInp);
+      // Distance toggle button
+      const distBtn=h("button",{style:{padding:".4rem .8rem",borderRadius:"8px",border:"1.5px solid var(--border)",background:window._adminGeoLat?"#38d9a922":"var(--surface)",color:window._adminGeoLat?"var(--accent2)":"var(--muted)",fontFamily:"var(--font)",fontSize:".78rem",fontWeight:"700",cursor:"pointer",whiteSpace:"nowrap",flexShrink:"0"}},window._adminGeoLat?"📍 Distances on":"📍 Show distances");
+      distBtn.addEventListener("click",()=>{
+        if(window._adminGeoLat){
+          // Toggle off
+          delete window._adminGeoLat; delete window._adminGeoLng;
+          refresh(); return;
+        }
+        distBtn.textContent="📍 Getting location…";distBtn.disabled=true;
+        navigator.geolocation.getCurrentPosition(pos=>{
+          window._adminGeoLat=pos.coords.latitude;
+          window._adminGeoLng=pos.coords.longitude;
+          refresh();
+        }, ()=>{
+          distBtn.textContent="📍 Location denied";distBtn.disabled=false;
+        },{enableHighAccuracy:true,timeout:8000});
+      });
       userListHeader.appendChild(userTitle);
       userListHeader.appendChild(searchWrap);
+      userListHeader.appendChild(distBtn);
       content.appendChild(userListHeader);
 
       const userListWrap=h("div",{id:"userListGrid",style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:".75rem"}});
@@ -2817,9 +2877,21 @@ function renderAdmin(){
           metaWrap.appendChild(h("span",{style:{fontSize:".72rem",color:"var(--accent)",fontFamily:"var(--mono)",background:"#4f8ef722",border:"1px solid #4f8ef744",borderRadius:"6px",padding:".1rem .45rem",display:"inline-block",width:"fit-content"}},"ID: "+(u.userId||u.username)));
           if(u.designation)metaWrap.appendChild(h("span",{style:{fontSize:".72rem",color:"var(--muted)"}},"🏷 "+u.designation));
 
-          // Geo coords if set
+          // Geo coords + radius + distance from office if set
           if(u.geoLat&&u.geoLng){
-            metaWrap.appendChild(h("span",{style:{fontSize:".7rem",color:"var(--accent2)",fontFamily:"var(--mono)"}},"🗺 "+parseFloat(u.geoLat).toFixed(4)+", "+parseFloat(u.geoLng).toFixed(4)));
+            const _uLat=parseFloat(u.geoLat), _uLng=parseFloat(u.geoLng);
+            const _uRad=parseInt(u.geoRadius)||200;
+            // Distance from admin's live location (if available) or show coords + radius
+            const coordRow=h("div",{style:{display:"flex",flexWrap:"wrap",gap:".3rem",alignItems:"center"}});
+            coordRow.appendChild(h("span",{style:{fontSize:".7rem",color:"var(--accent2)",fontFamily:"var(--mono)"}},"📍 "+_uLat.toFixed(4)+", "+_uLng.toFixed(4)));
+            coordRow.appendChild(h("span",{style:{fontSize:".68rem",fontWeight:"700",padding:".1rem .45rem",borderRadius:"20px",background:"#38d9a922",color:"var(--accent2)",border:"1px solid #38d9a944"}},_uRad+"m radius"));
+            // Show distance from admin's location if browser has it cached
+            if(window._adminGeoLat&&window._adminGeoLng){
+              const _dist=Math.round(haversineDistance(window._adminGeoLat,window._adminGeoLng,_uLat,_uLng));
+              const _distLbl=_dist>=1000?(_dist/1000).toFixed(1)+"km":_dist+"m";
+              coordRow.appendChild(h("span",{style:{fontSize:".68rem",fontWeight:"700",padding:".1rem .45rem",borderRadius:"20px",background:"#4f8ef722",color:"var(--accent)",border:"1px solid #4f8ef744"}},"↔ "+_distLbl+" away"));
+            }
+            metaWrap.appendChild(coordRow);
           }
 
           // Password pill
@@ -3068,16 +3140,35 @@ function renderAdmin(){
               if(!lat||!lng) return "<span style='color:var(--muted)'>—</span>";
               const mapsUrl=`https://maps.google.com/?q=${lat},${lng}`;
               const coordStr=`${parseFloat(lat).toFixed(4)}, ${parseFloat(lng).toFixed(4)}`;
-              // Office name: from record geoName, else from user profile officeName/location
+              // Office name from record or user profile
               let officeName=rec?.geoName&&rec.geoName!=="No office location set"&&rec.geoName!==""?rec.geoName:"";
-              if(!officeName){
-                const uRec=regularUsers.find(u=>u.username===(rec?.username||""));
-                officeName=(uRec?.officeName&&uRec.officeName.trim())?uRec.officeName.trim()
-                  :(uRec?.location&&uRec.location.trim()?uRec.location.trim():"");
+              const uRec2=regularUsers.find(u=>u.username===(rec?.username||r.username||""));
+              if(!officeName) officeName=(uRec2?.officeName&&uRec2.officeName.trim())?uRec2.officeName.trim():(uRec2?.location&&uRec2.location.trim()?uRec2.location.trim():"");
+              const officeBadge=officeName?`<div style="font-size:.75rem;font-weight:700;color:${accentColor};margin-bottom:2px">🏢 ${officeName}</div>`:"";
+              // Distance: use geoDist from record if available, else calculate from user's configured office coords
+              let distBadge="";
+              if(rec?.geoDist!=null&&rec.geoDist!==undefined){
+                const d=parseInt(rec.geoDist);
+                const dLbl=d>=1000?(d/1000).toFixed(1)+"km":d+"m";
+                const isOut=!rec.geoOk;
+                const dColor=isOut?"#ff5f6d":"#38d9a9";
+                const dBg=isOut?"#ff5f6d22":"#38d9a922";
+                const dBorder=isOut?"#ff5f6d44":"#38d9a944";
+                const dIcon=isOut?"⚠️":"✅";
+                distBadge=`<span style="font-size:.65rem;font-weight:700;padding:.1rem .4rem;border-radius:20px;background:${dBg};color:${dColor};border:1px solid ${dBorder};white-space:nowrap">${dIcon} ${dLbl} from office</span>`;
+              } else if(uRec2?.geoLat&&uRec2?.geoLng){
+                const oLat=parseFloat(uRec2.geoLat),oLng=parseFloat(uRec2.geoLng);
+                const d=Math.round(haversineDistance(parseFloat(lat),parseFloat(lng),oLat,oLng));
+                const radius=parseInt(uRec2.geoRadius)||200;
+                const isOut=d>radius;
+                const dLbl=d>=1000?(d/1000).toFixed(1)+"km":d+"m";
+                const dColor=isOut?"#ff5f6d":"#38d9a9";
+                const dBg=isOut?"#ff5f6d22":"#38d9a922";
+                const dBorder=isOut?"#ff5f6d44":"#38d9a944";
+                const dIcon=isOut?"⚠️":"✅";
+                distBadge=`<span style="font-size:.65rem;font-weight:700;padding:.1rem .4rem;border-radius:20px;background:${dBg};color:${dColor};border:1px solid ${dBorder};white-space:nowrap">${dIcon} ${dLbl} from office</span>`;
               }
-              const officeBadge=officeName
-                ?`<div style="font-size:.75rem;font-weight:700;color:${accentColor};margin-bottom:2px">🏢 ${officeName}</div>`:"";
-              return `<div style="display:flex;flex-direction:column;gap:1px">${officeBadge}<a href="${mapsUrl}" target="_blank" style="font-size:.7rem;font-family:var(--mono);color:var(--muted);text-decoration:none;opacity:.85">📍 ${coordStr}</a></div>`;
+              return `<div style="display:flex;flex-direction:column;gap:3px">${officeBadge}<a href="${mapsUrl}" target="_blank" style="font-size:.7rem;font-family:var(--mono);color:var(--muted);text-decoration:none;opacity:.85">📍 ${coordStr}</a>${distBadge}</div>`;
             }
 
             // FIX: Build trust/security cell based on audit fields in the record
@@ -3388,7 +3479,15 @@ function renderAdmin(){
       color:u.geoLat&&u.geoLng?"var(--accent2)":"var(--warn)",
       border:u.geoLat&&u.geoLng?"1px solid #38d9a944":"1px solid #ffd16644"}},
       u.geoLat&&u.geoLng
-        ?`✅ Location set — ${parseFloat(u.geoLat).toFixed(4)}, ${parseFloat(u.geoLng).toFixed(4)} (${u.geoRadius||200}m radius)`
+        ?(()=>{
+            const _lat=parseFloat(u.geoLat),_lng=parseFloat(u.geoLng),_rad=parseInt(u.geoRadius)||200;
+            let _txt=`✅ ${_lat.toFixed(4)}, ${_lng.toFixed(4)} · ${_rad}m radius`;
+            if(window._adminGeoLat&&window._adminGeoLng){
+              const _d=Math.round(haversineDistance(window._adminGeoLat,window._adminGeoLng,_lat,_lng));
+              _txt+=` · ${_d>=1000?(_d/1000).toFixed(1)+"km":_d+"m"} from you`;
+            }
+            return _txt;
+          })()
         :"⚠️ No location set — geofence check disabled"
     );
     rightCol.appendChild(geoStatus);
