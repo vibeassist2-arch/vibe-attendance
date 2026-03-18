@@ -264,8 +264,8 @@ function escapeHtml(text) {
   div.textContent = String(text);
   return div.innerHTML;
 }
-// ONE-TIME WIPE of all old localStorage data (keep only theme + session token)
-(function(){try{const keep=new Set(["vibeTheme","vibeSession"]);Object.keys(localStorage).filter(k=>!keep.has(k)).forEach(k=>localStorage.removeItem(k));}catch(_){}})();
+// ONE-TIME WIPE of old localStorage data — runs only once ever, preserves local cache
+(function(){try{if(!localStorage.getItem("vibeDidWipe_v1")){const keep=new Set(["vibeTheme","vibeSession","vibeAttendanceData"]);Object.keys(localStorage).filter(k=>!keep.has(k)).forEach(k=>localStorage.removeItem(k));localStorage.setItem("vibeDidWipe_v1","1");}}catch(_){}})();
 
 async function gsFetch(params) {
   const url = getScriptUrl();
@@ -754,11 +754,14 @@ async function loadFromSheet() {
       const localRec = r.id ? DB.attendance.find(x => x.id && String(x.id) === String(r.id)) : null;
       const inferredType = rType || localRec?.type || "in";
       const geoOk = r.geoOk === true || r.geoOk === "true" || r.geoOk === 1 || r.geoOk === "1";
+      // Timestamp fallback: if raw timestamp is 0/missing, try parsing a date string
+      let ts = parseInt(r.timestamp)||0;
+      if (!ts && r.date) { try { ts = new Date(String(r.date).slice(0,10)+"T09:00:00").getTime()||0; } catch(_){} }
       return {
         id: safeString(r.id, ""),
-        username: safeString(r.username, ""),
+        username: safeString(r.username, "").toLowerCase(),
         type: inferredType,
-        timestamp: parseInt(r.timestamp)||0,
+        timestamp: ts,
         location: validLoc,
         outLocation: validOutLoc,
         outTimestamp: parseInt(r.outTimestamp)||0,
@@ -787,6 +790,9 @@ async function loadFromSheet() {
     });
     DB.attendance = cleanedAttend;
 
+    // DEBUG: log raw counts from sheet to help diagnose empty data
+    console.log("VIBE loadFromSheet: raw counts — users:", (result.users||[]).length, "attendance:", (result.attendance||[]).length, "surveys:", (result.surveys||[]).length, "absences:", (result.absences||[]).length);
+
     const sheetSurveys = (result.surveys||[]).map(s => {
       const ts = parseInt(s.timestamp)||0;
       let d = "";
@@ -800,7 +806,7 @@ async function loadFromSheet() {
         d = safeString(s.date, "").slice(0,10);
       }
       if(!d) return null;
-      return { id: safeString(s.id, ""), username: safeString(s.username, ""), date: d, timestamp: ts, policy: parseInt(s.policy)||0, rsa: parseInt(s.rsa)||0, gpa: parseInt(s.gpa)||0 };
+      return { id: safeString(s.id, ""), username: safeString(s.username, "").toLowerCase(), date: d, timestamp: ts, policy: parseInt(s.policy)||0, rsa: parseInt(s.rsa)||0, gpa: parseInt(s.gpa)||0 };
     }).filter(s => s && s.username && s.date);
 
     const surveyMap = {};
@@ -826,11 +832,18 @@ async function loadFromSheet() {
     }).filter(a => a.username && a.date);
     DB.absences = sheetAbsences;
 
-    const activeUsernames = new Set(DB.users.map(u => u.username));
-    DB.absences = DB.absences.filter(a => activeUsernames.has(a.username));
-    DB.surveys = DB.surveys.filter(s => activeUsernames.has(s.username));
-    DB.attendance = DB.attendance.filter(r => activeUsernames.has(r.username));
+    // Case-insensitive username matching — sheet usernames may be UPPERCASE, DB stores lowercase
+    const activeUsernames = new Set(DB.users.map(u => u.username.toLowerCase()));
+    DB.absences  = DB.absences.filter(a  => activeUsernames.has(String(a.username  ||"").toLowerCase()));
+    DB.surveys   = DB.surveys.filter(s   => activeUsernames.has(String(s.username  ||"").toLowerCase()));
+    DB.attendance= DB.attendance.filter(r=> activeUsernames.has(String(r.username  ||"").toLowerCase()));
+    // Normalise all usernames to lowercase so dashboard comparisons always work
+    DB.surveys   = DB.surveys.map(s   =>({...s,   username: String(s.username  ||"").toLowerCase()}));
+    DB.attendance= DB.attendance.map(r =>({...r,   username: String(r.username  ||"").toLowerCase()}));
+    DB.absences  = DB.absences.map(a  =>({...a,   username: String(a.username  ||"").toLowerCase()}));
 
+    // Persist fresh data to localStorage so next load shows data instantly
+    try { localStorage.setItem(KEY, JSON.stringify(DB)); } catch(_) {}
     return true;
   } catch(e) { console.error("loadFromSheet error:", e); return false; }
   finally { _loadRunning = false; }
@@ -838,12 +851,18 @@ async function loadFromSheet() {
 
 function def(){return{users:[{username:"admin",password:"admin123",role:"admin"}],attendance:[],surveys:[],absences:[],officeLocations:[]}}
 
-function loadData(){ return def(); }
+function loadData(){
+  try {
+    const raw = localStorage.getItem(KEY);
+    if (raw) { const parsed = JSON.parse(raw); if (parsed && parsed.users) return parsed; }
+  } catch(_) {}
+  return def();
+}
 
 function getStorageUsage(){ return 0; }
 function storagePercent(){ return 0; }
 function archiveOldData(d){ return d; }
-function save(d){ /* no-op — online only */ }
+function save(d){ try { localStorage.setItem(KEY, JSON.stringify(d||DB)); } catch(_) {} }
 function localDateStr(date){
   try {
     const d = date || new Date();
@@ -2391,7 +2410,9 @@ function renderAdmin(){
     }, _pollMs);
   }
 
-  content.innerHTML='<div style="display:flex;align-items:center;justify-content:center;min-height:60vh;color:var(--muted);font-family:var(--font);font-size:.95rem">⏳ Loading data from Google Sheets…</div>';
+  // Show cached data immediately, then refresh after sheet sync completes
+  if(DB.attendance.length||DB.surveys.length||DB.users.length>1){ refresh(); }
+  else { content.innerHTML='<div style="display:flex;align-items:center;justify-content:center;min-height:60vh;color:var(--muted);font-family:var(--font);font-size:.95rem">⏳ Loading data from Google Sheets…</div>'; }
   (async()=>{ await doAdminSync(true); refresh(); startAdminPoll(); })();
   window._doAdminSync = doAdminSync;
 
