@@ -403,6 +403,42 @@ async function gsPost(body) {
   } catch(e) { return { ok: false, error: e.message }; }
 }
 
+// Sync a single user to sheet — avoids payload/timeout issues with all-50-users sync
+async function syncSingleUserToSheet(userObj) {
+  const _syncUrl = getScriptUrl();
+  if (!_syncUrl) return;
+  const u = userObj;
+  const uname = (u.username||"").toLowerCase();
+  const rawLat = parseFloat(u.geoLat); const rawLng = parseFloat(u.geoLng);
+  const validGeo = !isNaN(rawLat)&&!isNaN(rawLng)&&rawLat>=6&&rawLat<=38&&rawLng>=68&&rawLng<=98;
+  const cleanUser = {
+    ...u,
+    geoLat: validGeo ? String(rawLat) : "",
+    geoLng: validGeo ? String(rawLng) : "",
+    geoRadius: (!isNaN(parseInt(u.geoRadius))&&parseInt(u.geoRadius)>=50&&parseInt(u.geoRadius)<=5000) ? parseInt(u.geoRadius) : 200,
+  };
+  try {
+    const _sc = new AbortController();
+    const _st = setTimeout(() => _sc.abort(), 10000);
+    const res = await fetch(_syncUrl, { method:"POST", redirect:"follow", headers:{"Content-Type":"text/plain"}, body: JSON.stringify({
+      action: "updateUser",
+      apiKey: getApiKey(),
+      username: SESSION ? SESSION.username : "admin",
+      data: cleanUser
+    }), signal: _sc.signal });
+    clearTimeout(_st);
+    const text = await res.text();
+    try {
+      const json = JSON.parse(text);
+      if (json && json.ok) return;
+      // Server doesn't support updateUser — fall back to full setUsers
+      console.warn("syncSingleUserToSheet: updateUser not supported, falling back to setUsers");
+    } catch(_) { return; }
+  } catch(e) { console.warn("syncSingleUserToSheet failed:", e); }
+  // Fallback: send all users
+  syncUsersToSheet();
+}
+
 // ONLINE-ONLY: verifyAndPurgeQueue is a no-op stub
 async function verifyAndPurgeQueue(){ return 0; }
 
@@ -3834,7 +3870,7 @@ const iRad=h("input",{type:"number",min:"50",max:"5000",value:_cleanRadius,place
         DB.surveys=(DB.surveys||[]).map(s=>s.username===u.username?{...s,username:uid}:s);
         DB.absences=(DB.absences||[]).map(a=>a.username===u.username?{...a,username:uid}:a);
       }
-      save(DB);syncUsersToSheet();ov.remove();refresh();
+      save(DB);syncSingleUserToSheet(DB.users[idx]);ov.remove();refresh();
       showToast(`✅ ${name} updated — geofence ${lat&&lng?"set to "+rad+"m":"disabled"}.`,"success",4000);
     });
     const cb=h("button",{className:"btn btn-ghost",style:{marginTop:".5rem"}},"Cancel");
