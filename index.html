@@ -575,19 +575,37 @@ async function loadFromSheet() {
       return "";
     };
 
-    const sheetUsers = (result.users||[]).map(u => ({
-        username:    safeString(u.username, ""),
-        password:    safeString(u.password, ""),
-        fullName:    safeChain(u.fullName, u.full_name, u.FullName, u.name),
-        userId:      safeChain(u.userId, u.user_id, u.UserId, u.username),
-        designation: safeString(u.designation, ""),
-        location:    safeString(u.location, ""),
-        role:        safeString(u.role, "user") || "user",
-        geoLat:      safeString(u.geoLat, ""),
-        geoLng:      safeString(u.geoLng, ""),
-        geoRadius:   (u.geoRadius !== undefined && u.geoRadius !== "" && u.geoRadius !== null && typeof u.geoRadius !== 'function') ? parseInt(u.geoRadius) || 200 : 200,
-        officeName:  safeString(u.officeName, "")
-      })).filter(u => u.username);
+    const sheetUsers = (result.users||[]).map(u => {
+        // Sheet columns: username | password | fullName | designation | location | role | geoLat | geoLng | geoRadius | officeName
+        // (no userId column — userId defaults to username)
+        const ROLE_VALUES = new Set(["user","admin","team leader","teamleader","manager","staff"]);
+        const rawDesig   = safeString(u.designation, "");
+        const rawLoc     = safeString(u.location, "");
+        const rawRole    = safeString(u.role, "");
+        const uname      = safeString(u.username, "");
+        const fname      = safeChain(u.fullName, u.full_name, u.FullName, u.name);
+        // Clean designation: if it equals the username or fullName, it was wrongly filled — clear it
+        const cleanDesig = (rawDesig.toLowerCase()===uname.toLowerCase()||rawDesig.toLowerCase()===(fname||uname).toLowerCase()) ? "" : rawDesig;
+        // Clean location: if it equals the username, it was wrongly filled — clear it
+        const cleanLoc   = (rawLoc.toLowerCase()===uname.toLowerCase()) ? "" : rawLoc;
+        // Role: if the raw role column has a real role value use it, else check designation column (shift), else default "user"
+        const cleanRole  = ROLE_VALUES.has(rawRole.toLowerCase()) ? (rawRole.toLowerCase()||"user")
+                         : ROLE_VALUES.has(rawDesig.toLowerCase()) ? rawDesig.toLowerCase()
+                         : "user";
+        return {
+          username:    uname,
+          password:    safeString(u.password, ""),
+          fullName:    fname,
+          userId:      safeChain(u.userId, u.user_id, u.UserId, uname),
+          designation: cleanDesig,
+          location:    cleanLoc,
+          role:        cleanRole || "user",
+          geoLat:      safeString(u.geoLat, ""),
+          geoLng:      safeString(u.geoLng, ""),
+          geoRadius:   (u.geoRadius !== undefined && u.geoRadius !== "" && u.geoRadius !== null && typeof u.geoRadius !== 'function') ? parseInt(u.geoRadius) || 200 : 200,
+          officeName:  safeString(u.officeName, "")
+        };
+      }).filter(u => u.username);
 
     if (sheetUsers.length) {
       const localAdmins = DB.users.filter(u => u.role === "admin" && !sheetUsers.find(s => s.username === u.username));
@@ -2481,17 +2499,35 @@ function renderAdmin(){
     });
     c3.appendChild(p3);homeGrid.appendChild(c3);
 
+    function getLocGroup(uInfo){
+      const INVALID=new Set(["user","admin","team leader","teamleader","team_leader","manager","staff","employee",""]);
+      function validCity(v){
+        if(!v||typeof v!=="string"||v.trim().length===0) return false;
+        const val=v.trim().toLowerCase();
+        if(INVALID.has(val)) return false;
+        if(uInfo){
+          const uname=(uInfo.username||"").trim().toLowerCase();
+          const fname=(uInfo.fullName||"").trim().toLowerCase();
+          const uid=(uInfo.userId||"").trim().toLowerCase();
+          if(val===uname||val===uid) return false;
+          if(fname&&(val===fname||fname.startsWith(val+" ")||fname.startsWith(val))) return false;
+        }
+        return true;
+      }
+      if(uInfo&&validCity(uInfo.location)) return uInfo.location.trim();
+      return "Unassigned";
+    }
     const locPolicyMap={};
     todayInUsers.forEach(uname=>{
       const uInfo=regularUsers.find(u=>u.username===uname);
-      const locRaw=(uInfo&&uInfo.location&&uInfo.location.trim())?uInfo.location.trim():"Unassigned";
+      const locRaw=getLocGroup(uInfo);
       const locKey=locRaw.toLowerCase().trim();
       const locDisplay=locKey==="unassigned"?"Unassigned":(locRaw.charAt(0).toUpperCase()+locRaw.slice(1).toLowerCase());
       if(!locPolicyMap[locKey])locPolicyMap[locKey]={label:locDisplay,policy:0,rsa:0,gpa:0};
     });
     todaySurveys.forEach(s=>{
       const uInfo=regularUsers.find(u=>u.username===s.username);
-      const locRaw=(uInfo&&uInfo.location&&uInfo.location.trim())?uInfo.location.trim():"Unassigned";
+      const locRaw=getLocGroup(uInfo);
       const locKey=locRaw.toLowerCase().trim();
       const locDisplay=locKey==="unassigned"?"Unassigned":(locRaw.charAt(0).toUpperCase()+locRaw.slice(1).toLowerCase());
       if(!locPolicyMap[locKey])locPolicyMap[locKey]={label:locDisplay,policy:0,rsa:0,gpa:0};
