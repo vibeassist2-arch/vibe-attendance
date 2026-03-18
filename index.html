@@ -641,48 +641,20 @@ async function loadFromSheet() {
 
     const byUserDay = {};
     sheetAttend.forEach(r => {
-      const key = r.username + "__" + new Date(r.timestamp).toDateString();
+      const key = r.username + "__" + localDateStr(new Date(r.timestamp));
       if(!byUserDay[key]) byUserDay[key] = [];
       byUserDay[key].push(r);
     });
 
-    const orphanOuts = [];
-    Object.entries(byUserDay).forEach(([key, recs]) => {
-      const ins = recs.filter(r => r.type === "in");
-      const outs = recs.filter(r => r.type === "out");
-      if(outs.length && !ins.length){
-        outs.forEach(r => orphanOuts.push(r));
-        delete byUserDay[key];
-      }
-    });
-    orphanOuts.forEach(orphan => {
-      const candidates = Object.keys(byUserDay).filter(k =>
-        k.startsWith(orphan.username + "__") &&
-        byUserDay[k].some(r => r.type === "in" && orphan.timestamp > r.timestamp && orphan.timestamp - r.timestamp <= 28*60*60*1000)
-      );
-      if(candidates.length){
-        const bestKey = candidates.reduce((a,b) => {
-          const aIns = byUserDay[a].filter(r=>r.type==="in").map(r=>r.timestamp);
-          const bIns = byUserDay[b].filter(r=>r.type==="in").map(r=>r.timestamp);
-          const aIn = aIns.length ? Math.max(...aIns) : 0;
-          const bIn = bIns.length ? Math.max(...bIns) : 0;
-          return Math.abs(orphan.timestamp - aIn) < Math.abs(orphan.timestamp - bIn) ? a : b;
-        });
-        byUserDay[bestKey].push(orphan);
-      }
-    });
-
+    // DATE FIX: keep all records — do not drop check-ins based on timestamp ordering.
+    // Previous logic dropped check-ins that appeared "after" checkout (due to +1ms offset
+    // on checkout records and timezone edge cases), causing entire days to disappear.
+    // Now we simply keep every record that has a matching check-in on the same day.
+    // Orphan outs (checkout with no same-day check-in) are kept too — never drop data.
     const cleanedAttend = [];
     Object.values(byUserDay).forEach(recs => {
-      const outs = recs.filter(r => r.type === "out");
-      outs.forEach(r => cleanedAttend.push(r));
-      const ins = recs.filter(r => r.type === "in");
-      if(!outs.length){ ins.forEach(r => cleanedAttend.push(r)); return; }
-      const lastOutTs = outs.length ? Math.max(...outs.map(r => r.timestamp)) : 0;
-      ins.forEach(r => {
-        if(r.timestamp < lastOutTs){ cleanedAttend.push(r); }
-        else if(r.timestamp - lastOutTs > 5*60*1000){ cleanedAttend.push(r); }
-      });
+      // Always keep all records in a day group — both ins and outs
+      recs.forEach(r => cleanedAttend.push(r));
     });
     DB.attendance = cleanedAttend;
 
@@ -847,21 +819,63 @@ let SESSION = restoreSession();
 // Fetches verified UTC time from a trusted public API.
 // Falls back to Date.now() only if the network call fails, and sets a drift flag.
 async function getServerTime(){
-  const t0=Date.now();
-  try{
-    const ctrl=new AbortController();
-    const tmr=setTimeout(()=>ctrl.abort(),5000);
-    const res=await fetch("https://worldtimeapi.org/api/ip",{method:"GET",signal:ctrl.signal});
-    clearTimeout(tmr);
-    const json=await res.json();
-    const rtt=Date.now()-t0;
-    const serverMs=Math.round((json.unixtime*1000)+(rtt/2));
-    const drift=Math.round(serverMs-Date.now());
-    return{serverMs,drift,trusted:true};
-  }catch(e){
-    // Server unreachable — fall back to local clock, mark as untrusted
-    return{serverMs:Date.now(),drift:0,trusted:false};
+  // Try multiple time APIs in sequence for reliability
+  const apis=[
+    async()=>{
+      const t0=Date.now();
+      const ctrl=new AbortController();
+      setTimeout(()=>ctrl.abort(),5000);
+      const res=await fetch("https://worldtimeapi.org/api/ip",{method:"GET",signal:ctrl.signal});
+      const json=await res.json();
+      if(!json.unixtime) throw new Error("no unixtime");
+      const serverMs=Math.round((json.unixtime*1000)+((Date.now()-t0)/2));
+      return serverMs;
+    },
+    async()=>{
+      const t0=Date.now();
+      const ctrl=new AbortController();
+      setTimeout(()=>ctrl.abort(),5000);
+      const res=await fetch("https://timeapi.io/api/Time/current/zone?timeZone=UTC",{method:"GET",signal:ctrl.signal});
+      const json=await res.json();
+      if(!json.dateTime) throw new Error("no dateTime");
+      const serverMs=Math.round(new Date(json.dateTime+"Z").getTime()+((Date.now()-t0)/2));
+      if(isNaN(serverMs)) throw new Error("invalid");
+      return serverMs;
+    }
+  ];
+  for(const api of apis){
+    try{
+      const serverMs=await api();
+      const drift=Math.round(serverMs-Date.now());
+      return{serverMs,drift,trusted:true};
+    }catch(_){}
   }
+  // Both APIs failed — return untrusted
+  return{serverMs:Date.now(),drift:0,trusted:false};
+}
+
+// ── CLOCK DATE VALIDATION ────────────────────────────────────────────────────
+// Returns error string if device date doesn't match server date, else null
+function checkClockDate(serverMs, trusted=true){
+  const serverDate = localDateStr(new Date(serverMs));
+  const deviceDate = localDateStr(new Date());
+  if(serverDate !== deviceDate){
+    const serverD = new Date(serverMs).toLocaleDateString("en-GB",{weekday:"short",day:"2-digit",month:"short",year:"numeric"});
+    const deviceD = new Date().toLocaleDateString("en-GB",{weekday:"short",day:"2-digit",month:"short",year:"numeric"});
+    return `Your device date is <strong>${deviceD}</strong> but the actual date is <strong>${serverD}</strong>. Please fix your device date and try again.`;
+  }
+  return null;
+}
+// Check if device time is outside any plausible working window (5AM-11PM)
+// Used as a safety net when server time APIs are unreachable
+function checkDeviceDateSanity(){
+  const h=new Date().getHours();
+  if(h<5||h>=23){
+    const deviceD=new Date().toLocaleDateString("en-GB",{weekday:"short",day:"2-digit",month:"short",year:"numeric"});
+    const deviceT=new Date().toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});
+    return `Your device shows <strong>${deviceD} ${deviceT}</strong> which is outside working hours. Could not verify with time server. Please check your device date & time.`;
+  }
+  return null;
 }
 
 // ── LOCATION (Fix: capture GPS hardware timestamp for cross-check) ────────────
@@ -1015,11 +1029,29 @@ function renderLogin(){
     (async()=>{
       const st=await getServerTime();
       if(st.trusted){
+        // Check date mismatch first (device set to wrong day)
+        const dateErr=checkClockDate(st.serverMs,true);
+        if(dateErr){
+          errBox.innerHTML=`📅 <strong>Device date is wrong.</strong><br>${dateErr}`;
+          errBox.classList.remove("hidden");
+          btn.disabled=false;btn.textContent="Sign In";
+          return;
+        }
+        // Check time mismatch (device clock >5 min off)
         const driftMin=Math.abs(st.drift)/60000;
         if(driftMin>5){
           const deviceTime=new Date().toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});
           const serverTime=new Date(st.serverMs).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});
           errBox.innerHTML=`⏰ <strong>Device clock is wrong.</strong><br>Your device shows <strong>${deviceTime}</strong> but the actual time is <strong>${serverTime}</strong>.<br><span style="font-size:.85em">Please fix your device clock and try again.</span>`;
+          errBox.classList.remove("hidden");
+          btn.disabled=false;btn.textContent="Sign In";
+          return;
+        }
+      } else {
+        // Server unreachable — run device sanity check
+        const sanityErr=checkDeviceDateSanity();
+        if(sanityErr){
+          errBox.innerHTML=`⚠️ <strong>Could not verify device time.</strong><br>${sanityErr}`;
           errBox.classList.remove("hidden");
           btn.disabled=false;btn.textContent="Sign In";
           return;
@@ -1079,14 +1111,32 @@ function showSurvey(onSubmit, onCancel){
 // ── USER DASH ─────────────────────────────────────────────────────────────────
 function renderUser(){
   if(!SESSION||!SESSION.username){renderLogin();return;}
+  // DATE CHECK on every render — catches restored sessions that bypass login
+  // Run async so it doesn't block render, but check-in button will also validate
+  (async()=>{
+    const st=await getServerTime();
+    if(st.trusted){
+      const dateErr=checkClockDate(st.serverMs);
+      if(dateErr){
+        // Force sign out — session was restored with wrong date device
+        SESSION=null;clearSession();
+        renderLogin();
+        // Show error after login renders
+        setTimeout(()=>{
+          const errBox=document.querySelector(".alert-error");
+          if(errBox){errBox.innerHTML=`?? <strong>Device date is wrong.</strong><br>${dateErr}`;errBox.classList.remove("hidden");}
+        },100);
+      }
+    }
+  })();
   if(window._adminPollInterval){clearInterval(window._adminPollInterval);window._adminPollInterval=null;}
   if(window._adminPollTimeout){clearTimeout(window._adminPollTimeout);window._adminPollTimeout=null;}
   if(window._adminBadgeInterval){clearInterval(window._adminBadgeInterval);window._adminBadgeInterval=null;}
   window._adminRefresh=null; window._doAdminSync=null;
   const myRecs=()=>DB.attendance.filter(r=>r.username===SESSION.username).sort((a,b)=>b.timestamp-a.timestamp);
   const todayRecs=()=>{
-    const s=new Date().toDateString();
-    const recs=myRecs().filter(r=>new Date(r.timestamp).toDateString()===s);
+    const s=localDateStr(new Date());
+    const recs=myRecs().filter(r=>localDateStr(new Date(r.timestamp))===s);
     const sessionCheckoutTs=parseInt(sessionStorage.getItem("vibeLastCheckout_"+SESSION.username)||"0");
     const outs=recs.filter(r=>r.type==="out");
     const lastOutTs=outs.length?Math.max(...outs.map(r=>r.timestamp)):0;
@@ -1182,7 +1232,7 @@ function renderUser(){
     _checkoutInProgress=false; // BUG5 FIX: safety reset in case flag got stuck
     content.innerHTML="";
     const allRecs=myRecs();
-    const totalDays=[...new Set(allRecs.filter(r=>r.type==="in").map(r=>new Date(r.timestamp).toDateString()))].length;
+    const totalDays=[...new Set(allRecs.filter(r=>r.type==="in").map(r=>localDateStr(new Date(r.timestamp))))].length;
     const nowS=new Date();
     const curMKS=`${nowS.getFullYear()}-${String(nowS.getMonth()+1).padStart(2,"0")}`;
     const mySurveys=(DB.surveys||[]).filter(s=>s.username===SESSION.username);
@@ -1263,17 +1313,27 @@ function renderUser(){
             const _stOut=await getServerTime();
             // ── CLOCK MISMATCH CHECK (checkout) ─────────────────────────────
             if(_stOut.trusted){
+              const dateErrCo=checkClockDate(_stOut.serverMs,true);
+              if(dateErrCo){
+                _checkoutInProgress=false;_lastCheckOut=0;
+                mainBtn.disabled=false;mainBtn.textContent="⏹ Check Out";
+                const oldEbCo=content.querySelector(".loc-err-banner");if(oldEbCo)oldEbCo.remove();
+                const ebCo=h("div",{className:"loc-err-banner geo-banner geo-fail",style:{marginTop:".75rem"}});
+                ebCo.innerHTML=`<span class='geo-icon'>📅</span><div><strong>Device Date is Wrong</strong><br>${dateErrCo}</div>`;
+                mainBtn.insertAdjacentElement("afterend",ebCo);
+                return;
+              }
               const driftMin=Math.abs(_stOut.drift)/60000;
               if(driftMin>5){
                 _checkoutInProgress=false;
                 _lastCheckOut=0;
                 mainBtn.disabled=false;mainBtn.textContent="⏹ Check Out";
-                const oldEbCo=content.querySelector(".loc-err-banner");if(oldEbCo)oldEbCo.remove();
-                const ebCo=h("div",{className:"loc-err-banner geo-banner geo-fail",style:{marginTop:".75rem"}});
+                const oldEbCo2=content.querySelector(".loc-err-banner");if(oldEbCo2)oldEbCo2.remove();
+                const ebCo2=h("div",{className:"loc-err-banner geo-banner geo-fail",style:{marginTop:".75rem"}});
                 const deviceTimeCo=new Date().toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});
                 const serverTimeCo=new Date(_stOut.serverMs).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});
-                ebCo.innerHTML=`<span class='geo-icon'>⏰</span><div><strong>Device Clock is Wrong</strong><br>Your device shows <strong>${deviceTimeCo}</strong> but the actual time is <strong>${serverTimeCo}</strong>.<br><span style='font-size:.85em'>Please fix your device clock and try again.</span></div>`;
-                mainBtn.insertAdjacentElement("afterend",ebCo);
+                ebCo2.innerHTML=`<span class='geo-icon'>⏰</span><div><strong>Device Clock is Wrong</strong><br>Your device shows <strong>${deviceTimeCo}</strong> but the actual time is <strong>${serverTimeCo}</strong>.<br><span style='font-size:.85em'>Please fix your device clock and try again.</span></div>`;
+                mainBtn.insertAdjacentElement("afterend",ebCo2);
                 return;
               }
             }
@@ -1291,7 +1351,7 @@ function renderUser(){
                 mainBtn.insertAdjacentElement("afterend",eb);
                 return;
               }
-              const todayCheckins2=DB.attendance.filter(r=>r.username===SESSION.username&&r.type==="in"&&new Date(r.timestamp).toDateString()===new Date().toDateString());
+              const todayCheckins2=DB.attendance.filter(r=>r.username===SESSION.username&&r.type==="in"&&localDateStr(new Date(r.timestamp))===localDateStr(new Date()));
               const checkInTs2=todayCheckins2.length?Math.min(...todayCheckins2.map(r=>r.timestamp)):_stOut.serverMs;
               // BUG1 FIX: use server checkout time for survey date (check-in could be previous day)
               const surveyDate2=localDateStr(new Date(_tsNow));
@@ -1417,7 +1477,6 @@ function renderUser(){
             mainBtn.insertAdjacentElement("afterend",eb);
             return;
           }
-          stampCheckIn();
           mainBtn.disabled=true;mainBtn.innerHTML='<span class="spinner"></span>Verifying time…';
           const meUserRec=DB.users.find(u=>u.username===SESSION.username);
           const userWorkLoc=meUserRec?.location||"";
@@ -1425,19 +1484,43 @@ function renderUser(){
           const _serverTimeResult=await getServerTime();
           // ── CLOCK MISMATCH CHECK (check-in) ─────────────────────────────
           if(_serverTimeResult.trusted){
-            const driftMin=Math.abs(_serverTimeResult.drift)/60000;
-            if(driftMin>5){
+            const dateErrCi=checkClockDate(_serverTimeResult.serverMs);
+            if(dateErrCi){
               _lastCheckIn=0;
               mainBtn.disabled=false;mainBtn.textContent="▶ Check In";
               const oldEbCi=content.querySelector(".loc-err-banner");if(oldEbCi)oldEbCi.remove();
               const ebCi=h("div",{className:"loc-err-banner geo-banner geo-fail",style:{marginTop:".75rem"}});
-              const deviceTimeCi=new Date().toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});
-              const serverTimeCi=new Date(_serverTimeResult.serverMs).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});
-              ebCi.innerHTML=`<span class='geo-icon'>⏰</span><div><strong>Device Clock is Wrong</strong><br>Your device shows <strong>${deviceTimeCi}</strong> but the actual time is <strong>${serverTimeCi}</strong>.<br><span style='font-size:.85em'>Please fix your device clock and try again.</span></div>`;
+              ebCi.innerHTML=`<span class='geo-icon'>📅</span><div><strong>Device Date is Wrong</strong><br>${dateErrCi}</div>`;
               mainBtn.insertAdjacentElement("afterend",ebCi);
               return;
             }
+            const driftMin=Math.abs(_serverTimeResult.drift)/60000;
+            if(driftMin>5){
+              _lastCheckIn=0;
+              mainBtn.disabled=false;mainBtn.textContent="▶ Check In";
+              const oldEbCi2=content.querySelector(".loc-err-banner");if(oldEbCi2)oldEbCi2.remove();
+              const ebCi2=h("div",{className:"loc-err-banner geo-banner geo-fail",style:{marginTop:".75rem"}});
+              const deviceTimeCi=new Date().toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});
+              const serverTimeCi=new Date(_serverTimeResult.serverMs).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});
+              ebCi2.innerHTML=`<span class='geo-icon'>⏰</span><div><strong>Device Clock is Wrong</strong><br>Your device shows <strong>${deviceTimeCi}</strong> but the actual time is <strong>${serverTimeCi}</strong>.<br><span style='font-size:.85em'>Please fix your device clock and try again.</span></div>`;
+              mainBtn.insertAdjacentElement("afterend",ebCi2);
+              return;
+            }
+          } else {
+            // Server unreachable — run device sanity check
+            const sanityCi=checkDeviceDateSanity();
+            if(sanityCi){
+              _lastCheckIn=0;
+              mainBtn.disabled=false;mainBtn.textContent="▶ Check In";
+              const oldEbSan=content.querySelector(".loc-err-banner");if(oldEbSan)oldEbSan.remove();
+              const ebSan=h("div",{className:"loc-err-banner geo-banner geo-warn",style:{marginTop:".75rem"}});
+              ebSan.innerHTML=`<span class='geo-icon'>⚠️</span><div><strong>Could Not Verify Device Time</strong><br>${sanityCi}</div>`;
+              mainBtn.insertAdjacentElement("afterend",ebSan);
+              return;
+            }
           }
+          // Stamp only after date/time checks pass
+          stampCheckIn();
           mainBtn.innerHTML='<span class="spinner"></span>Getting location…';
           getLocation().then(async loc=>{
             if(loc && loc.error){
@@ -1628,7 +1711,7 @@ function renderUser(){
 
       const dayMap={};
       mRecs.filter(r=>r.type==="in").forEach(r=>{
-        const k=new Date(r.timestamp).toDateString();
+        const k=localDateStr(new Date(r.timestamp));
         if(!dayMap[k])dayMap[k]={date:new Date(r.timestamp),in:null,out:null,loc:null,outLoc:null,inRec:null,outRec:null};
         if(!dayMap[k].in||r.timestamp<dayMap[k].in){
           dayMap[k].in=r.timestamp;dayMap[k].loc=r.location;dayMap[k].inRec=r;
@@ -1640,7 +1723,7 @@ function renderUser(){
         }
       });
       mRecs.filter(r=>r.type==="out").forEach(r=>{
-        const outKey=new Date(r.timestamp).toDateString();
+        const outKey=localDateStr(new Date(r.timestamp));
         const target=dayMap[outKey]||null;
         if(!target)return;
         if(!target.out||r.timestamp>target.out){target.out=r.timestamp;target.outLoc=r.location||r.outLocation||null;target.outRec=r;}
@@ -1668,15 +1751,30 @@ function renderUser(){
           const depCell=dep?`<span class="timing-pill tp-${dep.type==="full"?"ontime":dep.type}">${dep.label}</span>`:"—";
           const geoRec=d.inRec||myRecs().find(r=>r.type==="in"&&r.timestamp===d.in);
           const inLoc=d.loc||(geoRec?.location)||null;
-          let inGeoName=inLoc?.lat&&geoRec?.geoName&&geoRec.geoName!=="No office location set"&&geoRec.geoName!==""?geoRec.geoName:"";
-          const inGeoCell=inLoc?.lat
-            ?`<a href="https://maps.google.com/?q=${inLoc.lat},${inLoc.lng}" target="_blank" style="font-size:.75rem;font-family:var(--mono);color:var(--accent2);text-decoration:none">📍 ${parseFloat(inLoc.lat).toFixed(4)}, ${parseFloat(inLoc.lng).toFixed(4)}</a>${inGeoName?`<div style="font-size:.7rem;color:var(--gpa);font-weight:700">🏢 ${inGeoName}</div>`:""}`
-            :`<span style="color:var(--muted);font-size:.75rem">—</span>`;
+          // Office name: from geoName on record, else from user's officeName/location profile
+          const _meU=DB.users.find(x=>x.username===SESSION.username);
+          const _profileOfficeName=(_meU?.officeName&&_meU.officeName.trim())?_meU.officeName.trim():((_meU?.location&&_meU.location.trim())?_meU.location.trim():"");
+          function _geoLabel(rec, fallback){
+            if(rec?.geoName&&rec.geoName!=="No office location set"&&rec.geoName!=="") return rec.geoName;
+            return fallback||"";
+          }
+          function _locCell(loc, rec, textColor){
+            if(!loc?.lat) return `<span style="color:var(--muted);font-size:.75rem">—</span>`;
+            const name=_geoLabel(rec, _profileOfficeName);
+            const coords=`${parseFloat(loc.lat).toFixed(4)}, ${parseFloat(loc.lng).toFixed(4)}`;
+            return `<div style="display:flex;flex-direction:column;gap:2px">
+              ${name?`<span style="font-size:.75rem;font-weight:700;color:${textColor}">🏢 ${name}</span>`:""}
+              <a href="https://maps.google.com/?q=${loc.lat},${loc.lng}" target="_blank"
+                style="font-size:.7rem;font-family:var(--mono);color:var(--muted);text-decoration:none;opacity:.8">
+                📍 ${coords}
+              </a>
+            </div>`;
+          }
+          let inGeoName=_geoLabel(geoRec, _profileOfficeName);
+          const inGeoCell=_locCell(inLoc, geoRec, "var(--accent2)");
           const outLoc=d.outLoc||(d.outRec?.location)||null;
-          let outGeoName=outLoc?.lat&&d.outRec?.geoName&&d.outRec.geoName!=="No office location set"&&d.outRec.geoName!==""?d.outRec.geoName:"";
-          const outGeoCell=outLoc?.lat
-            ?`<a href="https://maps.google.com/?q=${outLoc.lat},${outLoc.lng}" target="_blank" style="font-size:.75rem;font-family:var(--mono);color:var(--danger);text-decoration:none">📍 ${parseFloat(outLoc.lat).toFixed(4)}, ${parseFloat(outLoc.lng).toFixed(4)}</a>${outGeoName?`<div style="font-size:.7rem;color:var(--gpa);font-weight:700">🏢 ${outGeoName}</div>`:""}`
-            :`<span style="color:var(--muted);font-size:.75rem">—</span>`;
+          let outGeoName=_geoLabel(d.outRec, _profileOfficeName);
+          const outGeoCell=_locCell(outLoc, d.outRec, "var(--danger)");
           tr2.innerHTML=`<td style="font-family:var(--mono);font-size:.8rem">${d.date.toLocaleDateString("en-GB",{weekday:"short",day:"2-digit",month:"short"})}</td>
             <td style="color:var(--accent2);font-family:var(--mono);font-size:.82rem">${d.in?new Date(d.in).toLocaleTimeString([],({"hour":"2-digit","minute":"2-digit"})):"—"}</td>
             <td style="color:var(--danger);font-family:var(--mono);font-size:.82rem">${d.out?new Date(d.out).toLocaleTimeString([],({"hour":"2-digit","minute":"2-digit"})):"—"}</td>
@@ -1935,7 +2033,7 @@ function openUserDataModal(u, allAttend, allSurveys){
 
   const now=new Date();
   const curMon=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}`;
-  const presentDays=new Set(userAttend.filter(r=>r.type==="in").map(r=>new Date(r.timestamp).toDateString())).size;
+  const presentDays=new Set(userAttend.filter(r=>r.type==="in").map(r=>localDateStr(new Date(r.timestamp)))).size;
   const monthSurveys=userSurveys.filter(s=>(s.date||"").startsWith(curMon));
   const monthPolicy=monthSurveys.reduce((s,r)=>s+(parseInt(r.policy)||0),0);
   const monthRsa=monthSurveys.reduce((s,r)=>s+(parseInt(r.rsa)||0),0);
@@ -1994,7 +2092,7 @@ function openUserDataModal(u, allAttend, allSurveys){
     if(modalTab==="attendance"){
       const byDay={};
       userAttend.forEach(r=>{
-        const dk=new Date(r.timestamp).toDateString();
+        const dk=localDateStr(new Date(r.timestamp));
         if(!byDay[dk])byDay[dk]={date:new Date(r.timestamp),ins:[],outs:[]};
         if(r.type==="in")byDay[dk].ins.push(r);
         else byDay[dk].outs.push(r);
@@ -2224,7 +2322,7 @@ function renderAdmin(){
 
     const _adByUD = {};
     allAttend.forEach(r => {
-      const dk = r.username+"__"+new Date(r.timestamp).toDateString();
+      const dk = r.username+"__"+localDateStr(new Date(r.timestamp));
       if(!_adByUD[dk]) _adByUD[dk] = [];
       _adByUD[dk].push(r);
     });
@@ -2703,16 +2801,16 @@ function renderAdmin(){
       const filteredInKeys=new Set();
       filteredIn.forEach(r=>{
         const d=new Date(r.timestamp);
-        filteredInKeys.add(r.username+"__"+d.toDateString());
+        filteredInKeys.add(r.username+"__"+localDateStr(d));
         const next=new Date(d); next.setDate(next.getDate()+1);
-        filteredInKeys.add(r.username+"__"+next.toDateString());
+        filteredInKeys.add(r.username+"__"+localDateStr(next));
       });
-      const filteredOut=allAttend.filter(r=>r.type==="out"&&(window._recUser==="all"||r.username===window._recUser)&&filteredInKeys.has(r.username+"__"+new Date(r.timestamp).toDateString()));
+      const filteredOut=allAttend.filter(r=>r.type==="out"&&(window._recUser==="all"||r.username===window._recUser)&&filteredInKeys.has(r.username+"__"+localDateStr(new Date(r.timestamp))));
       const filtered=[...filteredIn,...filteredOut];
 
       const dayMap2={};
       filteredIn.forEach(r=>{
-        const k=r.username+"__"+new Date(r.timestamp).toDateString();
+        const k=r.username+"__"+localDateStr(new Date(r.timestamp));
         if(!dayMap2[k])dayMap2[k]={username:r.username,date:new Date(r.timestamp),in:null,out:null,loc:null,outLoc:null,inRec:null,outRec:null};
         if(!dayMap2[k].in||r.timestamp<dayMap2[k].in){
           dayMap2[k].in=r.timestamp;dayMap2[k].loc=r.location;dayMap2[k].inRec=r;
@@ -2733,7 +2831,7 @@ function renderAdmin(){
         }
       });
       filteredOut.forEach(r=>{
-        const outDayKey=r.username+"__"+new Date(r.timestamp).toDateString();
+        const outDayKey=r.username+"__"+localDateStr(new Date(r.timestamp));
         let target=dayMap2[outDayKey]||null;
         if(!target){
           const matchKey=Object.keys(dayMap2).find(k2=>
@@ -2829,10 +2927,16 @@ function renderAdmin(){
               if(!lat||!lng) return "<span style='color:var(--muted)'>—</span>";
               const mapsUrl=`https://maps.google.com/?q=${lat},${lng}`;
               const coordStr=`${parseFloat(lat).toFixed(4)}, ${parseFloat(lng).toFixed(4)}`;
-              const officeName=rec?.geoName&&rec.geoName!=="No office location set"&&rec.geoName!==""?rec.geoName:"";
+              // Office name: from record geoName, else from user profile officeName/location
+              let officeName=rec?.geoName&&rec.geoName!=="No office location set"&&rec.geoName!==""?rec.geoName:"";
+              if(!officeName){
+                const uRec=regularUsers.find(u=>u.username===(rec?.username||""));
+                officeName=(uRec?.officeName&&uRec.officeName.trim())?uRec.officeName.trim()
+                  :(uRec?.location&&uRec.location.trim()?uRec.location.trim():"");
+              }
               const officeBadge=officeName
-                ?`<div style="font-size:.7rem;font-weight:700;color:var(--accent);margin-bottom:2px">🏢 ${officeName}</div>`:"";
-              return `${officeBadge}<a href="${mapsUrl}" target="_blank" style="font-size:.75rem;font-family:var(--mono);color:${accentColor};text-decoration:none;display:flex;align-items:center;gap:3px">📍 ${coordStr}</a>`;
+                ?`<div style="font-size:.75rem;font-weight:700;color:${accentColor};margin-bottom:2px">🏢 ${officeName}</div>`:"";
+              return `<div style="display:flex;flex-direction:column;gap:1px">${officeBadge}<a href="${mapsUrl}" target="_blank" style="font-size:.7rem;font-family:var(--mono);color:var(--muted);text-decoration:none;opacity:.85">📍 ${coordStr}</a></div>`;
             }
 
             // FIX: Build trust/security cell based on audit fields in the record
@@ -2937,7 +3041,7 @@ function renderAdmin(){
     if(curTab==="export"){
       const todayFull=new Date().toLocaleDateString("en-GB",{weekday:"long",day:"2-digit",month:"long",year:"numeric"});
       content.appendChild(el("div","section-title","Today's Counts — "+todayFull));
-      const todayAttendCount=allAttend.filter(r=>new Date(r.timestamp).toDateString()===new Date().toDateString()).length;
+      const todayAttendCount=allAttend.filter(r=>localDateStr(new Date(r.timestamp))===localDateStr(new Date())).length;
       const cg=h("div",{style:{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:".8rem",marginBottom:".8rem"}});
       cg.style.cssText+="";
       if(window.innerWidth<600) cg.style.gridTemplateColumns="repeat(2,1fr)";
@@ -2951,7 +3055,7 @@ function renderAdmin(){
       const monthPolicy=monthSurveys.reduce((s,r)=>s+(parseInt(r.policy)||0),0);
       const monthRsa=monthSurveys.reduce((s,r)=>s+(parseInt(r.rsa)||0),0);
       const monthGpa=monthSurveys.reduce((s,r)=>s+(parseInt(r.gpa)||0),0);
-      const monthAttend=[...new Set(allAttend.filter(r=>r.type==="in"&&localMonthStr(new Date(r.timestamp))===curMK2).map(r=>r.username+new Date(r.timestamp).toDateString()))].length;
+      const monthAttend=[...new Set(allAttend.filter(r=>r.type==="in"&&localMonthStr(new Date(r.timestamp))===curMK2).map(r=>r.username+localDateStr(new Date(r.timestamp))))].length;
       const monthLbl=nowM.toLocaleString("default",{month:"long",year:"numeric"});
       const cg2=h("div",{style:{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:".8rem",marginBottom:"1rem"}});
       if(window.innerWidth<600) cg2.style.gridTemplateColumns="repeat(2,1fr)";
@@ -3022,7 +3126,7 @@ function renderAdmin(){
       const tb3=document.createElement("tbody");
       regularUsers.forEach(u=>{
         const uS=allSurveys.filter(s=>s.username===u.username&&s.date&&s.date.startsWith(selMx));
-        const uD=[...new Set(allAttend.filter(r=>r.username===u.username&&r.type==="in"&&localMonthStr(new Date(r.timestamp))===selMx).map(r=>new Date(r.timestamp).toDateString()))].length;
+        const uD=[...new Set(allAttend.filter(r=>r.username===u.username&&r.type==="in"&&localMonthStr(new Date(r.timestamp))===selMx).map(r=>localDateStr(new Date(r.timestamp))))].length;
         const tr3=document.createElement("tr");
         const displayN=(u.fullName&&u.fullName.trim()?u.fullName.trim():(u.username.charAt(0).toUpperCase()+u.username.slice(1).toLowerCase()));
         tr3.innerHTML=`<td><span style="font-weight:600">${escapeHtml(displayN)}</span><br><span style="font-size:.72rem;color:var(--muted);font-family:var(--mono)">${escapeHtml(u.username)}${u.designation?" · "+escapeHtml(u.designation):""}${u.location?" · 📍 "+escapeHtml(u.location):""}</span></td>
@@ -3059,7 +3163,7 @@ function renderAdmin(){
         ["#34d39944","var(--gpa)","🎓 GPA Data",dlTotalGpa,"GPA",()=>exportCSV(fS.map(s=>({Name:getFullName(s.username),UserID:s.username,Date:s.date,Time:new Date(s.timestamp).toLocaleTimeString(),GPA_Count:s.gpa||""})),`GPA_${dlMonth||"All"}.csv`),"btn-gpa"],
         ["var(--border)","var(--accent)","📋 Attendance",fA.length,"records",()=>{
           const dm={};
-          fA.forEach(r=>{const k=r.username+"__"+new Date(r.timestamp).toDateString();if(!dm[k])dm[k]={Name:getFullName(r.username),UserID:r.username,Date:new Date(r.timestamp).toLocaleDateString(),CheckIn:"",CheckOut:"",Hours:"",InLat:"",InLng:"",OutLat:"",OutLng:""};
+          fA.forEach(r=>{const k=r.username+"__"+localDateStr(new Date(r.timestamp));if(!dm[k])dm[k]={Name:getFullName(r.username),UserID:r.username,Date:new Date(r.timestamp).toLocaleDateString(),CheckIn:"",CheckOut:"",Hours:"",InLat:"",InLng:"",OutLat:"",OutLng:""};
             if(r.type==="in"&&(!dm[k]._inTs||r.timestamp<dm[k]._inTs)){dm[k]._inTs=r.timestamp;dm[k].CheckIn=new Date(r.timestamp).toLocaleTimeString();dm[k].InLat=r.location?.lat||"";dm[k].InLng=r.location?.lng||"";}
             if(r.type==="out"&&(!dm[k]._outTs||r.timestamp>dm[k]._outTs)){dm[k]._outTs=r.timestamp;dm[k].CheckOut=new Date(r.timestamp).toLocaleTimeString();dm[k].OutLat=r.location?.lat||"";dm[k].OutLng=r.location?.lng||"";}
           });
