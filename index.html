@@ -719,15 +719,21 @@ async function loadFromSheet() {
       }).filter(u => u.username);
 
     if (sheetUsers.length) {
+      // GEO FIX: snapshot localStorage BEFORE DB is overwritten — used as last-resort
+      // fallback so a stale Sheet fetch can never erase a freshly saved geofence.
+      const localSnap = {};
+      try { const _r=localStorage.getItem(KEY); if(_r){(JSON.parse(_r).users||[]).forEach(u=>{localSnap[u.username]=u;});} } catch(_){}
+
       const localAdmins = DB.users.filter(u => u.role === "admin" && !sheetUsers.find(s => s.username === u.username));
       const merged = sheetUsers.map(su => {
         const local = DB.users.find(x => x.username === su.username);
+        const snap  = localSnap[su.username];
         return {
           ...su,
-          geoLat: su.geoLat || local?.geoLat || "",
-          geoLng: su.geoLng || local?.geoLng || "",
-          geoRadius: su.geoRadius || local?.geoRadius || 200,
-          officeName: su.officeName || local?.officeName || ""
+          geoLat:     su.geoLat     || local?.geoLat     || snap?.geoLat     || "",
+          geoLng:     su.geoLng     || local?.geoLng     || snap?.geoLng     || "",
+          geoRadius:  su.geoRadius  || local?.geoRadius  || snap?.geoRadius  || 200,
+          officeName: su.officeName || local?.officeName || snap?.officeName || ""
         };
       });
       DB.users = [...merged, ...localAdmins];
