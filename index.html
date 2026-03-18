@@ -248,7 +248,7 @@ select option{background:var(--surface);color:var(--text)}
 <script>
 // ── VIBE v20260318.fix-geo — Full geo misalignment fix: smart coord detection on read + clean validation on write ────
 const KEY = "vibeAttendanceData";
-const DEFAULT_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzEMcUcrECFJFX1u6C7rwNyoGK_J0sQXIsemYDX3ab22d0Fows4b01pmlTiLgVhs2eg/exec";
+const DEFAULT_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwdEN05zTIvIB9xTS7O80WOb3ttdS3qeiRZJsJqq1iHLdVASkzPF4ujB1sWJv-xmlJ9/exec";
 
 // ── API KEY: paste the value from setupApiKey() here after first deployment ──
 const DEFAULT_API_KEY = "5c6d46fe-1ffc-4615-9e8b-96051031a4a3";
@@ -1149,10 +1149,19 @@ function renderLogin(){
   pwWrap.appendChild(inP);pwWrap.appendChild(eyeBtn);
   const btn=h("button",{className:"btn btn-primary"},"Sign In");
 
+  let _loginAttempts=0;
+  let _loginLockedUntil=0;
   function doLogin(){
     const u=inU.value.trim(),p=inP.value.trim();
     errBox.classList.add("hidden");
     if(!u||!p){errBox.textContent="Please enter username and password.";errBox.classList.remove("hidden");return}
+    // Brute force protection: lock after 5 failed attempts for 60 seconds
+    const now=Date.now();
+    if(_loginLockedUntil>now){
+      const secsLeft=Math.ceil((_loginLockedUntil-now)/1000);
+      errBox.textContent=`Too many failed attempts. Please wait ${secsLeft}s before trying again.`;
+      errBox.classList.remove("hidden");return;
+    }
     btn.disabled=true;btn.textContent="Verifying…";
     (async()=>{
       try{
@@ -1164,9 +1173,18 @@ function renderLogin(){
         if(defUser) found=defUser;
       }
       if(!found){
-        errBox.textContent="Incorrect username or password.";errBox.classList.remove("hidden");
+        _loginAttempts++;
+        if(_loginAttempts>=5){
+          _loginLockedUntil=Date.now()+60000;
+          _loginAttempts=0;
+          errBox.textContent="Too many failed attempts. Locked for 60 seconds.";
+        } else {
+          errBox.textContent=`Incorrect username or password. (${5-_loginAttempts} attempts left)`;
+        }
+        errBox.classList.remove("hidden");
         btn.disabled=false;btn.textContent="Sign In";return;
       }
+      _loginAttempts=0;_loginLockedUntil=0;
       proceedLogin(found,u,p);
     })();
   }
@@ -1344,6 +1362,8 @@ function renderUser(){
     window._userRefresh=null;window._calMonth=null;
     delete window._recQuick;delete window._recUser;delete window._recMonth;
     delete window._userSearch;delete window._geoWarn;
+    delete window._adminGeoLat;delete window._adminGeoLng;
+    delete window._surveyShowAll;
     if(autoSyncInterval){clearInterval(autoSyncInterval);autoSyncInterval=null;}
     if(SESSION) sessionStorage.removeItem("vibeLastCheckout_"+SESSION.username);
     SESSION=null;clearSession();route();
@@ -1804,9 +1824,30 @@ function renderUser(){
           wrap.appendChild(h("div",{style:{fontSize:".7rem",color:"var(--muted)",fontWeight:"700",textTransform:"uppercase",letterSpacing:".07em",marginBottom:".3rem"}},"📍 "+label));
           const lat=rawLoc?.lat, lng=rawLoc?.lng;
           if(lat&&lng){
-            const officeName=rec?.geoName&&rec.geoName!=="No office location set"&&rec.geoName!==""?rec.geoName:"";
-            if(officeName) wrap.appendChild(h("div",{style:{fontSize:".8rem",fontWeight:"700",color:color,marginBottom:"2px"}},officeName));
-            else wrap.appendChild(h("div",{style:{fontSize:".8rem",color:"var(--muted)"}}, "—"));
+            // Office name
+            const _meULI=DB.users.find(u=>u.username===SESSION.username);
+            const _profileOffLI=(_meULI?.officeName&&_meULI.officeName.trim())?_meULI.officeName.trim():((_meULI?.location&&_meULI.location.trim())?_meULI.location.trim():"");
+            const officeName=rec?.geoName&&rec.geoName!=="No office location set"&&rec.geoName!==""?rec.geoName:_profileOffLI;
+            if(officeName) wrap.appendChild(h("div",{style:{fontSize:".8rem",fontWeight:"700",color:color,marginBottom:"2px"}},"\uD83C\uDFE2 "+officeName));
+            // Coords link
+            const coordLink=h("a",{href:`https://maps.google.com/?q=${lat},${lng}`,target:"_blank",style:{fontSize:".72rem",fontFamily:"var(--mono)",color:"var(--muted)",textDecoration:"none",opacity:".85",display:"block",marginBottom:"3px"}},`📍 ${parseFloat(lat).toFixed(4)}, ${parseFloat(lng).toFixed(4)}`);
+            wrap.appendChild(coordLink);
+            // Distance badge
+            const _rawD=rec?.geoDist;
+            const _hasD=_rawD!=null&&_rawD!==""&&String(_rawD).trim()!=="";
+            let distEl=null;
+            if(_hasD){
+              const d=parseInt(_rawD)||0;
+              const isOut=!rec.geoOk;
+              distEl=h("span",{style:{fontSize:".65rem",fontWeight:"700",padding:".1rem .4rem",borderRadius:"20px",background:isOut?"#ff5f6d22":"#38d9a922",color:isOut?"#ff5f6d":"#38d9a9",border:`1px solid ${isOut?"#ff5f6d44":"#38d9a944"}`,display:"inline-block"}},(isOut?"⚠️ ":"✅ ")+(d>=1000?(d/1000).toFixed(1)+"km":d+"m")+" from office");
+            } else if(_meULI?.geoLat&&_meULI?.geoLng){
+              const oLat=parseFloat(_meULI.geoLat),oLng=parseFloat(_meULI.geoLng);
+              const d=Math.round(haversineDistance(parseFloat(lat),parseFloat(lng),oLat,oLng));
+              const radius=parseInt(_meULI.geoRadius)||200;
+              const isOut=d>radius;
+              distEl=h("span",{style:{fontSize:".65rem",fontWeight:"700",padding:".1rem .4rem",borderRadius:"20px",background:isOut?"#ff5f6d22":"#38d9a922",color:isOut?"#ff5f6d":"#38d9a9",border:`1px solid ${isOut?"#ff5f6d44":"#38d9a944"}`,display:"inline-block"}},(isOut?"⚠️ ":"✅ ")+(d>=1000?(d/1000).toFixed(1)+"km":d+"m")+" from office");
+            }
+            if(distEl) wrap.appendChild(distEl);
           } else {
             wrap.appendChild(h("div",{style:{fontSize:".8rem",color:"var(--muted)"}}, "—"));
           }
@@ -1822,11 +1863,36 @@ function renderUser(){
           const dot=el("span","status-dot "+(r.type==="in"?"dot-in":"dot-out"));
           const info=h("div",{style:{flex:1}});
           const label=h("div",{style:{fontWeight:"600",fontSize:".88rem"}},r.type==="in"?"✅ Checked In":"🔴 Checked Out");
-          const locLbl=r.geoName&&r.geoName!=="No office location set"&&r.geoName!==""
-            ?`📍 ${r.geoName}`
-            :"No location";
+          // Office name
+          const _meURC=DB.users.find(u=>u.username===SESSION.username);
+          const _offNameRC=r.geoName&&r.geoName!=="No office location set"&&r.geoName!==""?r.geoName:((_meURC?.officeName&&_meURC.officeName.trim())?_meURC.officeName.trim():((_meURC?.location&&_meURC.location.trim())?_meURC.location.trim():""));
+          const locLbl=_offNameRC?`🏢 ${_offNameRC}`:"No location";
           const locEl=el("div","rec-loc",locLbl);
           info.appendChild(label);info.appendChild(locEl);
+          // Distance badge on record card
+          const _rawDRC=r.geoDist;
+          const _hasDRC=_rawDRC!=null&&_rawDRC!==""&&String(_rawDRC).trim()!=="";
+          if(_hasDRC||(_meURC?.geoLat&&_meURC?.geoLng&&(r.location?.lat||r.outLocation?.lat))){
+            let distTxt="", isOutRC=false;
+            if(_hasDRC){
+              const d=parseInt(_rawDRC)||0;
+              isOutRC=!r.geoOk;
+              distTxt=(d>=1000?(d/1000).toFixed(1)+"km":d+"m")+" from office";
+            } else {
+              const _chkLat=r.location?.lat||r.outLocation?.lat;
+              const _chkLng=r.location?.lng||r.outLocation?.lng;
+              if(_chkLat&&_chkLng){
+                const d=Math.round(haversineDistance(parseFloat(_chkLat),parseFloat(_chkLng),parseFloat(_meURC.geoLat),parseFloat(_meURC.geoLng)));
+                const radius=parseInt(_meURC.geoRadius)||200;
+                isOutRC=d>radius;
+                distTxt=(d>=1000?(d/1000).toFixed(1)+"km":d+"m")+" from office";
+              }
+            }
+            if(distTxt){
+              const distEl=h("span",{style:{fontSize:".65rem",fontWeight:"700",padding:".1rem .4rem",borderRadius:"20px",background:isOutRC?"#ff5f6d22":"#38d9a922",color:isOutRC?"#ff5f6d":"#38d9a9",border:`1px solid ${isOutRC?"#ff5f6d44":"#38d9a944"}`,display:"inline-block",marginTop:"2px"}},(isOutRC?"⚠️ ":"✅ ")+distTxt);
+              info.appendChild(distEl);
+            }
+          }
           const time=el("div","rec-time",new Date(r.timestamp).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"}));
           rc.appendChild(dot);rc.appendChild(info);rc.appendChild(time);content.appendChild(rc);
         });
@@ -1860,7 +1926,7 @@ function renderUser(){
           dayMap[k].in=r.timestamp;dayMap[k].loc=r.location;dayMap[k].inRec=r;
           if(r.outLocation&&!dayMap[k].outLoc){
             dayMap[k].outLoc=r.outLocation;
-            if(!dayMap[k].outRec)dayMap[k].outRec={location:r.outLocation,geoName:r.geoName||"",geoOk:r.geoOk||false,geoDist:r.geoDist??null};
+            if(!dayMap[k].outRec)dayMap[k].outRec={username:r.username,location:r.outLocation,geoName:r.geoName||"",geoOk:r.geoOk||false,geoDist:r.geoDist??null};
           }
           if(r.outTimestamp&&!dayMap[k].out)dayMap[k].out=r.outTimestamp;
         }
@@ -1905,26 +1971,26 @@ function renderUser(){
             if(!loc?.lat) return `<span style="color:var(--muted);font-size:.75rem">—</span>`;
             const name=_geoLabel(rec, _profileOfficeName);
             const coords=`${parseFloat(loc.lat).toFixed(4)}, ${parseFloat(loc.lng).toFixed(4)}`;
-            // Distance badge
-            let distBadge="";
-            if(rec?.geoDist!=null&&rec.geoDist!==undefined){
-              const d=parseInt(rec.geoDist);
+            // Distance badge helper
+            function _dBadgeU(d, isOut){
               const dLbl=d>=1000?(d/1000).toFixed(1)+"km":d+"m";
-              const isOut=!rec.geoOk;
               const dColor=isOut?"#ff5f6d":"#38d9a9";
               const dBg=isOut?"#ff5f6d22":"#38d9a922";
               const dBorder=isOut?"#ff5f6d44":"#38d9a944";
-              distBadge=`<span style="font-size:.65rem;font-weight:700;padding:.1rem .4rem;border-radius:20px;background:${dBg};color:${dColor};border:1px solid ${dBorder}">${isOut?"⚠️":"✅"} ${dLbl} from office</span>`;
+              return `<span style="font-size:.65rem;font-weight:700;padding:.1rem .4rem;border-radius:20px;background:${dBg};color:${dColor};border:1px solid ${dBorder}">${isOut?"⚠️":"✅"} ${dLbl} from office</span>`;
+            }
+            let distBadge="";
+            const _rawDistU=rec?.geoDist;
+            const _hasDistU=_rawDistU!=null&&_rawDistU!==""&&String(_rawDistU).trim()!=="";
+            if(_hasDistU){
+              // Saved distance from check-in (most accurate)
+              distBadge=_dBadgeU(parseInt(_rawDistU)||0, !rec.geoOk);
             } else if(_meU?.geoLat&&_meU?.geoLng){
+              // Calculate from user's configured office coords
               const oLat=parseFloat(_meU.geoLat),oLng=parseFloat(_meU.geoLng);
               const d=Math.round(haversineDistance(parseFloat(loc.lat),parseFloat(loc.lng),oLat,oLng));
               const radius=parseInt(_meU.geoRadius)||200;
-              const isOut=d>radius;
-              const dLbl=d>=1000?(d/1000).toFixed(1)+"km":d+"m";
-              const dColor=isOut?"#ff5f6d":"#38d9a9";
-              const dBg=isOut?"#ff5f6d22":"#38d9a922";
-              const dBorder=isOut?"#ff5f6d44":"#38d9a944";
-              distBadge=`<span style="font-size:.65rem;font-weight:700;padding:.1rem .4rem;border-radius:20px;background:${dBg};color:${dColor};border:1px solid ${dBorder}">${isOut?"⚠️":"✅"} ${dLbl} from office</span>`;
+              distBadge=_dBadgeU(d, d>radius);
             }
             return `<div style="display:flex;flex-direction:column;gap:3px">
               ${name?`<span style="font-size:.75rem;font-weight:700;color:${textColor}">🏢 ${name}</span>`:""}
@@ -2156,7 +2222,8 @@ function openSurveyEditModal(survey, onSave) {
       const updated={...DB.surveys[idx],policy:parseInt(i1.value)||0,rsa:parseInt(i2.value)||0,gpa:parseInt(i3.value)||0};
       saveBtn.disabled=true;saveBtn.textContent="Saving…";
       DB.surveys[idx]=updated;
-      await gsPost({action:"addSurvey",data:updated});
+      // Use updateSurvey (updates existing row by id) — addSurvey would append a duplicate
+      await gsPost({action:"updateSurvey",data:updated});
     }
     ov.remove();onSave();
   });
@@ -2265,12 +2332,39 @@ function openUserDataModal(u, allAttend, allSurveys){
 
       const tbl=h("table",{style:{width:"100%",borderCollapse:"collapse",fontSize:".82rem"}});
       const thead=h("thead",{});
-      thead.innerHTML="<tr><th class='attend-th'>Date</th><th class='attend-th'>Check In</th><th class='attend-th'>Check Out</th><th class='attend-th'>Arrival</th><th class='attend-th'>Departure</th></tr>";
+      thead.innerHTML="<tr><th class='attend-th'>Date</th><th class='attend-th'>Check In</th><th class='attend-th'>Check Out</th><th class='attend-th'>Arrival</th><th class='attend-th'>Departure</th><th class='attend-th'>📍 In Location</th><th class='attend-th'>📍 Out Location</th></tr>";
       tbl.appendChild(thead);
       const tbody=h("tbody",{});
+      // Helper: build location+distance cell HTML for modal
+      function _modalLocCell(rec, rawLoc, color){
+        const lat=rawLoc?.lat, lng=rawLoc?.lng;
+        if(!lat||!lng) return "<span style='color:var(--muted);font-size:.75rem'>—</span>";
+        const coordStr=`${parseFloat(lat).toFixed(4)}, ${parseFloat(lng).toFixed(4)}`;
+        const mapsUrl=`https://maps.google.com/?q=${lat},${lng}`;
+        const officeName=rec?.geoName&&rec.geoName!=="No office location set"&&rec.geoName!==""?rec.geoName:(u.officeName||u.location||"");
+        const offBadge=officeName?`<div style="font-size:.72rem;font-weight:700;color:${color};margin-bottom:2px">🏢 ${officeName}</div>`:"";
+        // Distance
+        let distHtml="";
+        const _rd=rec?.geoDist; const _hd=_rd!=null&&_rd!==""&&String(_rd).trim()!=="";
+        if(_hd){
+          const d=parseInt(_rd)||0; const isOut=!rec.geoOk;
+          const dLbl=d>=1000?(d/1000).toFixed(1)+"km":d+"m";
+          distHtml=`<span style="font-size:.63rem;font-weight:700;padding:.1rem .35rem;border-radius:20px;background:${isOut?"#ff5f6d22":"#38d9a922"};color:${isOut?"#ff5f6d":"#38d9a9"};border:1px solid ${isOut?"#ff5f6d44":"#38d9a944"};white-space:nowrap">${isOut?"⚠️":"✅"} ${dLbl} from office</span>`;
+        } else if(u.geoLat&&u.geoLng){
+          const d=Math.round(haversineDistance(parseFloat(lat),parseFloat(lng),parseFloat(u.geoLat),parseFloat(u.geoLng)));
+          const radius=parseInt(u.geoRadius)||200; const isOut=d>radius;
+          const dLbl=d>=1000?(d/1000).toFixed(1)+"km":d+"m";
+          distHtml=`<span style="font-size:.63rem;font-weight:700;padding:.1rem .35rem;border-radius:20px;background:${isOut?"#ff5f6d22":"#38d9a922"};color:${isOut?"#ff5f6d":"#38d9a9"};border:1px solid ${isOut?"#ff5f6d44":"#38d9a944"};white-space:nowrap">${isOut?"⚠️":"✅"} ${dLbl} from office</span>`;
+        }
+        return `<div style="display:flex;flex-direction:column;gap:2px">${offBadge}<a href="${mapsUrl}" target="_blank" style="font-size:.68rem;font-family:var(--mono);color:var(--muted);text-decoration:none;opacity:.85">📍 ${coordStr}</a>${distHtml}</div>`;
+      }
       days.forEach(({date,ins,outs})=>{
         const inTs=ins.length?Math.min(...ins.map(r=>r.timestamp)):null;
         const outTs=outs.length?Math.max(...outs.map(r=>r.timestamp)):null;
+        const inRec=ins.find(r=>r.timestamp===inTs)||null;
+        const outRec=outs.find(r=>r.timestamp===outTs)||null;
+        const inLoc=inRec?.location||null;
+        const outLoc=outRec?.location||outRec?.outLocation||null;
         const arr=getArrivalStatus(inTs);
         const dep=getDepartureStatus(outTs,inTs);
         const arrColor=arr?.type==="ontime"?"var(--gpa)":arr?.type==="halfday"?"var(--warn)":"var(--danger)";
@@ -2281,7 +2375,9 @@ function openUserDataModal(u, allAttend, allSurveys){
           <td class='attend-td' style='color:var(--accent2);font-family:var(--mono)'>${inTs?new Date(inTs).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"}):"—"}</td>
           <td class='attend-td' style='color:var(--danger);font-family:var(--mono)'>${outTs?new Date(outTs).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"}):"—"}</td>
           <td class='attend-td'><span style='color:${arrColor};font-weight:700;font-size:.78rem'>${arr?arr.label:"—"}</span></td>
-          <td class='attend-td'><span style='color:${depColor};font-weight:700;font-size:.78rem'>${dep?dep.label:"—"}</span></td>`;
+          <td class='attend-td'><span style='color:${depColor};font-weight:700;font-size:.78rem'>${dep?dep.label:"—"}</span></td>
+          <td class='attend-td'>${_modalLocCell(inRec, inLoc, "var(--accent2)")}</td>
+          <td class='attend-td'>${_modalLocCell(outRec, outLoc, "var(--danger)")}</td>`;
         tbody.appendChild(tr);
       });
       tbl.appendChild(tbody);
@@ -2463,6 +2559,8 @@ function renderAdmin(){
     window._adminRefresh=null; window._doAdminSync=null;
     if(autoSyncInterval){clearInterval(autoSyncInterval);autoSyncInterval=null;}
     delete window._recQuick;delete window._recUser;delete window._recMonth;
+    delete window._adminGeoLat;delete window._adminGeoLng;
+    delete window._surveyShowAll;delete window._userSearch;
     delete window._userSearch;delete window._geoWarn;
     SESSION=null;clearSession();route();
   });
@@ -2777,8 +2875,11 @@ function renderAdmin(){
         if(!name){errB.textContent="Full name is required.";errB.classList.remove("hidden");return}
         if(!uid){errB.textContent="User ID is required.";errB.classList.remove("hidden");return}
         if(!pw){errB.textContent="Password is required.";errB.classList.remove("hidden");return}
-        if(DB.users.find(x=>x.username===uid)){errB.textContent="User ID already exists. Choose a different one.";errB.classList.remove("hidden");return}
-        DB.users.push({username:uid,password:pw,fullName:name,userId:uid,designation:des,location:loc2,role:"user",geoLat:"",geoLng:"",geoRadius:200,officeName:""});
+        if(pw.length<4){errB.textContent="Password must be at least 4 characters.";errB.classList.remove("hidden");return}
+        const uidClean=uid.toLowerCase().replace(/\s+/g,"");
+        if(!uidClean){errB.textContent="User ID cannot be only spaces.";errB.classList.remove("hidden");return}
+        if(DB.users.find(x=>x.username===uidClean)){errB.textContent="User ID already exists. Choose a different one.";errB.classList.remove("hidden");return}
+        DB.users.push({username:uidClean,password:pw,fullName:name,userId:uidClean,designation:des,location:loc2,role:"user",geoLat:"",geoLng:"",geoRadius:200,officeName:offName2||""});
         save(DB);syncUsersToSheet();
         sucB.textContent=`✅ User "${name}" (ID: ${uid}) created successfully.`;sucB.classList.remove("hidden");
         iName.value="";iUID.value="";iPW.value="";iDS.value="";iLoc.value="";iOffName.value="";
@@ -2798,26 +2899,8 @@ function renderAdmin(){
       const searchIcon=h("span",{style:{position:"absolute",left:".6rem",top:"50%",transform:"translateY(-50%)",pointerEvents:"none",fontSize:".9rem"}},"🔍");
       searchWrap.appendChild(searchIcon);
       searchWrap.appendChild(searchInp);
-      // Distance toggle button
-      const distBtn=h("button",{style:{padding:".4rem .8rem",borderRadius:"8px",border:"1.5px solid var(--border)",background:window._adminGeoLat?"#38d9a922":"var(--surface)",color:window._adminGeoLat?"var(--accent2)":"var(--muted)",fontFamily:"var(--font)",fontSize:".78rem",fontWeight:"700",cursor:"pointer",whiteSpace:"nowrap",flexShrink:"0"}},window._adminGeoLat?"📍 Distances on":"📍 Show distances");
-      distBtn.addEventListener("click",()=>{
-        if(window._adminGeoLat){
-          // Toggle off
-          delete window._adminGeoLat; delete window._adminGeoLng;
-          refresh(); return;
-        }
-        distBtn.textContent="📍 Getting location…";distBtn.disabled=true;
-        navigator.geolocation.getCurrentPosition(pos=>{
-          window._adminGeoLat=pos.coords.latitude;
-          window._adminGeoLng=pos.coords.longitude;
-          refresh();
-        }, ()=>{
-          distBtn.textContent="📍 Location denied";distBtn.disabled=false;
-        },{enableHighAccuracy:true,timeout:8000});
-      });
       userListHeader.appendChild(userTitle);
       userListHeader.appendChild(searchWrap);
-      userListHeader.appendChild(distBtn);
       content.appendChild(userListHeader);
 
       const userListWrap=h("div",{id:"userListGrid",style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:".75rem"}});
@@ -2919,13 +3002,18 @@ function renderAdmin(){
           const eBtn=h("button",{className:"btn btn-ghost btn-sm",style:{fontSize:".75rem",padding:".35rem .4rem"}},"✏️ Edit");
           eBtn.addEventListener("click",()=>openEditModal(u));
           const dBtn=h("button",{className:"btn btn-danger btn-sm",style:{fontSize:".75rem",padding:".35rem .4rem"}},"🗑 Del");
-          dBtn.addEventListener("click",()=>{
-            if(!confirm(`Delete "${u.fullName||u.username}"?`))return;
+          dBtn.addEventListener("click",async()=>{
+            if(!confirm(`Delete "${u.fullName||u.username}"? This cannot be undone.`))return;
+            dBtn.disabled=true;dBtn.textContent="Deleting…";
             DB.users=DB.users.filter(x=>x.username!==u.username);
             DB.attendance=DB.attendance.filter(r=>r.username!==u.username);
             DB.surveys=(DB.surveys||[]).filter(r=>r.username!==u.username);
             DB.absences=(DB.absences||[]).filter(r=>r.username!==u.username);
-            save(DB);syncUsersToSheet();refresh();
+            save(DB);
+            // Sync deletion to sheet
+            try{ await gsPost({action:"deleteUser",data:{username:u.username}}); }catch(_){}
+            refresh();
+            showToast(`User "${u.fullName||u.username}" deleted.`,"warn",3000);
           });
           btns.appendChild(vBtn);btns.appendChild(eBtn);btns.appendChild(dBtn);
           card.appendChild(btns);
@@ -3034,6 +3122,7 @@ function renderAdmin(){
             dayMap2[k].outLoc=r.outLocation;
             if(!dayMap2[k].outRec){
               dayMap2[k].outRec={
+                username:r.username,
                 location:r.outLocation,
                 geoName:r.geoName||"",
                 geoOk:r.geoOk||false,
@@ -3141,32 +3230,34 @@ function renderAdmin(){
               const mapsUrl=`https://maps.google.com/?q=${lat},${lng}`;
               const coordStr=`${parseFloat(lat).toFixed(4)}, ${parseFloat(lng).toFixed(4)}`;
               // Office name from record or user profile
+              // Always use r.username (row's username) as the definitive lookup key — rec?.username may be undefined for synthetic outRec objects
               let officeName=rec?.geoName&&rec.geoName!=="No office location set"&&rec.geoName!==""?rec.geoName:"";
-              const uRec2=regularUsers.find(u=>u.username===(rec?.username||r.username||""));
+              const _lookupUser=String(rec?.username||r.username||"").toLowerCase().trim();
+              const uRec2=regularUsers.find(u=>u.username===_lookupUser);
               if(!officeName) officeName=(uRec2?.officeName&&uRec2.officeName.trim())?uRec2.officeName.trim():(uRec2?.location&&uRec2.location.trim()?uRec2.location.trim():"");
               const officeBadge=officeName?`<div style="font-size:.75rem;font-weight:700;color:${accentColor};margin-bottom:2px">🏢 ${officeName}</div>`:"";
               // Distance: use geoDist from record if available, else calculate from user's configured office coords
               let distBadge="";
-              if(rec?.geoDist!=null&&rec.geoDist!==undefined){
-                const d=parseInt(rec.geoDist);
+              // Helper: build distance badge HTML
+              function _dBadge(d, isOut){
                 const dLbl=d>=1000?(d/1000).toFixed(1)+"km":d+"m";
-                const isOut=!rec.geoOk;
                 const dColor=isOut?"#ff5f6d":"#38d9a9";
                 const dBg=isOut?"#ff5f6d22":"#38d9a922";
                 const dBorder=isOut?"#ff5f6d44":"#38d9a944";
-                const dIcon=isOut?"⚠️":"✅";
-                distBadge=`<span style="font-size:.65rem;font-weight:700;padding:.1rem .4rem;border-radius:20px;background:${dBg};color:${dColor};border:1px solid ${dBorder};white-space:nowrap">${dIcon} ${dLbl} from office</span>`;
+                return `<span style="font-size:.65rem;font-weight:700;padding:.1rem .4rem;border-radius:20px;background:${dBg};color:${dColor};border:1px solid ${dBorder};white-space:nowrap">${isOut?"⚠️":"✅"} ${dLbl} from office</span>`;
+              }
+              const _rawDist=rec?.geoDist;
+              const _hasDist=_rawDist!=null&&_rawDist!==""&&String(_rawDist).trim()!=="";
+              if(_hasDist){
+                // Use saved distance from record (most accurate — captured at check-in time)
+                const d=parseInt(_rawDist)||0;
+                distBadge=_dBadge(d,!rec.geoOk);
               } else if(uRec2?.geoLat&&uRec2?.geoLng){
+                // Calculate live from user's office coordinates
                 const oLat=parseFloat(uRec2.geoLat),oLng=parseFloat(uRec2.geoLng);
                 const d=Math.round(haversineDistance(parseFloat(lat),parseFloat(lng),oLat,oLng));
                 const radius=parseInt(uRec2.geoRadius)||200;
-                const isOut=d>radius;
-                const dLbl=d>=1000?(d/1000).toFixed(1)+"km":d+"m";
-                const dColor=isOut?"#ff5f6d":"#38d9a9";
-                const dBg=isOut?"#ff5f6d22":"#38d9a922";
-                const dBorder=isOut?"#ff5f6d44":"#38d9a944";
-                const dIcon=isOut?"⚠️":"✅";
-                distBadge=`<span style="font-size:.65rem;font-weight:700;padding:.1rem .4rem;border-radius:20px;background:${dBg};color:${dColor};border:1px solid ${dBorder};white-space:nowrap">${dIcon} ${dLbl} from office</span>`;
+                distBadge=_dBadge(d,d>radius);
               }
               return `<div style="display:flex;flex-direction:column;gap:3px">${officeBadge}<a href="${mapsUrl}" target="_blank" style="font-size:.7rem;font-family:var(--mono);color:var(--muted);text-decoration:none;opacity:.85">📍 ${coordStr}</a>${distBadge}</div>`;
             }
@@ -3715,12 +3806,13 @@ const iRad=h("input",{type:"number",min:"50",max:"5000",value:_cleanRadius,place
     // ── SAVE ──────────────────────────────────────────────────────────────────
     const sb=h("button",{className:"btn btn-primary",style:{marginTop:".25rem"}},"💾 Save Changes");
     sb.addEventListener("click",()=>{
-      const name=iName.value.trim(),uid=iUID.value.trim(),pw=iPW.value.trim();
+      const name=iName.value.trim(),uid=iUID.value.trim().toLowerCase().replace(/\s+/g,""),pw=iPW.value.trim();
       const des=iDS.value.trim(),loc=iLoc.value.trim(),offName=iOfficeName.value.trim();
       const lat=iLat.value.trim(),lng=iLng.value.trim();
       const rad=parseInt(iRad.value)||200;
       if(!name){showModalErr("Full name is required.");return;}
       if(!uid||!pw){showModalErr("User ID and password are required.");return;}
+      if(pw.length<4){showModalErr("Password must be at least 4 characters.");return;}
       if(uid!==u.username&&DB.users.find(x=>x.username===uid)){showModalErr("User ID already exists.");return;}
       if(lat&&(isNaN(parseFloat(lat))||parseFloat(lat)<-90||parseFloat(lat)>90)){showModalErr("Invalid latitude (must be -90 to 90).");return;}
       if(lng&&(isNaN(parseFloat(lng))||parseFloat(lng)<-180||parseFloat(lng)>180)){showModalErr("Invalid longitude (must be -180 to 180).");return;}
