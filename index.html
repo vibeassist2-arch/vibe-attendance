@@ -248,7 +248,7 @@ select option{background:var(--surface);color:var(--text)}
 <script>
 // ── VIBE v20260313.online — FULLY ONLINE. No localStorage for data. Google Sheets is sole source of truth for ALL roles. ────
 const KEY = "vibeAttendanceData";
-const DEFAULT_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwLdgW3xa5I68nEKqgbD_8CscOEuGeE2srJEoE-Cu6sheYdKUnQjZz_OmwLwriqjiU/exec";
+const DEFAULT_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz4QUNfAzBvraeI6FTIVENhglyNAt3cOWq4Wv8SbRc78EPoI_c1Nvw2IVJTHj_jI904/exec";
 
 // ── API KEY: paste the value from setupApiKey() here after first deployment ──
 const DEFAULT_API_KEY = "5c6d46fe-1ffc-4615-9e8b-96051031a4a3";
@@ -495,16 +495,20 @@ async function markAbsences() {
 
   DB.users.filter(u => u.role !== "admin").forEach((u, idx) => {
     const isPresent = checkedInToday.has(u.username) || surveyedToday.has(u.username);
-    const existingAbs = DB.absences.find(a => a.username === u.username && a.date === todayStr);
+    // DEDUP FIX: check all absences for this user+date, not just first
+    const existingAbsList = DB.absences.filter(a => a.username === u.username && a.date === todayStr);
+    const existingAbs = existingAbsList.length > 0;
     if (isPresent && existingAbs) {
+      // Remove all duplicates locally
       DB.absences = DB.absences.filter(a => !(a.username === u.username && a.date === todayStr));
-      // Use gsPost so apiKey is injected automatically
       gsPost({ action:"removeAbsence", data:{ username: u.username, date: todayStr } }).catch(()=>{});
     } else if (!isPresent && !existingAbs) {
+      // Only post if not already in local DB (prevents duplicate posts during same session)
       const newAbs = { id: String(Date.now())+"_abs_"+idx, username: u.username, date: todayStr, auto: true };
       DB.absences.push(newAbs);
       gsPost({ action: "addAbsence", data: newAbs });
     }
+    // If !isPresent && existingAbs — already recorded, do nothing (no duplicate post)
   });
 }
 
