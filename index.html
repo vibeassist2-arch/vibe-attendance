@@ -1372,9 +1372,9 @@ function renderUser(){
               const todayCheckins2=DB.attendance.filter(r=>r.username===SESSION.username&&r.type==="in"&&localDateStr(new Date(r.timestamp))===localDateStr(new Date()));
               const checkInTs2=todayCheckins2.length?Math.min(...todayCheckins2.map(r=>r.timestamp)):_stOut.serverMs;
               // BUG1 FIX: use server checkout time for survey date (check-in could be previous day)
-              const surveyDate2=localDateStr(new Date(_tsNow));
               // FIX 1: Use server-verified timestamp
               const _tsNow=_stOut.serverMs;
+              const surveyDate2=localDateStr(new Date(_tsNow));
               const _clientTsOut=Date.now();
               const _clockDriftMsOut=_clientTsOut-_tsNow;
               const _gpsDriftMsOut=loc.gpsTs?Math.round(loc.gpsTs-_tsNow):null;
