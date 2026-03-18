@@ -248,7 +248,7 @@ select option{background:var(--surface);color:var(--text)}
 <script>
 // ── VIBE v20260313.online — FULLY ONLINE. No localStorage for data. Google Sheets is sole source of truth for ALL roles. ────
 const KEY = "vibeAttendanceData";
-const DEFAULT_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz4QUNfAzBvraeI6FTIVENhglyNAt3cOWq4Wv8SbRc78EPoI_c1Nvw2IVJTHj_jI904/exec";
+const DEFAULT_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxtWw7D0f6EbNITJ7R6uAHEP1CJEABME5PrVX8e41XxmQuJIt-RM_T4Aqf_MLhU1107/exec";
 
 // ── API KEY: paste the value from setupApiKey() here after first deployment ──
 const DEFAULT_API_KEY = "5c6d46fe-1ffc-4615-9e8b-96051031a4a3";
@@ -532,12 +532,29 @@ function startAutoSync() {
 async function syncToSheet() {
   const _syncUrl = getScriptUrl();
   if (!_syncUrl) return;
-  // Include apiKey and username so server accepts the request
+  // Clean users before syncing — strip corrupted designation/location/geo values
+  const ROLE_VALUES = new Set(["user","admin","team leader","teamleader","manager","staff",""]);
+  const cleanUsers = DB.users.map(u => {
+    const uname = (u.username||"").toLowerCase();
+    const fname = (u.fullName||"").toLowerCase();
+    // Clear designation if it matches username or fullName (corrupt)
+    const cleanDesig = (!u.designation||u.designation.toLowerCase()===uname||u.designation.toLowerCase()===fname) ? "" : u.designation;
+    // Clear location if it matches username (corrupt)
+    const cleanLoc = (!u.location||u.location.toLowerCase()===uname) ? "" : u.location;
+    // Clear geoLat/geoLng if they are not valid numbers or not valid India coordinates
+    const rawLat = parseFloat(u.geoLat); const rawLng = parseFloat(u.geoLng);
+    const validGeo = !isNaN(rawLat)&&!isNaN(rawLng)&&rawLat>=6&&rawLat<=38&&rawLng>=68&&rawLng<=98;
+    const cleanGeoLat = validGeo ? u.geoLat : "";
+    const cleanGeoLng = validGeo ? u.geoLng : "";
+    // Clear officeName if it equals role value
+    const cleanOfficeName = (!u.officeName||ROLE_VALUES.has(u.officeName.toLowerCase())) ? "" : u.officeName;
+    return {...u, designation:cleanDesig, location:cleanLoc, geoLat:cleanGeoLat, geoLng:cleanGeoLng, officeName:cleanOfficeName};
+  });
   const payload = {
     action:"fullSync",
     apiKey: getApiKey(),
     username: SESSION ? SESSION.username : "admin",
-    data: { users: DB.users, surveys: DB.surveys, attendance: DB.attendance, absences: DB.absences, officeLocations: DB.officeLocations }
+    data: { surveys: DB.surveys, attendance: DB.attendance, absences: DB.absences, officeLocations: DB.officeLocations }
   };
   try {
     const _sc = new AbortController();
@@ -550,6 +567,46 @@ async function syncToSheet() {
     console.warn("syncToSheet failed:", e);
     return { ok: false, error: e.message };
   }
+}
+
+// Sync users to sheet — sends each user individually using updateUser/addUser actions
+// This avoids fullSync overwriting user rows with wrong column order
+async function syncUsersToSheet() {
+  const _syncUrl = getScriptUrl();
+  if (!_syncUrl) return;
+  const ROLE_VALUES = new Set(["user","admin","team leader","teamleader","manager","staff",""]);
+  const cleanUsers = DB.users.map(u => {
+    const uname = (u.username||"").toLowerCase();
+    const fname = (u.fullName||"").toLowerCase();
+    const cleanDesig = (!u.designation||u.designation.toLowerCase()===uname||u.designation.toLowerCase()===fname) ? "" : u.designation;
+    const cleanLoc = (!u.location||u.location.toLowerCase()===uname) ? "" : u.location;
+    const rawLat = parseFloat(u.geoLat); const rawLng = parseFloat(u.geoLng);
+    const validGeo = !isNaN(rawLat)&&!isNaN(rawLng)&&rawLat>=6&&rawLat<=38&&rawLng>=68&&rawLng<=98;
+    const cleanGeoLat = validGeo ? u.geoLat : "";
+    const cleanGeoLng = validGeo ? u.geoLng : "";
+    const cleanOfficeName = (!u.officeName||ROLE_VALUES.has(u.officeName.toLowerCase())) ? "" : u.officeName;
+    return {...u, designation:cleanDesig, location:cleanLoc, geoLat:cleanGeoLat, geoLng:cleanGeoLng, officeName:cleanOfficeName};
+  });
+  // Try per-user updateUser action first (safe — only touches that user row)
+  // If server does not support it, fall back to fullSync with users included
+  try {
+    const _sc = new AbortController();
+    const _st = setTimeout(() => _sc.abort(), 8000);
+    const res = await fetch(_syncUrl, { method:"POST", redirect:"follow", headers:{"Content-Type":"text/plain"}, body: JSON.stringify({
+      action:"setUsers",
+      apiKey: getApiKey(),
+      username: SESSION ? SESSION.username : "admin",
+      data: { users: cleanUsers }
+    }), signal: _sc.signal });
+    clearTimeout(_st);
+    const text = await res.text();
+    try {
+      const json = JSON.parse(text);
+      if(json && json.ok) return; // server handled it correctly
+    } catch(_){}
+    // Fallback: fullSync without users — do not rewrite user rows at all
+    console.warn("syncUsersToSheet: setUsers not supported, skipping user sync to avoid corruption");
+  } catch(e) { console.warn("syncUsersToSheet failed:", e); }
 }
 
 let _loadRunning = false;
@@ -771,9 +828,12 @@ function checkUserGeofence(userLat,userLng,username){
     const rawLng=String(u.geoLng||"").trim();
     if(rawLat && rawLng && rawLat!=="0" && rawLng!=="0"){
       const lat=parseFloat(rawLat), lng=parseFloat(rawLng);
-      if(!isNaN(lat)&&!isNaN(lng)&&lat>=-90&&lat<=90&&lng>=-180&&lng<=180){
+      // Validate realistic coordinates (India range) and minimum radius
+      const validCoords=!isNaN(lat)&&!isNaN(lng)&&lat>=6&&lat<=38&&lng>=68&&lng<=98;
+      const radius=parseInt(u.geoRadius)||200;
+      const validRadius=radius>=50; // ignore tiny/corrupt radius values
+      if(validCoords&&validRadius){
         const d=haversineDistance(userLat,userLng,lat,lng);
-        const radius=parseInt(u.geoRadius)||200;
         const name=String(u.officeName||u.location||"").trim();
         return{ok:d<=radius,name,dist:Math.round(d),radius,noLocationSet:false};
       }
@@ -1337,20 +1397,19 @@ function renderUser(){
                 mainBtn.disabled=false;mainBtn.textContent="⏹ Check Out";
                 const oldEbCo=content.querySelector(".loc-err-banner");if(oldEbCo)oldEbCo.remove();
                 const ebCo=h("div",{className:"loc-err-banner geo-banner geo-fail",style:{marginTop:".75rem"}});
-                ebCo.innerHTML=`<span class='geo-icon'>📅</span><div><strong>Device Date is Wrong</strong><br>${dateErrCo}</div>`;
+                ebCo.innerHTML=`<span class='geo-icon'>📅</span><div><strong>❌ Check Out Blocked — Device Date Wrong</strong><br>${dateErrCo}<br><span style='font-size:.85em'>Go to phone Settings → Date & Time → enable Auto date & time, then try again.</span></div>`;
                 mainBtn.insertAdjacentElement("afterend",ebCo);
                 return;
               }
               const driftMin=Math.abs(_stOut.drift)/60000;
               if(driftMin>5){
-                _checkoutInProgress=false;
-                _lastCheckOut=0;
+                _checkoutInProgress=false;_lastCheckOut=0;
                 mainBtn.disabled=false;mainBtn.textContent="⏹ Check Out";
                 const oldEbCo2=content.querySelector(".loc-err-banner");if(oldEbCo2)oldEbCo2.remove();
                 const ebCo2=h("div",{className:"loc-err-banner geo-banner geo-fail",style:{marginTop:".75rem"}});
                 const deviceTimeCo=new Date().toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});
                 const serverTimeCo=new Date(_stOut.serverMs).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});
-                ebCo2.innerHTML=`<span class='geo-icon'>⏰</span><div><strong>Device Clock is Wrong</strong><br>Your device shows <strong>${deviceTimeCo}</strong> but the actual time is <strong>${serverTimeCo}</strong>.<br><span style='font-size:.85em'>Please fix your device clock and try again.</span></div>`;
+                ebCo2.innerHTML=`<span class='geo-icon'>⏰</span><div><strong>❌ Check Out Blocked — Phone Clock is Wrong</strong><br>Your phone shows <strong>${deviceTimeCo}</strong> but actual time is <strong>${serverTimeCo}</strong>.<br><span style='font-size:.85em'>Go to Settings → Date & Time → enable <strong>Auto date & time</strong>, then try again.</span></div>`;
                 mainBtn.insertAdjacentElement("afterend",ebCo2);
                 return;
               }
@@ -1385,28 +1444,14 @@ function renderUser(){
               stampCheckOut();
               const geo2=checkUserGeofence(loc.lat,loc.lng,SESSION.username);
 
-              // ── GEOFENCE HARD BLOCK (checkout) ───────────────────────────────
+              // ── GEOFENCE WARNING ONLY (checkout) ─────────────────────────
               if(!geo2.noLocationSet && !geo2.ok){
-                _checkoutInProgress=false;
-                _lastCheckOut=0;
-                mainBtn.disabled=true; // keep disabled — user CANNOT bypass
-                mainBtn.textContent="⏹ Check Out";
                 const oldEbGo=content.querySelector(".loc-err-banner");if(oldEbGo)oldEbGo.remove();
-                const ebGo=h("div",{className:"loc-err-banner geo-banner geo-fail",style:{marginTop:".75rem"}});
+                const ebGo=h("div",{className:"loc-err-banner geo-banner geo-warn",style:{marginTop:".75rem"}});
                 const officeLblO=geo2.name?`<strong>${geo2.name}</strong>`:"your office";
                 const distLblO=geo2.dist!==null?`You are <strong>${geo2.dist}m away</strong> (limit: ${geo2.radius}m).`:"";
-                ebGo.innerHTML=`<span class='geo-icon' style='font-size:1.5rem'>📍</span><div><strong>Too Far From Office</strong><br>You must be within <strong>${geo2.radius}m</strong> of ${officeLblO} to check out.<br>${distLblO}<br><span style='font-size:.8rem;opacity:.8;margin-top:.3rem;display:block'>Move closer and tap Retry.</span></div>`;
-                const retryBtnO=h("button",{style:{marginTop:".6rem",padding:".4rem 1rem",borderRadius:"8px",border:"1.5px solid #ff5f6d",background:"transparent",color:"#ff5f6d",fontFamily:"var(--font)",fontSize:".82rem",fontWeight:"700",cursor:"pointer",display:"block"}},"🔄 Retry");
-                retryBtnO.addEventListener("click",()=>{
-                  ebGo.remove();
-                  _checkoutInProgress=false;
-                  _lastCheckOut=0;
-                  mainBtn.disabled=false;
-                  mainBtn.textContent="⏹ Check Out";
-                });
-                ebGo.appendChild(retryBtnO);
+                ebGo.innerHTML=`<span class='geo-icon'>⚠️</span><div><strong>Outside Office Area</strong><br>${distLblO} Checkout will still be recorded.</div>`;
                 mainBtn.insertAdjacentElement("afterend",ebGo);
-                return;
               }
               const rec_out={
                 id:_outId,username:SESSION.username,type:"out",timestamp:_tsNow+1,location:null,outLocation:loc,
@@ -1520,7 +1565,7 @@ function renderUser(){
               const ebCi2=h("div",{className:"loc-err-banner geo-banner geo-fail",style:{marginTop:".75rem"}});
               const deviceTimeCi=new Date().toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});
               const serverTimeCi=new Date(_serverTimeResult.serverMs).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});
-              ebCi2.innerHTML=`<span class='geo-icon'>⏰</span><div><strong>Device Clock is Wrong</strong><br>Your device shows <strong>${deviceTimeCi}</strong> but the actual time is <strong>${serverTimeCi}</strong>.<br><span style='font-size:.85em'>Please fix your device clock and try again.</span></div>`;
+              ebCi2.innerHTML=`<span class='geo-icon'>⏰</span><div><strong>❌ Check In Blocked — Phone Clock is Wrong</strong><br>Your phone shows <strong>${deviceTimeCi}</strong> but actual time is <strong>${serverTimeCi}</strong>.<br><span style='font-size:.85em'>Go to Settings → Date & Time → enable <strong>Auto date & time</strong>, then try again.</span></div>`;
               mainBtn.insertAdjacentElement("afterend",ebCi2);
               return;
             }
@@ -1554,29 +1599,14 @@ function renderUser(){
             }
             const geo=checkUserGeofence(loc.lat,loc.lng,SESSION.username);
 
-            // ── GEOFENCE HARD BLOCK ───────────────────────────────────────────
-            // Location set by admin AND user is outside radius → BLOCK completely.
-            // noLocationSet = true means admin never set a location → allow freely.
+            // ── GEOFENCE WARNING ONLY (check-in) ────────────────────────────
             if(!geo.noLocationSet && !geo.ok){
-              _lastCheckIn=0;
-              mainBtn.disabled=true; // keep disabled — user CANNOT bypass by clicking again
-              mainBtn.textContent="▶ Check In";
               const oldEbG=content.querySelector(".loc-err-banner");if(oldEbG)oldEbG.remove();
-              const ebG=h("div",{className:"loc-err-banner geo-banner geo-fail",style:{marginTop:".75rem"}});
+              const ebG=h("div",{className:"loc-err-banner geo-banner geo-warn",style:{marginTop:".75rem"}});
               const officeLbl=geo.name?`<strong>${geo.name}</strong>`:"your office";
               const distLbl=geo.dist!==null?`You are <strong>${geo.dist}m away</strong> (limit: ${geo.radius}m).`:"";
-              ebG.innerHTML=`<span class='geo-icon' style='font-size:1.5rem'>📍</span><div><strong>Too Far From Office</strong><br>You must be within <strong>${geo.radius}m</strong> of ${officeLbl} to check in.<br>${distLbl}<br><span style='font-size:.8rem;opacity:.8;margin-top:.3rem;display:block'>Move closer and tap Retry.</span></div>`;
-              // Add retry button inside the banner
-              const retryBtn=h("button",{style:{marginTop:".6rem",padding:".4rem 1rem",borderRadius:"8px",border:"1.5px solid #ff5f6d",background:"transparent",color:"#ff5f6d",fontFamily:"var(--font)",fontSize:".82rem",fontWeight:"700",cursor:"pointer",display:"block"}},"🔄 Retry");
-              retryBtn.addEventListener("click",()=>{
-                ebG.remove();
-                mainBtn.disabled=false;
-                mainBtn.textContent="▶ Check In";
-                _lastCheckIn=0;
-              });
-              ebG.appendChild(retryBtn);
+              ebG.innerHTML=`<span class='geo-icon'>⚠️</span><div><strong>Outside Office Area</strong><br>${distLbl} Check-in will still be recorded.</div>`;
               mainBtn.insertAdjacentElement("afterend",ebG);
-              return;
             }
             // FIX 1: Use server-verified timestamp instead of local Date.now()
             const _tsIn=_serverTimeResult.serverMs;
@@ -2632,7 +2662,7 @@ function renderAdmin(){
         if(!pw){errB.textContent="Password is required.";errB.classList.remove("hidden");return}
         if(DB.users.find(x=>x.username===uid)){errB.textContent="User ID already exists. Choose a different one.";errB.classList.remove("hidden");return}
         DB.users.push({username:uid,password:pw,fullName:name,userId:uid,designation:des,location:loc2,role:"user",geoLat:"",geoLng:"",geoRadius:200,officeName:""});
-        save(DB);syncToSheet();
+        save(DB);syncUsersToSheet();
         sucB.textContent=`✅ User "${name}" (ID: ${uid}) created successfully.`;sucB.classList.remove("hidden");
         iName.value="";iUID.value="";iPW.value="";iDS.value="";iLoc.value="";iOffName.value="";
         refresh();
@@ -2748,7 +2778,7 @@ function renderAdmin(){
             DB.attendance=DB.attendance.filter(r=>r.username!==u.username);
             DB.surveys=(DB.surveys||[]).filter(r=>r.username!==u.username);
             DB.absences=(DB.absences||[]).filter(r=>r.username!==u.username);
-            save(DB);syncToSheet();refresh();
+            save(DB);syncUsersToSheet();refresh();
           });
           btns.appendChild(vBtn);btns.appendChild(eBtn);btns.appendChild(dBtn);
           card.appendChild(btns);
@@ -3250,12 +3280,27 @@ function renderAdmin(){
       fg.appendChild(lbl);fg.appendChild(inp);
       return {fg,inp};
     }
+    // Clean corrupt values before showing in edit form
+    const EDIT_INVALID=new Set(["user","admin","team leader","teamleader","manager","staff",""]);
+    function editClean(val, username, fullName){
+      if(!val||typeof val!=="string") return "";
+      const v=val.trim(); const vl=v.toLowerCase();
+      if(EDIT_INVALID.has(vl)) return "";
+      if(vl===(username||"").toLowerCase()) return "";
+      if(vl===(fullName||"").toLowerCase()) return "";
+      if(!isNaN(parseFloat(v))&&isFinite(v)) return ""; // reject pure numbers (coordinates)
+      return v;
+    }
+    const _uname=u.username||""; const _fname=u.fullName||"";
+    const _cleanDesig=editClean(u.designation,_uname,_fname);
+    const _cleanLoc=editClean(u.location,_uname,_fname);
+    const _cleanOffice=editClean(u.officeName,_uname,_fname);
     const {fg:fg1,inp:iName}=mf("👤","Full Name",{type:"text",value:u.fullName||""});
     const {fg:fg2,inp:iUID} =mf("🪪","User ID (Login Username)",{type:"text",value:u.userId||u.username});
     const {fg:fg3,inp:iPW}  =mf("🔑","Password",{type:"password",value:u.password||""});
-    const {fg:fg4,inp:iDS}  =mf("🏷","Designation",{type:"text",value:u.designation||""});
-    const {fg:fg5,inp:iLoc} =mf("🌆","Work Location (City/Area)",{type:"text",placeholder:"e.g. Chennai, Kancheepuram",value:u.location||""});
-    const {fg:fg6,inp:iOfficeName}=mf("🏢","Office Name",{type:"text",placeholder:"e.g. KPN, Annai Arul, Radha",value:u.officeName||""});
+    const {fg:fg4,inp:iDS}  =mf("🏷","Designation",{type:"text",value:_cleanDesig});
+    const {fg:fg5,inp:iLoc} =mf("🌆","Work Location (City/Area)",{type:"text",placeholder:"e.g. Chennai, Kancheepuram",value:_cleanLoc});
+    const {fg:fg6,inp:iOfficeName}=mf("🏢","Office Name",{type:"text",placeholder:"e.g. KPN, Annai Arul, Radha",value:_cleanOffice});
     [fg1,fg2,fg3,fg4,fg5,fg6].forEach(x=>{x.style.marginBottom=".9rem";leftCol.appendChild(x);});
 
     // ── RIGHT COLUMN: Google Maps Location ───────────────────────────────────
@@ -3401,7 +3446,8 @@ function renderAdmin(){
     const radiusRow=h("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:".5rem",marginBottom:".65rem"}});
     const radWrap=h("div",{});
     const radLbl=h("label",{style:{fontSize:".7rem",color:"var(--muted)",fontWeight:"700",letterSpacing:".06em",textTransform:"uppercase",display:"block",marginBottom:".25rem"}},"Radius (metres)");
-    const iRad=h("input",{type:"number",min:"50",max:"5000",value:u.geoRadius||200,placeholder:"200"});
+    const _cleanRadius=(u.geoRadius&&parseInt(u.geoRadius)>=50&&parseInt(u.geoRadius)<=5000)?parseInt(u.geoRadius):200;
+const iRad=h("input",{type:"number",min:"50",max:"5000",value:_cleanRadius,placeholder:"200"});
     iRad.style.cssText="width:100%;padding:.55rem .75rem;border-radius:8px;border:1.5px solid var(--border);background:var(--surface);color:var(--text);font-family:var(--mono);font-size:.82rem;outline:none;box-sizing:border-box;margin:0";
     radWrap.appendChild(radLbl);radWrap.appendChild(iRad);
 
@@ -3516,7 +3562,7 @@ function renderAdmin(){
         DB.surveys=(DB.surveys||[]).map(s=>s.username===u.username?{...s,username:uid}:s);
         DB.absences=(DB.absences||[]).map(a=>a.username===u.username?{...a,username:uid}:a);
       }
-      save(DB);syncToSheet();ov.remove();refresh();
+      save(DB);syncUsersToSheet();ov.remove();refresh();
       showToast(`✅ ${name} updated — geofence ${lat&&lng?"set to "+rad+"m":"disabled"}.`,"success",4000);
     });
     const cb=h("button",{className:"btn btn-ghost",style:{marginTop:".5rem"}},"Cancel");
