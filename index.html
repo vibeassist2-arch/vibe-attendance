@@ -248,7 +248,7 @@ select option{background:var(--surface);color:var(--text)}
 <script>
 // ── VIBE v20260313.online — FULLY ONLINE. No localStorage for data. Google Sheets is sole source of truth for ALL roles. ────
 const KEY = "vibeAttendanceData";
-const DEFAULT_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyaPo1tdtbl9S_kEoddoMNBlhJxwBilFuPU7A_PbCyVAG0PdB2oiNORmhG98TQC3vaw/exec";
+const DEFAULT_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwLdgW3xa5I68nEKqgbD_8CscOEuGeE2srJEoE-Cu6sheYdKUnQjZz_OmwLwriqjiU/exec";
 
 // ── API KEY: paste the value from setupApiKey() here after first deployment ──
 const DEFAULT_API_KEY = "5c6d46fe-1ffc-4615-9e8b-96051031a4a3";
@@ -270,21 +270,52 @@ function escapeHtml(text) {
 async function gsFetch(params) {
   const url = getScriptUrl();
   if (!url) return null;
+  const fullParams = { ...params, key: getApiKey(), user: SESSION ? SESSION.username : "anonymous" };
+
+  // Try GET first (standard)
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 8000);
-    // Include API key and current user in every GET request
-    const fullParams = { ...params, key: getApiKey(), user: SESSION ? SESSION.username : "anonymous" };
     const res = await fetch(url + "?" + new URLSearchParams(fullParams), { method: "GET", redirect: "follow", signal: controller.signal });
     clearTimeout(timer);
     const text = await res.text();
     try {
-      return JSON.parse(text);
+      const json = JSON.parse(text);
+      // Detect rate limit — stop immediately, do not retry POST
+      if (json && json.error && String(json.error).toLowerCase().includes("rate limit")) {
+        console.warn("GS: Rate limit hit — backing off");
+        return { ok: false, rateLimited: true };
+      }
+      // If server returned ok:true, we're done
+      if (json && json.ok) return json;
+      // If server echoed params back (misconfigured redirect), fall through to POST
+      if (json && json.params) {
+        console.warn("GS GET: server echoed params — retrying as POST");
+      } else {
+        return json;
+      }
     } catch(e) {
-      console.error("GS GET: server returned non-JSON response");
+      console.warn("GS GET: non-JSON response, retrying as POST");
+    }
+  } catch(e) { console.warn("GS GET error", e); }
+
+  // Fallback: POST with params in body (handles deployments that strip GET query params)
+  try {
+    const ctrl2 = new AbortController();
+    const tmr2 = setTimeout(() => ctrl2.abort(), 8000);
+    const res2 = await fetch(url, {
+      method: "POST", redirect: "follow",
+      headers: { "Content-Type": "text/plain" },
+      body: JSON.stringify({ ...fullParams, apiKey: getApiKey() }),
+      signal: ctrl2.signal
+    });
+    clearTimeout(tmr2);
+    const text2 = await res2.text();
+    try { return JSON.parse(text2); } catch(e) {
+      console.error("GS POST fallback: non-JSON response");
       return null;
     }
-  } catch(e) { console.error("GS GET error", e); return null; }
+  } catch(e) { console.error("GS POST fallback error", e); return null; }
 }
 
 // ONLINE-ONLY: queue stubs — no offline queue for any role
@@ -400,9 +431,14 @@ async function verifyAndPurgeQueue(){ return 0; }
   });
   if(!navigator.onLine) show("No internet — please connect to use VIBE.","#ff5f6d","#fff");
 })();
+let _lastVisibilitySync=0;
 document.addEventListener("visibilitychange", () => {
   if(!document.hidden && SESSION){
-    if(typeof window._doAdminSync==="function") window._doAdminSync(true);
+    const now=Date.now();
+    // RATE LIMIT FIX: debounce — only sync if last visibility sync was >60s ago
+    if(now - _lastVisibilitySync < 60000) return;
+    _lastVisibilitySync=now;
+    if(typeof window._doAdminSync==="function") window._doAdminSync(false);
     else loadFromSheet().then(()=>{ try{if(typeof window._adminRefresh==="function")window._adminRefresh();}catch(_){} }).catch(()=>{});
   }
 });
@@ -480,11 +516,13 @@ setInterval(async()=>{
 let autoSyncInterval = null;
 function startAutoSync() {
   if (autoSyncInterval) clearInterval(autoSyncInterval);
+  // RATE LIMIT FIX: was 2 min — now 5 min; admin uses its own poll via doAdminSync
   autoSyncInterval = setInterval(async () => {
-    if (SESSION && SESSION.role === "admin" && getScriptUrl() && !document.hidden) {
-      if(typeof window._doAdminSync==="function") window._doAdminSync(false);
-    }
-  }, 2 * 60 * 1000);
+    if (!SESSION || !getScriptUrl() || document.hidden) return;
+    // Admin has its own dedicated poll — skip here to avoid double calls
+    if (SESSION.role === "admin") return;
+    await loadFromSheet();
+  }, 5 * 60 * 1000);
 }
 
 async function syncToSheet() {
@@ -516,7 +554,9 @@ async function loadFromSheet() {
   _loadRunning = true;
   try {
     const result = await gsFetch({ action:"getAll" });
-    if (!result || !result.ok) return false;
+    if (!result) return false;
+    if (result.rateLimited) { console.warn("loadFromSheet: rate limited, skipping"); return false; }
+    if (!result.ok) return false;
 
     const safeString = (val, fallback = "") => {
       if (val === null || val === undefined) return fallback;
@@ -807,17 +847,15 @@ async function getServerTime(){
   try{
     const ctrl=new AbortController();
     const tmr=setTimeout(()=>ctrl.abort(),5000);
-    // Use worldtimeapi — returns {"unixtime": ...} in UTC milliseconds
     const res=await fetch("https://worldtimeapi.org/api/ip",{method:"GET",signal:ctrl.signal});
     clearTimeout(tmr);
     const json=await res.json();
-    // unixtime is in seconds — convert to ms; add half RTT to correct for network latency
     const rtt=Date.now()-t0;
-    const serverMs=(json.unixtime*1000)+(rtt/2);
+    const serverMs=Math.round((json.unixtime*1000)+(rtt/2));
     const drift=Math.round(serverMs-Date.now());
-    return{serverMs:Math.round(serverMs),drift,trusted:true};
+    return{serverMs,drift,trusted:true};
   }catch(e){
-    // Network failed — fall back to local clock, mark as untrusted
+    // Server unreachable — fall back to local clock, mark as untrusted
     return{serverMs:Date.now(),drift:0,trusted:false};
   }
 }
@@ -966,11 +1004,29 @@ function renderLogin(){
       btn.disabled=false;btn.textContent="Sign In";
       return;
     }
-    const fn=found.fullName&&found.fullName.trim()?found.fullName.trim():found.username.charAt(0).toUpperCase()+found.username.slice(1).toLowerCase();
-    SESSION={username:found.username,fullName:fn,role:"user"};
-    saveSession(SESSION);
-    sessionStorage.removeItem("vibeLastCheckout_"+SESSION.username);
-    route();
+    // ── CLOCK MISMATCH CHECK AT LOGIN ────────────────────────────────────────
+    // Fetch server time and compare with device clock.
+    // If drift > 5 minutes, block login to prevent wrong timestamps on check-in/out.
+    btn.disabled=true;btn.innerHTML='<span class="spinner"></span>Verifying clock…';
+    (async()=>{
+      const st=await getServerTime();
+      if(st.trusted){
+        const driftMin=Math.abs(st.drift)/60000;
+        if(driftMin>5){
+          const deviceTime=new Date().toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});
+          const serverTime=new Date(st.serverMs).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});
+          errBox.innerHTML=`⏰ <strong>Device clock is wrong.</strong><br>Your device shows <strong>${deviceTime}</strong> but the actual time is <strong>${serverTime}</strong>.<br><span style="font-size:.85em">Please fix your device clock and try again.</span>`;
+          errBox.classList.remove("hidden");
+          btn.disabled=false;btn.textContent="Sign In";
+          return;
+        }
+      }
+      const fn=found.fullName&&found.fullName.trim()?found.fullName.trim():found.username.charAt(0).toUpperCase()+found.username.slice(1).toLowerCase();
+      SESSION={username:found.username,fullName:fn,role:"user"};
+      saveSession(SESSION);
+      sessionStorage.removeItem("vibeLastCheckout_"+SESSION.username);
+      route();
+    })();
   }
   btn.addEventListener("click",doLogin);
   [inU,inP].forEach(i=>i.addEventListener("keydown",e=>{if(e.key==="Enter")doLogin()}));
@@ -1119,6 +1175,7 @@ function renderUser(){
 
   function refresh(){
     window._userRefresh=refresh;
+    _checkoutInProgress=false; // BUG5 FIX: safety reset in case flag got stuck
     content.innerHTML="";
     const allRecs=myRecs();
     const totalDays=[...new Set(allRecs.filter(r=>r.type==="in").map(r=>new Date(r.timestamp).toDateString()))].length;
@@ -1200,6 +1257,22 @@ function renderUser(){
             (async()=>{
             try{
             const _stOut=await getServerTime();
+            // ── CLOCK MISMATCH CHECK (checkout) ─────────────────────────────
+            if(_stOut.trusted){
+              const driftMin=Math.abs(_stOut.drift)/60000;
+              if(driftMin>5){
+                _checkoutInProgress=false;
+                _lastCheckOut=0;
+                mainBtn.disabled=false;mainBtn.textContent="⏹ Check Out";
+                const oldEbCo=content.querySelector(".loc-err-banner");if(oldEbCo)oldEbCo.remove();
+                const ebCo=h("div",{className:"loc-err-banner geo-banner geo-fail",style:{marginTop:".75rem"}});
+                const deviceTimeCo=new Date().toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});
+                const serverTimeCo=new Date(_stOut.serverMs).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});
+                ebCo.innerHTML=`<span class='geo-icon'>⏰</span><div><strong>Device Clock is Wrong</strong><br>Your device shows <strong>${deviceTimeCo}</strong> but the actual time is <strong>${serverTimeCo}</strong>.<br><span style='font-size:.85em'>Please fix your device clock and try again.</span></div>`;
+                mainBtn.insertAdjacentElement("afterend",ebCo);
+                return;
+              }
+            }
             mainBtn.textContent="Checking out…";
             const loc=await getLocation();
               if(loc && loc.error){
@@ -1216,7 +1289,8 @@ function renderUser(){
               }
               const todayCheckins2=DB.attendance.filter(r=>r.username===SESSION.username&&r.type==="in"&&new Date(r.timestamp).toDateString()===new Date().toDateString());
               const checkInTs2=todayCheckins2.length?Math.min(...todayCheckins2.map(r=>r.timestamp)):_stOut.serverMs;
-              const surveyDate2=localDateStr(new Date(checkInTs2));
+              // BUG1 FIX: use server checkout time for survey date (check-in could be previous day)
+              const surveyDate2=localDateStr(new Date(_tsNow));
               // FIX 1: Use server-verified timestamp
               const _tsNow=_stOut.serverMs;
               const _clientTsOut=Date.now();
@@ -1225,6 +1299,8 @@ function renderUser(){
               const _surId=String(_tsNow)+"_sur_"+SESSION.username;
               const _outId=String(_tsNow)+"_out_"+SESSION.username;
               const sur={id:_surId,username:SESSION.username,timestamp:_tsNow,date:surveyDate2,...answers};
+              // BUG3 FIX: stamp immediately to block double-tap during entire sync
+              stampCheckOut();
               const geo2=checkUserGeofence(loc.lat,loc.lng,SESSION.username);
 
               // ── GEOFENCE HARD BLOCK (checkout) ───────────────────────────────
@@ -1251,7 +1327,7 @@ function renderUser(){
                 return;
               }
               const rec_out={
-                id:_outId,username:SESSION.username,type:"out",timestamp:_tsNow+1,location:loc,
+                id:_outId,username:SESSION.username,type:"out",timestamp:_tsNow+1,location:null,outLocation:loc,
                 geoOk:geo2.ok,geoName:geo2.name,geoDist:geo2.dist??null,noLocationSet:false,
                 clientTs:_clientTsOut,
                 serverTsTrusted:_stOut.trusted,
@@ -1260,22 +1336,43 @@ function renderUser(){
               };
               mainBtn.textContent="Syncing…";
               const _gsUrl2=getScriptUrl();
-              let _surOk=false,_outOk=false;
+              // BUG2 FIX: single atomic POST — survey + attendance sent together
+              // so either both land in the sheet or neither does. No orphan records.
+              let _checkoutOk=false;
               try{
-                const _c1=new AbortController();const _t1=setTimeout(()=>_c1.abort(),10000);
-                const _r1=await fetch(_gsUrl2,{method:"POST",redirect:"follow",headers:{"Content-Type":"text/plain"},body:JSON.stringify({action:"addSurvey",data:sur,apiKey:getApiKey(),username:SESSION.username}),signal:_c1.signal});
+                const _c1=new AbortController();const _t1=setTimeout(()=>_c1.abort(),12000);
+                const _r1=await fetch(_gsUrl2,{method:"POST",redirect:"follow",headers:{"Content-Type":"text/plain"},body:JSON.stringify({
+                  action:"checkout",
+                  apiKey:getApiKey(),
+                  username:SESSION.username,
+                  data:{
+                    attendance:{...rec_out,lat:loc.lat,lng:loc.lng,outLat:loc.lat,outLng:loc.lng},
+                    survey:sur
+                  }
+                }),signal:_c1.signal});
                 clearTimeout(_t1);
                 const _tx1=await _r1.text();
-                try{const _j1=JSON.parse(_tx1);_surOk=!!_j1.ok;}catch(_){_surOk=true;}
-              }catch(e){_surOk=false;}
-              try{
-                const _c2=new AbortController();const _t2=setTimeout(()=>_c2.abort(),10000);
-                const _r2=await fetch(_gsUrl2,{method:"POST",redirect:"follow",headers:{"Content-Type":"text/plain"},body:JSON.stringify({action:"addAttendance",data:{...rec_out,lat:loc.lat,lng:loc.lng,outLat:loc.lat,outLng:loc.lng},apiKey:getApiKey(),username:SESSION.username}),signal:_c2.signal});
-                clearTimeout(_t2);
-                const _tx2=await _r2.text();
-                try{const _j2=JSON.parse(_tx2);_outOk=!!_j2.ok;}catch(_){_outOk=true;}
-              }catch(e){_outOk=false;}
-              if(!_surOk||!_outOk){
+                try{const _j1=JSON.parse(_tx1);_checkoutOk=!!_j1.ok;}catch(_){_checkoutOk=true;}
+              }catch(e){_checkoutOk=false;}
+              // Fallback: if server does not support combined checkout action yet,
+              // retry with two separate calls (backwards compatible)
+              if(!_checkoutOk){
+                let _surOk=false,_outOk=false;
+                try{
+                  const _c2=new AbortController();const _t2=setTimeout(()=>_c2.abort(),10000);
+                  const _r2=await fetch(_gsUrl2,{method:"POST",redirect:"follow",headers:{"Content-Type":"text/plain"},body:JSON.stringify({action:"addSurvey",data:sur,apiKey:getApiKey(),username:SESSION.username}),signal:_c2.signal});
+                  clearTimeout(_t2);
+                  try{const _j2=JSON.parse(await _r2.text());_surOk=!!_j2.ok;}catch(_){_surOk=true;}
+                }catch(e){_surOk=false;}
+                try{
+                  const _c3=new AbortController();const _t3=setTimeout(()=>_c3.abort(),10000);
+                  const _r3=await fetch(_gsUrl2,{method:"POST",redirect:"follow",headers:{"Content-Type":"text/plain"},body:JSON.stringify({action:"addAttendance",data:{...rec_out,lat:loc.lat,lng:loc.lng,outLat:loc.lat,outLng:loc.lng},apiKey:getApiKey(),username:SESSION.username}),signal:_c3.signal});
+                  clearTimeout(_t3);
+                  try{const _j3=JSON.parse(await _r3.text());_outOk=!!_j3.ok;}catch(_){_outOk=true;}
+                }catch(e){_outOk=false;}
+                _checkoutOk=_surOk&&_outOk;
+              }
+              if(!_checkoutOk){
                 _checkoutInProgress=false;
                 _lastCheckOut=0;
                 mainBtn.disabled=false;mainBtn.textContent="⏹ Check Out";
@@ -1285,7 +1382,6 @@ function renderUser(){
                 mainBtn.insertAdjacentElement("afterend",eb3);
                 return;
               }
-              stampCheckOut();
               DB.surveys.push(sur);
               DB.attendance.push(rec_out);
               sessionStorage.setItem("vibeLastCheckout_"+SESSION.username, String(_tsNow));
@@ -1323,6 +1419,21 @@ function renderUser(){
           const userWorkLoc=meUserRec?.location||"";
           // FIX 1 & 2: Fetch server time BEFORE getting location so timestamp is trusted
           const _serverTimeResult=await getServerTime();
+          // ── CLOCK MISMATCH CHECK (check-in) ─────────────────────────────
+          if(_serverTimeResult.trusted){
+            const driftMin=Math.abs(_serverTimeResult.drift)/60000;
+            if(driftMin>5){
+              _lastCheckIn=0;
+              mainBtn.disabled=false;mainBtn.textContent="▶ Check In";
+              const oldEbCi=content.querySelector(".loc-err-banner");if(oldEbCi)oldEbCi.remove();
+              const ebCi=h("div",{className:"loc-err-banner geo-banner geo-fail",style:{marginTop:".75rem"}});
+              const deviceTimeCi=new Date().toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});
+              const serverTimeCi=new Date(_serverTimeResult.serverMs).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});
+              ebCi.innerHTML=`<span class='geo-icon'>⏰</span><div><strong>Device Clock is Wrong</strong><br>Your device shows <strong>${deviceTimeCi}</strong> but the actual time is <strong>${serverTimeCi}</strong>.<br><span style='font-size:.85em'>Please fix your device clock and try again.</span></div>`;
+              mainBtn.insertAdjacentElement("afterend",ebCi);
+              return;
+            }
+          }
           mainBtn.innerHTML='<span class="spinner"></span>Getting location…';
           getLocation().then(async loc=>{
             if(loc && loc.error){
@@ -2031,17 +2142,30 @@ function renderAdmin(){
 
   const content=el("div","content");dash.appendChild(content);
 
+  // RATE LIMIT FIX: poll every 3 min during work hours, 5 min otherwise
+  // (was 6s/15s — caused 600+ calls/hour hitting Google rate limit)
   function getAdminPollMs(){
     const t=new Date(),tot=t.getHours()*60+t.getMinutes();
-    return (tot>=480 && tot<=660) ? 6000 : 15000;
+    return (tot>=480 && tot<=660) ? 3*60*1000 : 5*60*1000;
   }
 
   let _adminSyncing=false;
+  let _lastSyncOk=true;
+  let _lastSyncTime=null;
+  let _failCount=0; // exponential backoff counter
   async function doAdminSync(force){
     if(_adminSyncing && !force) return;
+    // Exponential backoff: if last N syncs failed, wait longer before retrying
+    if(!force && _failCount>0){
+      const backoffMs=Math.min(_failCount*60*1000, 10*60*1000); // max 10 min backoff
+      if(_lastSyncTime && (Date.now()-_lastSyncTime.getTime()) < backoffMs) return;
+    }
     _adminSyncing=true;
     try{
-      await loadFromSheet();
+      const ok=await loadFromSheet();
+      _lastSyncOk=!!ok;
+      if(ok){ _lastSyncTime=new Date(); _failCount=0; }
+      else { _failCount=Math.min(_failCount+1,10); }
       const u2=DB.users.find(x=>x.username===SESSION?.username);
       if(u2?.fullName?.trim()) SESSION.fullName=u2.fullName.trim();
       if(SESSION) try{if(typeof window._adminRefresh==="function")window._adminRefresh();}catch(_){}
@@ -2079,6 +2203,18 @@ function renderAdmin(){
   function refresh(){
     window._adminRefresh=refresh;
     content.innerHTML="";
+    // SYNC STATUS BANNER
+    if(!_lastSyncOk){
+      const syncBanner=h("div",{style:{background:"#fee2e2",border:"1.5px solid #fca5a5",borderRadius:"12px",padding:".75rem 1.1rem",marginBottom:"1rem",display:"flex",alignItems:"center",justifyContent:"space-between",gap:"1rem",flexWrap:"wrap"}});
+      const syncMsg=h("span",{style:{fontSize:".85rem",color:"#991b1b",fontWeight:"600"}},"\u26a0\ufe0f Could not load data from Google Sheets. Showing last known data.");
+      const retryBtn=h("button",{style:{padding:".35rem .9rem",borderRadius:"8px",border:"1.5px solid #f87171",background:"#fff",color:"#dc2626",fontFamily:"var(--font)",fontSize:".8rem",fontWeight:"700",cursor:"pointer",whiteSpace:"nowrap"}},"\ud83d\udd04 Retry");
+      retryBtn.addEventListener("click",async()=>{retryBtn.disabled=true;retryBtn.textContent="Syncing...";await doAdminSync(true);});
+      syncBanner.appendChild(syncMsg);syncBanner.appendChild(retryBtn);
+      content.appendChild(syncBanner);
+    } else if(_lastSyncTime){
+      const syncBar=h("div",{style:{fontSize:".72rem",color:"var(--muted)",textAlign:"right",marginBottom:".5rem",paddingRight:".25rem"}},"\u2705 Synced at "+_lastSyncTime.toLocaleTimeString([],{hour:"2-digit",minute:"2-digit",second:"2-digit"}));
+      content.appendChild(syncBar);
+    }
     const regularUsers=DB.users.filter(u=>u.role!=="admin");
     let allAttend = [...DB.attendance].sort((a,b)=>b.timestamp-a.timestamp);
 
@@ -2334,8 +2470,9 @@ function renderAdmin(){
       const optToggle=h("button",{type:"button",style:{background:"none",border:"none",color:"var(--muted)",fontFamily:"var(--font)",fontSize:".8rem",cursor:"pointer",padding:"0 0 .8rem",display:"flex",alignItems:"center",gap:".3rem"}},"＋ Add designation & location (optional)");
       const optFields=h("div",{style:{display:"none"}});
       const {fg:fg4, inp:iDS} = makeField("","🏷","Designation",{type:"text",placeholder:"e.g. Sales Executive"});
-      const {fg:fg5, inp:iLoc} = makeField("","📍","Working Location",{type:"text",placeholder:"e.g. Chennai Branch"});
-      optFields.appendChild(fg4);optFields.appendChild(fg5);
+      const {fg:fg5, inp:iLoc} = makeField("","🌆","Work Location (City/Area)",{type:"text",placeholder:"e.g. Chennai, Kancheepuram"});
+      const {fg:fg6c, inp:iOffName} = makeField("","🏢","Office Name",{type:"text",placeholder:"e.g. KPN, Annai Arul, Radha"});
+      optFields.appendChild(fg4);optFields.appendChild(fg5);optFields.appendChild(fg6c);
       let optOpen=false;
       optToggle.addEventListener("click",()=>{
         optOpen=!optOpen;
@@ -2350,6 +2487,7 @@ function renderAdmin(){
         const pw=iPW.value.trim();
         const des=iDS.value.trim();
         const loc2=iLoc.value.trim();
+        const offName2=iOffName.value.trim();
         errB.classList.add("hidden");sucB.classList.add("hidden");
         if(!name){errB.textContent="Full name is required.";errB.classList.remove("hidden");return}
         if(!uid){errB.textContent="User ID is required.";errB.classList.remove("hidden");return}
@@ -2358,7 +2496,7 @@ function renderAdmin(){
         DB.users.push({username:uid,password:pw,fullName:name,userId:uid,designation:des,location:loc2,role:"user",geoLat:"",geoLng:"",geoRadius:200,officeName:""});
         save(DB);syncToSheet();
         sucB.textContent=`✅ User "${name}" (ID: ${uid}) created successfully.`;sucB.classList.remove("hidden");
-        iName.value="";iUID.value="";iPW.value="";iDS.value="";iLoc.value="";
+        iName.value="";iUID.value="";iPW.value="";iDS.value="";iLoc.value="";iOffName.value="";
         refresh();
       });
 
@@ -2423,11 +2561,18 @@ function renderAdmin(){
           topRow.appendChild(nameEl);topRow.appendChild(geoBadge);
           card.appendChild(topRow);
 
+          // Office location name badge
+          if(u.location||u.officeName){
+            const badgeRow=h("div",{style:{display:"flex",flexWrap:"wrap",gap:".35rem"}});
+            if(u.location&&u.location.trim())badgeRow.appendChild(h("span",{style:{fontSize:".72rem",fontWeight:"700",padding:".2rem .6rem",borderRadius:"20px",background:"#a78bfa22",color:"var(--policy)",border:"1px solid #a78bfa44",display:"inline-flex",alignItems:"center",gap:".25rem"}},"🌆 "+u.location.trim()));
+            if(u.officeName&&u.officeName.trim())badgeRow.appendChild(h("span",{style:{fontSize:".72rem",fontWeight:"700",padding:".2rem .6rem",borderRadius:"20px",background:"#4f8ef722",color:"var(--accent)",border:"1px solid #4f8ef744",display:"inline-flex",alignItems:"center",gap:".25rem"}},"🏢 "+u.officeName.trim()));
+            card.appendChild(badgeRow);
+          }
+
           // Meta row: ID, designation, location
           const metaWrap=h("div",{style:{display:"flex",flexDirection:"column",gap:".25rem"}});
           metaWrap.appendChild(h("span",{style:{fontSize:".72rem",color:"var(--accent)",fontFamily:"var(--mono)",background:"#4f8ef722",border:"1px solid #4f8ef744",borderRadius:"6px",padding:".1rem .45rem",display:"inline-block",width:"fit-content"}},"ID: "+(u.userId||u.username)));
           if(u.designation)metaWrap.appendChild(h("span",{style:{fontSize:".72rem",color:"var(--muted)"}},"🏷 "+u.designation));
-          if(u.location)metaWrap.appendChild(h("span",{style:{fontSize:".72rem",color:"var(--muted)"}},"📍 "+u.location));
 
           // Geo coords if set
           if(u.geoLat&&u.geoLng){
@@ -2965,8 +3110,9 @@ function renderAdmin(){
     const {fg:fg2,inp:iUID} =mf("🪪","User ID (Login Username)",{type:"text",value:u.userId||u.username});
     const {fg:fg3,inp:iPW}  =mf("🔑","Password",{type:"password",value:u.password||""});
     const {fg:fg4,inp:iDS}  =mf("🏷","Designation",{type:"text",value:u.designation||""});
-    const {fg:fg5,inp:iLoc} =mf("📍","Working Location Name",{type:"text",value:u.location||""});
-    [fg1,fg2,fg3,fg4,fg5].forEach(x=>{x.style.marginBottom=".9rem";leftCol.appendChild(x);});
+    const {fg:fg5,inp:iLoc} =mf("🌆","Work Location (City/Area)",{type:"text",placeholder:"e.g. Chennai, Kancheepuram",value:u.location||""});
+    const {fg:fg6,inp:iOfficeName}=mf("🏢","Office Name",{type:"text",placeholder:"e.g. KPN, Annai Arul, Radha",value:u.officeName||""});
+    [fg1,fg2,fg3,fg4,fg5,fg6].forEach(x=>{x.style.marginBottom=".9rem";leftCol.appendChild(x);});
 
     // ── RIGHT COLUMN: Google Maps Location ───────────────────────────────────
     const rightCol=h("div",{});
@@ -3206,7 +3352,7 @@ function renderAdmin(){
     const sb=h("button",{className:"btn btn-primary",style:{marginTop:".25rem"}},"💾 Save Changes");
     sb.addEventListener("click",()=>{
       const name=iName.value.trim(),uid=iUID.value.trim(),pw=iPW.value.trim();
-      const des=iDS.value.trim(),loc=iLoc.value.trim();
+      const des=iDS.value.trim(),loc=iLoc.value.trim(),offName=iOfficeName.value.trim();
       const lat=iLat.value.trim(),lng=iLng.value.trim();
       const rad=parseInt(iRad.value)||200;
       if(!name){showModalErr("Full name is required.");return;}
@@ -3218,9 +3364,8 @@ function renderAdmin(){
       DB.users[idx]={
         ...DB.users[idx],
         username:uid,password:pw,fullName:name,userId:uid,
-        designation:des,location:loc,
+        designation:des,location:loc,officeName:offName,
         geoLat:lat||"",geoLng:lng||"",geoRadius:rad,
-        officeName:loc||name
       };
       if(uid!==u.username){
         DB.attendance=DB.attendance.map(r=>r.username===u.username?{...r,username:uid}:r);
