@@ -544,11 +544,14 @@ async function syncToSheet() {
     // Clear geoLat/geoLng if they are not valid numbers or not valid India coordinates
     const rawLat = parseFloat(u.geoLat); const rawLng = parseFloat(u.geoLng);
     const validGeo = !isNaN(rawLat)&&!isNaN(rawLng)&&rawLat>=6&&rawLat<=38&&rawLng>=68&&rawLng<=98;
-    const cleanGeoLat = validGeo ? u.geoLat : "";
-    const cleanGeoLng = validGeo ? u.geoLng : "";
-    // Clear officeName if it equals role value
-    const cleanOfficeName = (!u.officeName||ROLE_VALUES.has(u.officeName.toLowerCase())) ? "" : u.officeName;
-    return {...u, designation:cleanDesig, location:cleanLoc, geoLat:cleanGeoLat, geoLng:cleanGeoLng, officeName:cleanOfficeName};
+    const cleanGeoLat = validGeo ? String(rawLat) : "";
+    const cleanGeoLng = validGeo ? String(rawLng) : "";
+    const cleanGeoRad = (u.geoRadius&&parseInt(u.geoRadius)>=50&&parseInt(u.geoRadius)<=5000) ? parseInt(u.geoRadius) : 200;
+    // Clear officeName if it equals role value or looks like a coordinate
+    const rawOff = (u.officeName||"").trim();
+    const offIsCoord = !isNaN(parseFloat(rawOff)) && isFinite(rawOff);
+    const cleanOfficeName = (!rawOff||ROLE_VALUES.has(rawOff.toLowerCase())||offIsCoord||rawOff.toLowerCase()===uname) ? "" : rawOff;
+    return {...u, designation:cleanDesig, location:cleanLoc, geoLat:cleanGeoLat, geoLng:cleanGeoLng, geoRadius:cleanGeoRad, officeName:cleanOfficeName};
   });
   const payload = {
     action:"syncData",
@@ -582,10 +585,13 @@ async function syncUsersToSheet() {
     const cleanLoc = (!u.location||u.location.toLowerCase()===uname) ? "" : u.location;
     const rawLat = parseFloat(u.geoLat); const rawLng = parseFloat(u.geoLng);
     const validGeo = !isNaN(rawLat)&&!isNaN(rawLng)&&rawLat>=6&&rawLat<=38&&rawLng>=68&&rawLng<=98;
-    const cleanGeoLat = validGeo ? u.geoLat : "";
-    const cleanGeoLng = validGeo ? u.geoLng : "";
-    const cleanOfficeName = (!u.officeName||ROLE_VALUES.has(u.officeName.toLowerCase())) ? "" : u.officeName;
-    return {...u, designation:cleanDesig, location:cleanLoc, geoLat:cleanGeoLat, geoLng:cleanGeoLng, officeName:cleanOfficeName};
+    const cleanGeoLat = validGeo ? String(rawLat) : "";
+    const cleanGeoLng = validGeo ? String(rawLng) : "";
+    const cleanGeoRad = (u.geoRadius&&parseInt(u.geoRadius)>=50&&parseInt(u.geoRadius)<=5000) ? parseInt(u.geoRadius) : 200;
+    const rawOff = (u.officeName||"").trim();
+    const offIsCoord = !isNaN(parseFloat(rawOff)) && isFinite(rawOff);
+    const cleanOfficeName = (!rawOff||ROLE_VALUES.has(rawOff.toLowerCase())||offIsCoord||rawOff.toLowerCase()===uname) ? "" : rawOff;
+    return {...u, designation:cleanDesig, location:cleanLoc, geoLat:cleanGeoLat, geoLng:cleanGeoLng, geoRadius:cleanGeoRad, officeName:cleanOfficeName};
   });
   // Try per-user updateUser action first (safe — only touches that user row)
   // If server does not support it, fall back to fullSync with users included
@@ -636,11 +642,62 @@ async function loadFromSheet() {
         // Sheet columns: username | password | fullName | designation | location | role | geoLat | geoLng | geoRadius | officeName
         // (no userId column — userId defaults to username)
         const ROLE_VALUES = new Set(["user","admin","team leader","teamleader","manager","staff"]);
+        const uname      = safeString(u.username, "");
+        const fname      = safeChain(u.fullName, u.full_name, u.FullName, u.name);
+
+        // ── MISALIGNMENT DETECTION & AUTO-CORRECTION ──────────────────────────
+        // Symptom: designation/location columns contain the username (corrupt sync),
+        // geoLat contains a non-numeric string like an office name or "user",
+        // real coordinates end up shifted into geoRadius/officeName columns.
+        // Fix: detect each field's actual content and reassign to correct field.
+
         const rawDesig   = safeString(u.designation, "");
         const rawLoc     = safeString(u.location, "");
         const rawRole    = safeString(u.role, "");
-        const uname      = safeString(u.username, "");
-        const fname      = safeChain(u.fullName, u.full_name, u.FullName, u.name);
+        const rawGeoLat  = safeString(u.geoLat, "");
+        const rawGeoLng  = safeString(u.geoLng, "");
+        const rawGeoRad  = safeString(u.geoRadius, "");
+        const rawOffName = safeString(u.officeName, "");
+
+        // Helper: is this value a plausible coordinate number?
+        const isCoord = v => { const n=parseFloat(v); return !isNaN(n) && isFinite(n) && String(v).trim()!==""; };
+        // Helper: is this value a valid India latitude (6–38)?
+        const isLat = v => { const n=parseFloat(v); return isCoord(v) && n>=6 && n<=38; };
+        // Helper: is this value a valid India longitude (68–98)?
+        const isLng = v => { const n=parseFloat(v); return isCoord(v) && n>=68 && n<=98; };
+        // Helper: is this value a valid radius (50–5000)?
+        const isRadius = v => { const n=parseInt(v); return !isNaN(n) && n>=50 && n<=5000; };
+
+        // Detect shift: geoLat is non-numeric but geoRadius looks like a real latitude
+        // This means columns shifted right by 1-2 positions
+        let finalGeoLat = "", finalGeoLng = "", finalGeoRad = 200, finalOfficeName = "";
+
+        if (isLat(rawGeoLat) && isLng(rawGeoLng)) {
+          // Normal case — geoLat and geoLng are real coordinates
+          finalGeoLat = rawGeoLat;
+          finalGeoLng = rawGeoLng;
+          finalGeoRad = isRadius(rawGeoRad) ? parseInt(rawGeoRad) : 200;
+          finalOfficeName = (!rawOffName || ROLE_VALUES.has(rawOffName.toLowerCase()) || rawOffName.toLowerCase()===uname.toLowerCase()) ? "" : rawOffName;
+        } else if (isLat(rawGeoRad) && isLng(rawOffName)) {
+          // SHIFT DETECTED: real coords are in geoRadius and officeName columns
+          // geoLat column contains office name or junk, geoLng column contains "user" etc.
+          finalGeoLat = rawGeoRad;
+          finalGeoLng = rawOffName;
+          finalGeoRad = 200; // geoRadius was occupied by lat — reset to default
+          // Try to recover officeName from rawGeoLat (it may be a real office name like "AVM")
+          const possibleOfficeName = rawGeoLat.trim();
+          finalOfficeName = (possibleOfficeName && !ROLE_VALUES.has(possibleOfficeName.toLowerCase()) && !isCoord(possibleOfficeName) && possibleOfficeName.toLowerCase()!==uname.toLowerCase()) ? possibleOfficeName : "";
+        } else if (isLat(rawGeoLng) && isLng(rawGeoRad)) {
+          // Shift by 1: lat in geoLng, lng in geoRadius
+          finalGeoLat = rawGeoLng;
+          finalGeoLng = rawGeoRad;
+          finalGeoRad = isRadius(rawOffName) ? parseInt(rawOffName) : 200;
+          finalOfficeName = "";
+        } else {
+          // No valid coords found — clear all geo fields
+          finalGeoLat = ""; finalGeoLng = ""; finalGeoRad = 200; finalOfficeName = "";
+        }
+
         // Clean designation: if it equals the username or fullName, it was wrongly filled — clear it
         const cleanDesig = (rawDesig.toLowerCase()===uname.toLowerCase()||rawDesig.toLowerCase()===(fname||uname).toLowerCase()) ? "" : rawDesig;
         // Clean location: if it equals the username, it was wrongly filled — clear it
@@ -657,10 +714,10 @@ async function loadFromSheet() {
           designation: cleanDesig,
           location:    cleanLoc,
           role:        cleanRole || "user",
-          geoLat:      safeString(u.geoLat, ""),
-          geoLng:      safeString(u.geoLng, ""),
-          geoRadius:   (u.geoRadius !== undefined && u.geoRadius !== "" && u.geoRadius !== null && typeof u.geoRadius !== 'function') ? parseInt(u.geoRadius) || 200 : 200,
-          officeName:  safeString(u.officeName, "")
+          geoLat:      finalGeoLat,
+          geoLng:      finalGeoLng,
+          geoRadius:   finalGeoRad,
+          officeName:  finalOfficeName
         };
       }).filter(u => u.username);
 
