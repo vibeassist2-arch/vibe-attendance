@@ -248,7 +248,7 @@ select option{background:var(--surface);color:var(--text)}
 <script>
 // ── VIBE v20260313.online — FULLY ONLINE. No localStorage for data. Google Sheets is sole source of truth for ALL roles. ────
 const KEY = "vibeAttendanceData";
-const DEFAULT_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxtWw7D0f6EbNITJ7R6uAHEP1CJEABME5PrVX8e41XxmQuJIt-RM_T4Aqf_MLhU1107/exec";
+const DEFAULT_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbycNz7GWywjZU_U9V2k3mmNAKHx3TQLup3_Vods_t9RLhxazepubuPRzkifGPrweHya/exec";
 
 // ── API KEY: paste the value from setupApiKey() here after first deployment ──
 const DEFAULT_API_KEY = "5c6d46fe-1ffc-4615-9e8b-96051031a4a3";
@@ -551,7 +551,7 @@ async function syncToSheet() {
     return {...u, designation:cleanDesig, location:cleanLoc, geoLat:cleanGeoLat, geoLng:cleanGeoLng, officeName:cleanOfficeName};
   });
   const payload = {
-    action:"fullSync",
+    action:"syncData",
     apiKey: getApiKey(),
     username: SESSION ? SESSION.username : "admin",
     data: { surveys: DB.surveys, attendance: DB.attendance, absences: DB.absences, officeLocations: DB.officeLocations }
