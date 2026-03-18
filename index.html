@@ -1661,6 +1661,7 @@ function renderUser(){
               }
               DB.surveys.push(sur);
               DB.attendance.push(rec_out);
+              save(DB); // FIX: persist to localStorage so records survive page refresh
               sessionStorage.setItem("vibeLastCheckout_"+SESSION.username, String(_tsNow));
               showToast("Checked out! ✅ Data synced to sheet.", "success", 4000);
               delete window._geoWarn;
@@ -1797,6 +1798,7 @@ function renderUser(){
               return;
             }
             DB.attendance.push(rec_in);
+            save(DB); // FIX: persist to localStorage so record survives page refresh
             showToast("Checked in! ✅ Synced to sheet.", "success", 4000);
             delete window._geoWarn;
             const prevEb=document.querySelector(".loc-err-banner");if(prevEb)prevEb.remove();
