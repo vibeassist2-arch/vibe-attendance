@@ -267,28 +267,47 @@ function escapeHtml(text) {
 // ONE-TIME WIPE of old localStorage data — runs only once ever, preserves local cache
 (function(){try{if(!localStorage.getItem("vibeDidWipe_v1")){const keep=new Set(["vibeTheme","vibeSession","vibeAttendanceData"]);Object.keys(localStorage).filter(k=>!keep.has(k)).forEach(k=>localStorage.removeItem(k));localStorage.setItem("vibeDidWipe_v1","1");}}catch(_){}})();
 
+// ── CORS FIX v20260321 — Use allorigins proxy when direct fetch is blocked ──
+const CORS_PROXY = "https://api.allorigins.win/raw?url=";
+async function _corsSafeFetch(fullUrl, opts, timeout=10000){
+  // 1st attempt: direct fetch
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(()=>ctrl.abort(), timeout);
+    const res = await fetch(fullUrl, { ...opts, signal: ctrl.signal });
+    clearTimeout(t);
+    return res;
+  } catch(e) {
+    const isCors = e instanceof TypeError;
+    if(!isCors) throw e;
+    console.warn("VIBE: direct fetch blocked, retrying via CORS proxy…");
+  }
+  // 2nd attempt: via allorigins proxy (GET only — encode the full URL)
+  const proxied = CORS_PROXY + encodeURIComponent(fullUrl);
+  const ctrl2 = new AbortController();
+  const t2 = setTimeout(()=>ctrl2.abort(), timeout);
+  const res2 = await fetch(proxied, { method:"GET", redirect:"follow", signal: ctrl2.signal });
+  clearTimeout(t2);
+  return res2;
+}
+
 async function gsFetch(params) {
   const url = getScriptUrl();
   if (!url) return null;
   const fullParams = { ...params, key: getApiKey(), user: SESSION ? SESSION.username : "anonymous" };
+  const getUrl = url + "?" + new URLSearchParams(fullParams);
 
-  // Try GET first (standard)
+  // Try GET first (with CORS proxy fallback)
   try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 8000);
-    const res = await fetch(url + "?" + new URLSearchParams(fullParams), { method: "GET", redirect: "follow", signal: controller.signal });
-    clearTimeout(timer);
+    const res = await _corsSafeFetch(getUrl, { method: "GET", redirect: "follow" }, 10000);
     const text = await res.text();
     try {
       const json = JSON.parse(text);
-      // Detect rate limit — stop immediately, do not retry POST
       if (json && json.error && String(json.error).toLowerCase().includes("rate limit")) {
         console.warn("GS: Rate limit hit — backing off");
         return { ok: false, rateLimited: true };
       }
-      // If server returned ok:true, we're done
       if (json && json.ok) return json;
-      // If server echoed params back (misconfigured redirect), fall through to POST
       if (json && json.params) {
         console.warn("GS GET: server echoed params — retrying as POST");
       } else {
@@ -299,10 +318,10 @@ async function gsFetch(params) {
     }
   } catch(e) { console.warn("GS GET error", e); }
 
-  // Fallback: POST with params in body (handles deployments that strip GET query params)
+  // Fallback: POST with params in body
   try {
     const ctrl2 = new AbortController();
-    const tmr2 = setTimeout(() => ctrl2.abort(), 8000);
+    const tmr2 = setTimeout(() => ctrl2.abort(), 10000);
     const res2 = await fetch(url, {
       method: "POST", redirect: "follow",
       headers: { "Content-Type": "text/plain" },
@@ -391,15 +410,24 @@ async function gsPost(body) {
   // ONLINE-ONLY: post directly to sheet, no queue
   const url = getScriptUrl();
   if (!url) return { ok: false, error: "No Script URL" };
+  const secureBody = { ...body, apiKey: getApiKey(), username: body.username || (body.data && body.data.username) || (SESSION ? SESSION.username : "") };
+  // Try POST first
   try {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), 10000);
-    // Inject API key and username into every POST body
-    const secureBody = { ...body, apiKey: getApiKey(), username: body.username || (body.data && body.data.username) || (SESSION ? SESSION.username : "") };
     const res = await fetch(url, { method:"POST", redirect:"follow", headers:{"Content-Type":"text/plain"}, body:JSON.stringify(secureBody), signal:ctrl.signal });
     clearTimeout(t);
     const text = await res.text();
     try { return JSON.parse(text); } catch(_) { return { ok: true }; }
+  } catch(e) {
+    console.warn("gsPost direct failed, trying proxy GET fallback:", e.message);
+  }
+  // CORS fallback: encode body as GET param via proxy
+  try {
+    const getUrl = url + "?" + new URLSearchParams({ ...secureBody, key: getApiKey() });
+    const res2 = await _corsSafeFetch(getUrl, { method:"GET", redirect:"follow" }, 10000);
+    const text2 = await res2.text();
+    try { return JSON.parse(text2); } catch(_) { return { ok: true }; }
   } catch(e) { return { ok: false, error: e.message }; }
 }
 
@@ -3952,67 +3980,17 @@ function safeRoute(){
   })();
 }
 
-// ── PERMANENT FIX: ServiceWorker — unregister broken SW, probe before registering ──
-// Fixes: "ServiceWorker script evaluation failed" + "GS GET AbortError"
-// Root cause: a broken/stale sw.js intercepts and aborts fetch() calls to Google Sheets.
-// Solution: unregister ALL existing SWs on every page load, then re-register only if sw.js
-// is actually reachable and valid. This self-heals on every page load without manual action.
+// ── SW FIX v20260321 — Fully disable ServiceWorker (broken on GitHub Pages) ──
+// Root cause: sw.js on GitHub Pages has a script evaluation error AND intercepts
+// fetch() calls to Google Sheets, causing CORS/AbortErrors.
+// Fix: unregister ALL existing SWs immediately and never re-register.
 if('serviceWorker' in navigator){
-  const host = window.location.hostname;
-  const isRealHost = window.location.protocol === 'https:'
-    && host !== 'www.claudeusercontent.com'
-    && host !== ''
-    && host !== 'localhost';
-
-  // Step 1: Unregister ALL existing ServiceWorkers immediately (before anything else).
-  // This clears any broken SW that could be intercepting fetch() calls.
   navigator.serviceWorker.getRegistrations().then(regs=>{
-    regs.forEach(reg=>reg.unregister().catch(()=>{}));
-  }).catch(()=>{});
-
-  if(isRealHost){
-    // Step 2: After unregistrations settle, probe sw.js before re-registering.
-    // If sw.js is missing or returns an error, skip registration entirely —
-    // avoids the "script evaluation failed" error that caused the original bug.
-    window.addEventListener('load', async ()=>{
-      let swOk = false;
-      try {
-        const probe = await fetch('./sw.js', { method:'HEAD', cache:'no-store' });
-        swOk = probe.ok;
-      } catch(_){ swOk = false; }
-
-      if(!swOk){
-        console.warn('VIBE: sw.js not reachable — skipping ServiceWorker registration. Google Sheets fetch will work normally.');
-        return;
-      }
-
-      navigator.serviceWorker.register('./sw.js')
-        .then(reg=>{
-          console.log('✅ VIBE SW registered');
-          reg.update();
-          const hadControllerOnLoad = !!navigator.serviceWorker.controller;
-          reg.addEventListener('updatefound',()=>{
-            const newSW=reg.installing;
-            if(!newSW) return;
-            newSW.addEventListener('statechange',()=>{
-              if(newSW.state==='installed'&&navigator.serviceWorker.controller){
-                const toast=document.createElement('div');
-                toast.style.cssText='position:fixed;bottom:1.5rem;left:50%;transform:translateX(-50%);background:#4f8ef7;color:#fff;padding:.75rem 1.4rem;border-radius:12px;font-weight:700;font-size:.9rem;z-index:9999;box-shadow:0 4px 20px #00000044;display:flex;align-items:center;gap:.6rem;font-family:Sora,sans-serif;cursor:pointer';
-                toast.innerHTML='🔄 Update ready — tap to refresh';
-                toast.addEventListener('click',()=>{ newSW.postMessage({type:'SKIP_WAITING'}); });
-                document.body.appendChild(toast);
-                setTimeout(()=>toast.remove(),8000);
-              }
-            });
-          });
-          let refreshing=false;
-          navigator.serviceWorker.addEventListener('controllerchange',()=>{
-            if(!refreshing&&hadControllerOnLoad){ refreshing=true; window.location.reload(); }
-          });
-        })
-        .catch(e=>console.warn('VIBE: SW registration failed:',e));
+    regs.forEach(reg=>{
+      reg.unregister().then(ok=>{ if(ok) console.log('VIBE: SW unregistered (cleanup)'); }).catch(()=>{});
     });
-  }
+  }).catch(()=>{});
+  console.log('VIBE: ServiceWorker disabled — Google Sheets fetch will work normally.');
 }
 </script>
 </body>
