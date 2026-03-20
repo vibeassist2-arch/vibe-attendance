@@ -250,7 +250,11 @@ select option{background:var(--surface);color:var(--text)}
 const KEY = "vibeAttendanceData";
 const DEFAULT_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwdEN05zTIvIB9xTS7O80WOb3ttdS3qeiRZJsJqq1iHLdVASkzPF4ujB1sWJv-xmlJ9/exec";
 
-// ── API KEY: paste the value from setupApiKey() here after first deployment ──
+// ── API KEY ────────────────────────────────────────────────────────────────────
+// ⚠️  SECURITY WARNING: This key is visible in page source to anyone who opens
+// DevTools. For production, rotate this key regularly and restrict your Google
+// Apps Script to only accept requests from your own domain. A proper solution
+// uses a server-side proxy so the key is never exposed to the browser.
 const DEFAULT_API_KEY = "5c6d46fe-1ffc-4615-9e8b-96051031a4a3";
 
 function getScriptUrl() { return DEFAULT_SCRIPT_URL; }
@@ -264,13 +268,57 @@ function escapeHtml(text) {
   div.textContent = String(text);
   return div.innerHTML;
 }
-// ONE-TIME WIPE of old localStorage data — runs only once ever, preserves local cache
+
+// ── SHARED GEO VALIDATION ─────────────────────────────────────────────────────
+// India bounding box used for geofence coordinate validation.
+// Centralised here so the bounds are defined in one place only.
+const GEO_LAT_MIN=6, GEO_LAT_MAX=38, GEO_LNG_MIN=68, GEO_LNG_MAX=98;
+function isValidIndiaCoords(lat, lng){
+  const la=parseFloat(lat), lo=parseFloat(lng);
+  return !isNaN(la)&&!isNaN(lo)&&isFinite(la)&&isFinite(lo)&&
+    la>=GEO_LAT_MIN&&la<=GEO_LAT_MAX&&lo>=GEO_LNG_MIN&&lo<=GEO_LNG_MAX;
+}
+// ── PASSWORD HASHING (SubtleCrypto SHA-256) ───────────────────────────────────
+// New passwords are stored as "sha256:<hex>" so they are never plaintext.
+// Existing plaintext passwords still work during the transition — once a user
+// logs in successfully with their plaintext password it is transparently upgraded.
+// SECURITY NOTE: This is client-side hashing for storage safety (prevents casual
+// exposure in localStorage / Google Sheet). It is NOT a substitute for server-side
+// auth — rotate the DEFAULT_API_KEY and restrict Sheet access for full security.
+async function hashPassword(pw){
+  try{
+    const enc=new TextEncoder().encode(pw);
+    const buf=await crypto.subtle.digest("SHA-256",enc);
+    const hex=Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,"0")).join("");
+    return "sha256:"+hex;
+  }catch(_){
+    // SubtleCrypto unavailable (non-HTTPS) — fall back to plaintext (no regression)
+    return pw;
+  }
+}
+async function verifyPassword(input, stored){
+  if(!stored) return false;
+  if(stored.startsWith("sha256:")){
+    const hashed=await hashPassword(input);
+    return hashed===stored;
+  }
+  // Legacy plaintext — direct compare, will be upgraded on next save
+  return input===stored;
+}
+async function upgradePasswordIfNeeded(userObj, plaintextPw){
+  if(userObj.password && !userObj.password.startsWith("sha256:")){
+    const hashed=await hashPassword(plaintextPw);
+    userObj.password=hashed;
+    save(DB);
+    // Sync hashed password to sheet silently
+    syncSingleUserToSheet(userObj).catch(()=>{});
+  }
+}
 (function(){try{if(!localStorage.getItem("vibeDidWipe_v1")){const keep=new Set(["vibeTheme","vibeSession","vibeAttendanceData"]);Object.keys(localStorage).filter(k=>!keep.has(k)).forEach(k=>localStorage.removeItem(k));localStorage.setItem("vibeDidWipe_v1","1");}}catch(_){}})();
 
 // ── CORS FIX v20260321 — Use allorigins proxy when direct fetch is blocked ──
 const CORS_PROXY = "https://api.allorigins.win/raw?url=";
 async function _corsSafeFetch(fullUrl, opts, timeout=10000){
-  // 1st attempt: direct fetch
   try {
     const ctrl = new AbortController();
     const t = setTimeout(()=>ctrl.abort(), timeout);
@@ -278,11 +326,13 @@ async function _corsSafeFetch(fullUrl, opts, timeout=10000){
     clearTimeout(t);
     return res;
   } catch(e) {
+    // AbortError = our own timeout — don't retry via proxy, just fail fast
+    if(e && e.name === "AbortError") throw e;
+    // TypeError = CORS / network block — retry via proxy
     const isCors = e instanceof TypeError;
     if(!isCors) throw e;
     console.warn("VIBE: direct fetch blocked, retrying via CORS proxy…");
   }
-  // 2nd attempt: via allorigins proxy (GET only — encode the full URL)
   const proxied = CORS_PROXY + encodeURIComponent(fullUrl);
   const ctrl2 = new AbortController();
   const t2 = setTimeout(()=>ctrl2.abort(), timeout);
@@ -297,7 +347,6 @@ async function gsFetch(params) {
   const fullParams = { ...params, key: getApiKey(), user: SESSION ? SESSION.username : "anonymous" };
   const getUrl = url + "?" + new URLSearchParams(fullParams);
 
-  // Try GET first (with CORS proxy fallback)
   try {
     const res = await _corsSafeFetch(getUrl, { method: "GET", redirect: "follow" }, 10000);
     const text = await res.text();
@@ -318,7 +367,6 @@ async function gsFetch(params) {
     }
   } catch(e) { console.warn("GS GET error", e); }
 
-  // Fallback: POST with params in body
   try {
     const ctrl2 = new AbortController();
     const tmr2 = setTimeout(() => ctrl2.abort(), 10000);
@@ -407,11 +455,9 @@ function showToast(msg, type="info", duration=4000){
 }
 
 async function gsPost(body) {
-  // ONLINE-ONLY: post directly to sheet, no queue
   const url = getScriptUrl();
   if (!url) return { ok: false, error: "No Script URL" };
   const secureBody = { ...body, apiKey: getApiKey(), username: body.username || (body.data && body.data.username) || (SESSION ? SESSION.username : "") };
-  // Try POST first
   try {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), 10000);
@@ -422,7 +468,6 @@ async function gsPost(body) {
   } catch(e) {
     console.warn("gsPost direct failed, trying proxy GET fallback:", e.message);
   }
-  // CORS fallback: encode body as GET param via proxy
   try {
     const getUrl = url + "?" + new URLSearchParams({ ...secureBody, key: getApiKey() });
     const res2 = await _corsSafeFetch(getUrl, { method:"GET", redirect:"follow" }, 10000);
@@ -438,7 +483,7 @@ async function syncSingleUserToSheet(userObj) {
   const u = userObj;
   const uname = (u.username||"").toLowerCase();
   const rawLat = parseFloat(u.geoLat); const rawLng = parseFloat(u.geoLng);
-  const validGeo = !isNaN(rawLat)&&!isNaN(rawLng)&&rawLat>=6&&rawLat<=38&&rawLng>=68&&rawLng<=98;
+  const validGeo = isValidIndiaCoords(rawLat, rawLng);
   const cleanUser = {
     ...u,
     geoLat: validGeo ? String(rawLat) : "",
@@ -446,22 +491,14 @@ async function syncSingleUserToSheet(userObj) {
     geoRadius: (!isNaN(parseInt(u.geoRadius))&&parseInt(u.geoRadius)>=50&&parseInt(u.geoRadius)<=5000) ? parseInt(u.geoRadius) : 200,
   };
   try {
-    const _sc = new AbortController();
-    const _st = setTimeout(() => _sc.abort(), 10000);
-    const res = await fetch(_syncUrl, { method:"POST", redirect:"follow", headers:{"Content-Type":"text/plain"}, body: JSON.stringify({
+    // CORS FIX: use gsPost which has proxy fallback
+    const json = await gsPost({
       action: "updateUser",
-      apiKey: getApiKey(),
       username: SESSION ? SESSION.username : "admin",
       data: cleanUser
-    }), signal: _sc.signal });
-    clearTimeout(_st);
-    const text = await res.text();
-    try {
-      const json = JSON.parse(text);
-      if (json && json.ok) return;
-      // Server doesn't support updateUser — fall back to full setUsers
-      console.warn("syncSingleUserToSheet: updateUser not supported, falling back to setUsers");
-    } catch(_) { return; }
+    });
+    if (json && json.ok) return;
+    console.warn("syncSingleUserToSheet: updateUser not supported, falling back to setUsers");
   } catch(e) { console.warn("syncSingleUserToSheet failed:", e); }
   // Fallback: send all users
   syncUsersToSheet();
@@ -514,7 +551,7 @@ function canCheckIn(){
   const now = Date.now();
   if(now - _lastCheckIn < 5000) return false;
   if(SESSION && SESSION.role !== "admin"){
-    const todayStr=localDateStr(new Date());
+    const todayStr=serverTodayStr();
     const hasCheckIn=DB.attendance.some(r=>r.username===SESSION.username&&r.type==="in"&&localDateStr(new Date(r.timestamp))===todayStr);
     if(hasCheckIn) return false;
   }
@@ -525,61 +562,110 @@ let _lastCheckOut = 0;
 function canCheckOut(){ const now = Date.now(); if(now - _lastCheckOut < 5000) return false; return true; }
 function stampCheckOut(){ _lastCheckOut = Date.now(); }
 
+// Track which dates absences have already been posted this session
+const _absPostedDates = new Set();
+let _absRunning = false;
+
 async function markAbsences() {
-  const today = new Date();
-  const todayStr = localDateStr(today);
-  if (today.getDay() === 0) return;
-
-  const nowMin = today.getHours() * 60 + today.getMinutes();
-  if (nowMin < 630) return;
-
-  if (!DB.absences) DB.absences = [];
-
+  // ANTI-DUPLICATE LOCK: only one run at a time
+  if (_absRunning) return;
+  _absRunning = true;
   try {
-    const loaded = await loadFromSheet();
-    if (!loaded) {
-      console.warn("markAbsences: sheet unreachable, skipping this cycle");
+    // SERVER TIME FIX: use server time for all "today" logic
+    const _sNow=getServerNow();
+    const today = new Date(_sNow);
+    const todayStr = localDateStr(today);
+    // IST day-of-week and hour from server time
+    const _todayIstMin=Math.floor((_sNow/60000)+(5*60+30));
+    const _todayIstH=Math.floor(((_todayIstMin%1440)+1440)%1440/60);
+    const _todayIstDow=new Date(todayStr+"T00:00:00+05:30").getDay();
+    if (_todayIstDow === 0) return; // skip Sunday
+    if (_todayIstH < 10 || _todayIstH > 21) return; // only run 10AM-9PM IST
+
+    if (!DB.absences) DB.absences = [];
+
+    // ANTI-DUPLICATE: Always reload from sheet first to get latest absences
+    try {
+      const loaded = await loadFromSheet();
+      if (!loaded) {
+        console.warn("markAbsences: sheet unreachable, skipping this cycle");
+        return;
+      }
+    } catch(e) {
+      console.warn("markAbsences: sheet unreachable, skipping", e);
       return;
     }
-  } catch(e) {
-    console.warn("markAbsences: sheet unreachable, skipping", e);
-    return;
-  }
 
-  const checkedInToday = new Set(
-    DB.attendance
-      .filter(r => (r.type === "in" || r.type === "out") && localDateStr(new Date(r.timestamp)) === todayStr)
-      .map(r => r.username)
-  );
-  const surveyedToday = new Set(
-    (DB.surveys||[])
-      .filter(s => s.date === todayStr)
-      .map(s => s.username)
-  );
+    const checkedInToday = new Set(
+      DB.attendance
+        .filter(r => (r.type === "in" || r.type === "out") && localDateStr(new Date(r.timestamp)) === todayStr)
+        .map(r => r.username)
+    );
+    const surveyedToday = new Set(
+      (DB.surveys||[])
+        .filter(s => s.date === todayStr)
+        .map(s => s.username)
+    );
 
-  DB.users.filter(u => u.role !== "admin").forEach((u, idx) => {
-    const isPresent = checkedInToday.has(u.username) || surveyedToday.has(u.username);
-    // DEDUP FIX: check all absences for this user+date, not just first
-    const existingAbsList = DB.absences.filter(a => a.username === u.username && a.date === todayStr);
-    const existingAbs = existingAbsList.length > 0;
-    if (isPresent && existingAbs) {
-      // Remove all duplicates locally
-      DB.absences = DB.absences.filter(a => !(a.username === u.username && a.date === todayStr));
-      gsPost({ action:"removeAbsence", data:{ username: u.username, date: todayStr } }).catch(()=>{});
-    } else if (!isPresent && !existingAbs) {
-      // Only post if not already in local DB (prevents duplicate posts during same session)
-      const newAbs = { id: String(Date.now())+"_abs_"+idx, username: u.username, date: todayStr, auto: true };
-      DB.absences.push(newAbs);
-      gsPost({ action: "addAbsence", data: newAbs });
+    // Build set of usernames that already have an absence record in the sheet for today
+    const alreadyAbsentInSheet = new Set(
+      DB.absences
+        .filter(a => a.date === todayStr)
+        .map(a => String(a.username||"").toLowerCase())
+    );
+
+    const usersToPost = [];
+    DB.users.filter(u => u.role !== "admin").forEach((u, idx) => {
+      const uname = String(u.username||"").toLowerCase();
+      const isPresent = checkedInToday.has(uname) || surveyedToday.has(uname);
+      const existsInSheet = alreadyAbsentInSheet.has(uname);
+
+      if (isPresent && existsInSheet) {
+        // User checked in — remove their absence
+        DB.absences = DB.absences.filter(a => String(a.username||"").toLowerCase() !== uname || a.date !== todayStr);
+        gsPost({ action:"removeAbsence", data:{ username: u.username, date: todayStr } }).catch(()=>{});
+      } else if (!isPresent && !existsInSheet) {
+        // ANTI-DUPLICATE: only add if truly not in sheet AND not already posted this session
+        const sessionKey = uname + "__" + todayStr;
+        if (!_absPostedDates.has(sessionKey)) {
+          usersToPost.push({ u, idx });
+          _absPostedDates.add(sessionKey);
+        }
+      }
+    });
+
+    // Post absences in ONE batch call instead of N separate calls
+    if (usersToPost.length > 0) {
+      const newAbsences = usersToPost.map(({u, idx}) => ({
+        id: String(getServerNow())+"_abs_"+idx,
+        username: u.username,
+        date: todayStr,
+        auto: true
+      }));
+      // Add to local DB first
+      newAbsences.forEach(a => DB.absences.push(a));
+      save(DB);
+      // Send as batch to reduce API calls
+      try {
+        await gsPost({ action: "addAbsences", data: newAbsences });
+      } catch(_) {
+        // Fallback: individual posts
+        for (const a of newAbsences) {
+          gsPost({ action: "addAbsence", data: a }).catch(()=>{});
+        }
+      }
+      console.log("markAbsences: posted", newAbsences.length, "absences for", todayStr);
     }
-    // If !isPresent && existingAbs — already recorded, do nothing (no duplicate post)
-  });
+  } finally {
+    _absRunning = false;
+  }
 }
 
+// Run every 10 minutes (not every 60s) to prevent duplicate flooding
 setInterval(async()=>{
   if(!SESSION || SESSION.role !== "admin") return;
   markAbsences();
-}, 60000);
+}, 600000); // 10 minutes — prevents duplicate absence flooding
 
 let autoSyncInterval = null;
 function startAutoSync() {
@@ -605,7 +691,7 @@ async function syncToSheet() {
     const cleanLoc = (!u.location||u.location.toLowerCase()===uname) ? "" : u.location;
     // Only write real India coords — reject anything that isn't a valid number in India range
     const rawLat = parseFloat(u.geoLat); const rawLng = parseFloat(u.geoLng);
-    const validGeo = !isNaN(rawLat)&&!isNaN(rawLng)&&rawLat>=6&&rawLat<=38&&rawLng>=68&&rawLng<=98;
+    const validGeo = isValidIndiaCoords(rawLat, rawLng);
     const cleanGeoLat = validGeo ? String(rawLat) : "";
     const cleanGeoLng = validGeo ? String(rawLng) : "";
     const rawRad = parseInt(u.geoRadius);
@@ -647,7 +733,7 @@ async function syncUsersToSheet() {
     const cleanDesig = (!u.designation||u.designation.toLowerCase()===uname||u.designation.toLowerCase()===fname) ? "" : u.designation;
     const cleanLoc = (!u.location||u.location.toLowerCase()===uname) ? "" : u.location;
     const rawLat = parseFloat(u.geoLat); const rawLng = parseFloat(u.geoLng);
-    const validGeo = !isNaN(rawLat)&&!isNaN(rawLng)&&rawLat>=6&&rawLat<=38&&rawLng>=68&&rawLng<=98;
+    const validGeo = isValidIndiaCoords(rawLat, rawLng);
     const cleanGeoLat = validGeo ? String(rawLat) : "";
     const cleanGeoLng = validGeo ? String(rawLng) : "";
     const rawRad = parseInt(u.geoRadius);
@@ -709,10 +795,10 @@ async function loadFromSheet() {
         const fname = safeChain(u.fullName, u.full_name, u.FullName, u.name);
 
         // ── COORDINATE DETECTION HELPERS ──────────────────────────────────────
-        // Checks all 5 geo-related columns to find where the real coords ended up,
-        // regardless of column shift. Handles 1-column and 2-column right-shifts.
-        const isIndiaLat = v => { const n=parseFloat(v); return !isNaN(n)&&isFinite(n)&&n>=6&&n<=38; };
-        const isIndiaLng = v => { const n=parseFloat(v); return !isNaN(n)&&isFinite(n)&&n>=68&&n<=98; };
+        // Checks all geo-related columns to find where the real coords ended up,
+        // regardless of column shift. Uses shared GEO_LAT/LNG bounds constants.
+        const isIndiaLat = v => { const n=parseFloat(v); return !isNaN(n)&&isFinite(n)&&n>=GEO_LAT_MIN&&n<=GEO_LAT_MAX; };
+        const isIndiaLng = v => { const n=parseFloat(v); return !isNaN(n)&&isFinite(n)&&n>=GEO_LNG_MIN&&n<=GEO_LNG_MAX; };
         const isRadius   = v => { const n=parseInt(v);   return !isNaN(n)&&n>=50&&n<=5000; };
         const isRoleVal  = v => ROLE_VALUES.has(safeString(v,"").toLowerCase());
         const isUserName = v => safeString(v,"").toLowerCase()===uname.toLowerCase();
@@ -937,9 +1023,15 @@ function localDateStr(date){
   try {
     const d = date || new Date();
     if (!(d instanceof Date) || isNaN(d.getTime())) return "";
-    return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+    // IST FIX: always return YYYY-MM-DD in IST (UTC+5:30) regardless of device timezone
+    return d.toLocaleDateString("en-CA",{timeZone:"Asia/Kolkata"});
   } catch(e) {
-    return "";
+    // Fallback: manual IST offset
+    try{
+      const ms=(date instanceof Date?date.getTime():Date.now())+(5*60+30)*60*1000;
+      const ist=new Date(ms);
+      return `${ist.getUTCFullYear()}-${String(ist.getUTCMonth()+1).padStart(2,"0")}-${String(ist.getUTCDate()).padStart(2,"0")}`;
+    }catch(_){ return ""; }
   }
 }
 
@@ -972,7 +1064,7 @@ function checkUserGeofence(userLat,userLng,username){
     if(rawLat && rawLng && rawLat!=="0" && rawLng!=="0"){
       const lat=parseFloat(rawLat), lng=parseFloat(rawLng);
       // Validate realistic coordinates (India range) and minimum radius
-      const validCoords=!isNaN(lat)&&!isNaN(lng)&&lat>=6&&lat<=38&&lng>=68&&lng<=98;
+      const validCoords=isValidIndiaCoords(lat,lng);
       const radius=parseInt(u.geoRadius)||200;
       const validRadius=radius>=50; // ignore tiny/corrupt radius values
       if(validCoords&&validRadius){
@@ -987,6 +1079,15 @@ function checkUserGeofence(userLat,userLng,username){
 }
 
 // ── WORK TIMING HELPERS ───────────────────────────────────────────────────────
+
+// ── IST TIME DISPLAY HELPER v20260321 ────────────────────────────────────────
+// Always display times in IST regardless of device timezone.
+function fmtIST(tsMs){
+  if(!tsMs) return "—";
+  try{ return new Date(tsMs).toLocaleTimeString("en-IN",{timeZone:"Asia/Kolkata",hour:"2-digit",minute:"2-digit",hour12:true}); }
+  catch(_){ return new Date(tsMs).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"}); }
+}
+
 const WORK_START_H=9,WORK_START_M=0;
 const WORK_END_H=18,WORK_END_M=0;
 const FULL_DAY_MIN=8*60;
@@ -996,7 +1097,10 @@ const HALF_DAY_LATE_MIN=4*60;
 function getArrivalStatus(tsMs){
   if(!tsMs)return null;
   const d=new Date(tsMs);
-  const inMin=d.getHours()*60+d.getMinutes();
+  // IST FIX: always compute hours/minutes in IST (UTC+5:30)
+  const istOffset=5*60+30;
+  const istTotalMin=Math.floor((tsMs/60000)+istOffset);
+  const inMin=((istTotalMin%1440)+1440)%1440;
   const startMin=WORK_START_H*60+WORK_START_M;
   const lateMin=inMin-startMin;
   if(lateMin<=0)return{type:"ontime",label:"On Time"};
@@ -1007,8 +1111,10 @@ function getArrivalStatus(tsMs){
 function getDepartureStatus(tsMs, checkInTs){
   if(!tsMs)return null;
   if(!checkInTs){
-    const d=new Date(tsMs);
-    const outMin=d.getHours()*60+d.getMinutes();
+    // IST FIX: always compute hours/minutes in IST (UTC+5:30)
+    const istOffset=5*60+30;
+    const istTotalMin2=Math.floor((tsMs/60000)+istOffset);
+    const outMin=((istTotalMin2%1440)+1440)%1440;
     const endMin=WORK_END_H*60+WORK_END_M;
     return outMin<endMin?{type:"permission",label:"Permission"}:{type:"full",label:"Full Day"};
   }
@@ -1019,7 +1125,16 @@ function getDepartureStatus(tsMs, checkInTs){
   const wh=Math.floor(workedMin/60),wm=workedMin%60;
   return{type:"permission",label:wh>0?(wm>0?`${wh}h ${wm}m`:`${wh}h`):(`${wm}m`)};
 }
-function localMonthStr(date){const d=date||new Date();return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`}
+function localMonthStr(date){
+  try{
+    const d=date||new Date();
+    // IST FIX: always return YYYY-MM in IST (UTC+5:30), consistent with localDateStr()
+    return d.toLocaleDateString("en-CA",{timeZone:"Asia/Kolkata"}).slice(0,7);
+  }catch(_){
+    const d=date||new Date();
+    return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+  }
+}
 
 let DB = loadData();
 const SESSION_KEY = "vibeSession";
@@ -1036,30 +1151,64 @@ function restoreSession(){
 }
 let SESSION = restoreSession();
 
-// ── SERVER TIME (Fix: client clock manipulation) ──────────────────────────────
-// Fetches verified UTC time from a trusted public API.
-// Falls back to Date.now() only if the network call fails, and sets a drift flag.
+// ── SERVER TIME v20260321 — IST-forced, CORS-proxy fallback ──────────────────
+// Always fetches IST time from trusted APIs. Uses CORS proxy if direct fetch blocked.
+// NEVER falls back silently to device clock — returns trusted:false so check-in is blocked.
+const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000; // UTC+5:30
+
+async function _timeFetch(url, timeout=6000){
+  // Try direct first, then via CORS proxy
+  try{
+    const ctrl=new AbortController();
+    setTimeout(()=>ctrl.abort(),timeout);
+    return await fetch(url,{method:"GET",signal:ctrl.signal});
+  }catch(_){}
+  // CORS proxy fallback
+  const ctrl2=new AbortController();
+  setTimeout(()=>ctrl2.abort(),timeout);
+  return await fetch(CORS_PROXY+encodeURIComponent(url),{method:"GET",signal:ctrl2.signal});
+}
+
 async function getServerTime(){
-  // Try multiple time APIs in sequence for reliability
+  // ✅ FIX: Return cached time if recently fetched (prevent API hammering on concurrent calls)
+  if(_serverNow && Date.now()-_serverNowFetchedAt<1500){
+    const drift=_serverNow-Date.now();
+    return{serverMs:_serverNow,drift,trusted:true};
+  }
+  
+  // All APIs return true UTC milliseconds (unix epoch).
+  // localDateStr() and fmtIST() then convert to IST for display/comparison.
   const apis=[
+    // API 1: timeapi.io — request IST zone, parse dateTime as IST string
     async()=>{
       const t0=Date.now();
-      const ctrl=new AbortController();
-      setTimeout(()=>ctrl.abort(),5000);
-      const res=await fetch("https://worldtimeapi.org/api/ip",{method:"GET",signal:ctrl.signal});
+      const res=await _timeFetch("https://timeapi.io/api/Time/current/zone?timeZone=Asia%2FKolkata");
       const json=await res.json();
-      if(!json.unixtime) throw new Error("no unixtime");
-      const serverMs=Math.round((json.unixtime*1000)+((Date.now()-t0)/2));
+      // ✅ FIX #7: Validate response type and structure
+      if(!json || typeof json.dateTime !== 'string') throw new Error("Invalid dateTime response");
+      if(json.dateTime.length < 19) throw new Error("dateTime too short");
+      // dateTime is "2026-03-21T12:29:00.000" — this is IST local time with NO offset suffix.
+      // We MUST append +05:30 so JS parses it as IST, not as device-local or UTC.
+      const istStr=json.dateTime.replace(/(\.\d+)?$/, "+05:30");
+      const serverMs=Math.round(new Date(istStr).getTime()+((Date.now()-t0)/2));
+      if(isNaN(serverMs)) throw new Error("invalid");
       return serverMs;
     },
+    // API 2: worldtimeapi — unixtime is always UTC epoch, no parsing ambiguity
     async()=>{
       const t0=Date.now();
-      const ctrl=new AbortController();
-      setTimeout(()=>ctrl.abort(),5000);
-      const res=await fetch("https://timeapi.io/api/Time/current/zone?timeZone=UTC",{method:"GET",signal:ctrl.signal});
+      const res=await _timeFetch("https://worldtimeapi.org/api/timezone/Asia/Kolkata");
       const json=await res.json();
-      if(!json.dateTime) throw new Error("no dateTime");
-      const serverMs=Math.round(new Date(json.dateTime+"Z").getTime()+((Date.now()-t0)/2));
+      if(!json.unixtime) throw new Error("no unixtime");
+      return Math.round((json.unixtime*1000)+((Date.now()-t0)/2));
+    },
+    // API 3: Google Apps Script — ts is UTC epoch ms from Date.now() server-side
+    async()=>{
+      const t0=Date.now();
+      const res=await _timeFetch(getScriptUrl()+"?action=getTime&key="+getApiKey());
+      const j=await res.json();
+      if(!j||!j.ts) throw new Error("no ts");
+      const serverMs=Math.round(parseInt(j.ts)+((Date.now()-t0)/2));
       if(isNaN(serverMs)) throw new Error("invalid");
       return serverMs;
     }
@@ -1068,36 +1217,55 @@ async function getServerTime(){
     try{
       const serverMs=await api();
       const drift=Math.round(serverMs-Date.now());
+      cacheServerTime(serverMs); // update global server time cache
+      const istTime=new Date(serverMs).toLocaleTimeString("en-IN",{timeZone:"Asia/Kolkata",hour:"2-digit",minute:"2-digit",hour12:true});
+      const istDate=new Date(serverMs).toLocaleDateString("en-IN",{timeZone:"Asia/Kolkata"});
+      console.log("VIBE: server time OK — IST: "+istDate+" "+istTime+", drift="+Math.round(drift/1000)+"s");
       return{serverMs,drift,trusted:true};
-    }catch(_){}
+    }catch(e){ console.warn("VIBE time API failed:",e.message); }
   }
-  // Both external APIs failed — try GAS script as 3rd trusted source
-  try{
-    const t0=Date.now();
-    const ctrl3=new AbortController();
-    setTimeout(()=>ctrl3.abort(),5000);
-    const res3=await fetch(getScriptUrl()+"?action=getTime&key="+getApiKey(),{method:"GET",signal:ctrl3.signal});
-    const j3=await res3.json();
-    if(j3&&j3.ts){
-      const serverMs=Math.round(parseInt(j3.ts)+((Date.now()-t0)/2));
-      if(!isNaN(serverMs)){
-        const drift=Math.round(serverMs-Date.now());
-        return{serverMs,drift,trusted:true};
-      }
-    }
-  }catch(_){}
-  // All 3 sources failed — return untrusted
+  console.error("VIBE: ALL time APIs failed — check-in will be blocked");
   return{serverMs:Date.now(),drift:0,trusted:false};
+}
+
+// ── SERVER TIME CACHE ────────────────────────────────────────────────────────
+// _serverNow: cached server UTC ms, refreshed on login and each check-in/out.
+// All "today" logic uses this instead of Date.now() / new Date().
+let _serverNow = null; // null = not yet fetched
+let _serverNowFetchedAt = 0; // Date.now() when last fetched
+// ✅ FIX #4: Debounce to prevent duplicate check-in/out records from rapid clicks
+let _checkInInProgress = false;
+let _checkOutInProgress = false;
+
+// Returns best-estimate current server time in ms.
+// Uses cached value + elapsed time since fetch (so it ticks forward correctly).
+function getServerNow(){
+  if(_serverNow && _serverNowFetchedAt){
+    return _serverNow + (Date.now() - _serverNowFetchedAt);
+  }
+  // Not yet fetched — fall back to device clock (will be corrected on next fetch)
+  return Date.now();
+}
+
+// Call this after every successful getServerTime() to update the cache.
+function cacheServerTime(serverMs){
+  _serverNow = serverMs;
+  _serverNowFetchedAt = Date.now();
+}
+
+// Convenience: today's date string in IST using server time
+function serverTodayStr(){
+  return localDateStr(new Date(getServerNow()));
 }
 
 // ── CLOCK DATE VALIDATION ────────────────────────────────────────────────────
 // Returns error string if device date doesn't match server date, else null
 function checkClockDate(serverMs, trusted=true){
   const serverDate = localDateStr(new Date(serverMs));
-  const deviceDate = localDateStr(new Date());
+  const deviceDate = serverTodayStr(); // SERVER TIME FIX — compare server IST date
   if(serverDate !== deviceDate){
-    const serverD = new Date(serverMs).toLocaleDateString("en-GB",{weekday:"short",day:"2-digit",month:"short",year:"numeric"});
-    const deviceD = new Date().toLocaleDateString("en-GB",{weekday:"short",day:"2-digit",month:"short",year:"numeric"});
+    const serverD = new Date(serverMs).toLocaleDateString("en-GB",{timeZone:"Asia/Kolkata",weekday:"short",day:"2-digit",month:"short",year:"numeric"});
+    const deviceD = new Date().toLocaleDateString("en-GB",{timeZone:"Asia/Kolkata",weekday:"short",day:"2-digit",month:"short",year:"numeric"});
     return `Your device date is <strong>${deviceD}</strong> but the actual date is <strong>${serverD}</strong>. Please fix your device date and try again.`;
   }
   return null;
@@ -1105,10 +1273,12 @@ function checkClockDate(serverMs, trusted=true){
 // Check if device time is outside any plausible working window (5AM-11PM)
 // Used as a safety net when server time APIs are unreachable
 function checkDeviceDateSanity(){
-  const h=new Date().getHours();
+  // IST FIX: check hour in IST timezone
+  const nowIstMin=Math.floor((Date.now()/60000)+(5*60+30));
+  const h=Math.floor(((nowIstMin%1440)+1440)%1440/60);
   if(h<5||h>=23){
-    const deviceD=new Date().toLocaleDateString("en-GB",{weekday:"short",day:"2-digit",month:"short",year:"numeric"});
-    const deviceT=new Date().toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});
+    const deviceD=new Date().toLocaleDateString("en-GB",{timeZone:"Asia/Kolkata",weekday:"short",day:"2-digit",month:"short",year:"numeric"});
+    const deviceT=new Date().toLocaleTimeString("en-IN",{timeZone:"Asia/Kolkata",hour:"2-digit",minute:"2-digit",hour12:true});
     return `Your device shows <strong>${deviceD} ${deviceT}</strong> which is outside working hours. Could not verify with time server. Please check your device date & time.`;
   }
   return null;
@@ -1237,7 +1407,10 @@ function renderLogin(){
       try{
         await loadFromSheet();
       }catch(_){}
-      let found=DB.users.find(x=>x.username===u&&x.password===p);
+      let found=null;
+      for(const x of DB.users){
+        if(x.username===u && await verifyPassword(p, x.password)){ found=x; break; }
+      }
       if(!found && DB.users.filter(x=>x.role==="admin").length===0){
         const defUser=def().users.find(x=>x.username===u&&x.password===p);
         if(defUser) found=defUser;
@@ -1255,6 +1428,8 @@ function renderLogin(){
         btn.disabled=false;btn.textContent="Sign In";return;
       }
       _loginAttempts=0;_loginLockedUntil=0;
+      // Transparently upgrade plaintext password to SHA-256 hash on successful login
+      upgradePasswordIfNeeded(found, p).catch(()=>{});
       proceedLogin(found,u,p);
     })();
   }
@@ -1294,8 +1469,8 @@ function renderLogin(){
         // Check time mismatch (device clock >5 min off)
         const driftMin=Math.abs(st.drift)/60000;
         if(driftMin>5){
-          const deviceTime=new Date().toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});
-          const serverTime=new Date(st.serverMs).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});
+          const deviceTime=new Date().toLocaleTimeString("en-IN",{timeZone:"Asia/Kolkata",hour:"2-digit",minute:"2-digit",hour12:true});
+          const serverTime=new Date(st.serverMs).toLocaleTimeString("en-IN",{timeZone:"Asia/Kolkata",hour:"2-digit",minute:"2-digit",hour12:true});
           errBox.innerHTML=`⏰ <strong>Device clock is wrong.</strong><br>Your device shows <strong>${deviceTime}</strong> but the actual time is <strong>${serverTime}</strong>.<br><span style="font-size:.85em">Please fix your device clock and try again.</span>`;
           errBox.classList.remove("hidden");
           btn.disabled=false;btn.textContent="Sign In";
@@ -1350,9 +1525,15 @@ function showSurvey(onSubmit, onCancel){
   }
   [i1,i2,i3].forEach(i=>{i.addEventListener("input",checkFill);i.addEventListener("change",checkFill);});
   submitBtn.addEventListener("click",()=>{
-    const p=parseInt(i1.value)||0, r=parseInt(i2.value)||0, g=parseInt(i3.value)||0;
-    if(p===0&&r===0&&g===0){
-      if(!confirm("All counts are 0. Are you sure you want to submit with zero entries?")) return;
+    // ✅ FIX #6: Trim input values for consistency
+    const p=parseInt(i1.value.trim())||0, r=parseInt(i2.value.trim())||0, g=parseInt(i3.value.trim())||0;
+    // ✅ FIX #8: Warn about ANY zero entries, not just all zeros
+    const zeros=[];
+    if(p===0) zeros.push("Policy");
+    if(r===0) zeros.push("RSA");
+    if(g===0) zeros.push("GPA");
+    if(zeros.length>0){
+      if(!confirm(`No entries for: ${zeros.join(", ")}. Continue anyway?`)) return;
     }
     onSubmit({policy:p,rsa:r,gpa:g});overlay.remove();
   });
@@ -1389,7 +1570,7 @@ function renderUser(){
   window._adminRefresh=null; window._doAdminSync=null;
   const myRecs=()=>DB.attendance.filter(r=>r.username===SESSION.username).sort((a,b)=>b.timestamp-a.timestamp);
   const todayRecs=()=>{
-    const s=localDateStr(new Date());
+    const s=serverTodayStr(); // SERVER TIME FIX
     const recs=myRecs().filter(r=>localDateStr(new Date(r.timestamp))===s);
     const sessionCheckoutTs=parseInt(sessionStorage.getItem("vibeLastCheckout_"+SESSION.username)||"0");
     const outs=recs.filter(r=>r.type==="out");
@@ -1479,7 +1660,9 @@ function renderUser(){
   dash.appendChild(content);
   let curTab="today";
   const now=new Date();
-  const curMonthKey=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}`;
+  // IST FIX: compute current month in IST
+  const _nowIstStr=now.toLocaleDateString("en-CA",{timeZone:"Asia/Kolkata"});
+  const curMonthKey=_nowIstStr.slice(0,7); // YYYY-MM
   let selMonth=curMonthKey;
   let _checkoutInProgress=false;
 
@@ -1490,7 +1673,9 @@ function renderUser(){
     const allRecs=myRecs();
     const totalDays=[...new Set(allRecs.filter(r=>r.type==="in").map(r=>localDateStr(new Date(r.timestamp))))].length;
     const nowS=new Date();
-    const curMKS=`${nowS.getFullYear()}-${String(nowS.getMonth()+1).padStart(2,"0")}`;
+    // IST FIX: compute current month in IST
+    const _nowSIstStr=nowS.toLocaleDateString("en-CA",{timeZone:"Asia/Kolkata"});
+    const curMKS=_nowSIstStr.slice(0,7);
     const mySurveys=(DB.surveys||[]).filter(s=>s.username===SESSION.username);
     const normD=d=>{if(!d)return"";const s=String(d);return s.includes("T")?s.slice(0,10):s.slice(0,10);}
     const monthSurveysU=mySurveys.filter(s=>normD(s.date).startsWith(curMKS));
@@ -1501,11 +1686,14 @@ function renderUser(){
     // which only gets populated if markAbsences() ran (requires admin after 10:30 AM).
     // Instead, enumerate every working day in current month up to yesterday and check for check-in.
     const absentDays=(()=>{
-      const today=nowS;
+      // SERVER TIME FIX: use server date for "today" comparison
+      const today=new Date(getServerNow());
       const year=parseInt(curMKS.split("-")[0]);
       const month=parseInt(curMKS.split("-")[1])-1;
       const daysInMonth=new Date(year,month+1,0).getDate();
-      const lastDay=Math.min(daysInMonth, today.getDate());
+      const todayIST=serverTodayStr();
+      const todayISTDay=parseInt(todayIST.split("-")[2])||today.getDate();
+      const lastDay=Math.min(daysInMonth, todayISTDay);
       // Build set of dates user checked in or submitted a survey this month
       const presentDates=new Set([
         ...allRecs.filter(r=>r.type==="in").map(r=>localDateStr(new Date(r.timestamp))),
@@ -1514,14 +1702,15 @@ function renderUser(){
       let count=0;
       for(let d=1;d<=lastDay;d++){
         const dateStr=curMKS+"-"+String(d).padStart(2,"0");
-        const dow=new Date(year,month,d).getDay();
+        // IST FIX: compute day-of-week using UTC to avoid timezone shift
+        const dow=new Date(dateStr+"T00:00:00+05:30").getDay();
         if(dow===0) continue; // skip Sunday only (Saturday is a working day)
-        if(dateStr===localDateStr(today)) continue; // don't count today (user may check in later)
+        if(dateStr===serverTodayStr()) continue; // SERVER TIME FIX: don't count today
         if(!presentDates.has(dateStr)) count++;
       }
       return count;
     })();
-    const monthLblU=nowS.toLocaleString("default",{month:"long",year:"numeric"});
+    const monthLblU=nowS.toLocaleString("en-IN",{timeZone:"Asia/Kolkata",month:"long",year:"numeric"});
 
     const grid=el("div","grid2",null,{marginBottom:".8rem"});
     const b1=el("div","stat-box");b1.innerHTML=`<div class="num" style="color:var(--accent2)">${totalDays}</div><div class="lbl">Total Present</div>`;
@@ -1548,11 +1737,24 @@ function renderUser(){
       const checkedIn=isIn();
       const mainBtn=h("button",{className:"btn "+(checkedIn?"btn-danger":"btn-success")},checkedIn?"⏹ Check Out":"▶ Check In");
       mainBtn.addEventListener("click",async()=>{
-        // Bug 3 fix: re-evaluate isIn() live at click time, not the stale closure
-        const currentlyIn=isIn();
-        if(currentlyIn){
+        // ✅ FIX #4: Debounce - prevent rapid clicks from creating duplicate records
+        if(checkedIn && _checkOutInProgress){
+          showToast("⏳ Check-out already in progress...","warn",2000);
+          return;
+        }
+        if(!checkedIn && _checkInInProgress){
+          showToast("⏳ Check-in already in progress...","warn",2000);
+          return;
+        }
+        if(checkedIn) _checkOutInProgress=true;
+        else _checkInInProgress=true;
+        
+        // Original handler begins...
+        try {
+        if(checkedIn){
           if(_checkoutInProgress||!isIn()||!canCheckOut()){refresh();return;}
           if(!navigator.onLine){
+            _checkOutInProgress=false;
             const oldEb=content.querySelector(".loc-err-banner");if(oldEb)oldEb.remove();
             const eb=h("div",{className:"loc-err-banner geo-banner geo-warn",style:{marginTop:".75rem"}});
             eb.innerHTML="<span class='geo-icon'>📡</span><div><strong>No Internet Connection</strong><br>Please connect to the internet to check out.</div>";
@@ -1585,8 +1787,8 @@ function renderUser(){
                 mainBtn.disabled=false;mainBtn.textContent="⏹ Check Out";
                 const oldEbCo2=content.querySelector(".loc-err-banner");if(oldEbCo2)oldEbCo2.remove();
                 const ebCo2=h("div",{className:"loc-err-banner geo-banner geo-fail",style:{marginTop:".75rem"}});
-                const deviceTimeCo=new Date().toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});
-                const serverTimeCo=new Date(_stOut.serverMs).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});
+                const deviceTimeCo=new Date().toLocaleTimeString("en-IN",{timeZone:"Asia/Kolkata",hour:"2-digit",minute:"2-digit",hour12:true});
+                const serverTimeCo=new Date(_stOut.serverMs).toLocaleTimeString("en-IN",{timeZone:"Asia/Kolkata",hour:"2-digit",minute:"2-digit",hour12:true});
                 ebCo2.innerHTML=`<span class='geo-icon'>⏰</span><div><strong>❌ Check Out Blocked — Phone Clock is Wrong</strong><br>Your phone shows <strong>${deviceTimeCo}</strong> but actual time is <strong>${serverTimeCo}</strong>.<br><span style='font-size:.85em'>Go to Settings → Date & Time → enable <strong>Auto date & time</strong>, then try again.</span></div>`;
                 mainBtn.insertAdjacentElement("afterend",ebCo2);
                 return;
@@ -1606,7 +1808,7 @@ function renderUser(){
                 mainBtn.insertAdjacentElement("afterend",eb);
                 return;
               }
-              const todayCheckins2=DB.attendance.filter(r=>r.username===SESSION.username&&r.type==="in"&&localDateStr(new Date(r.timestamp))===localDateStr(new Date()));
+              const todayCheckins2=DB.attendance.filter(r=>r.username===SESSION.username&&r.type==="in"&&localDateStr(new Date(r.timestamp))===serverTodayStr()); // SERVER TIME FIX
               const checkInTs2=todayCheckins2.length?Math.min(...todayCheckins2.map(r=>r.timestamp)):_stOut.serverMs;
               // BUG1 FIX: use server checkout time for survey date (check-in could be previous day)
               // FIX 1: Use server-verified timestamp
@@ -1640,40 +1842,33 @@ function renderUser(){
                 gpsDriftMs:_gpsDriftMsOut
               };
               mainBtn.textContent="Syncing…";
-              const _gsUrl2=getScriptUrl();
               // BUG2 FIX: single atomic POST — survey + attendance sent together
               // so either both land in the sheet or neither does. No orphan records.
               let _checkoutOk=false;
               try{
-                const _c1=new AbortController();const _t1=setTimeout(()=>_c1.abort(),12000);
-                const _r1=await fetch(_gsUrl2,{method:"POST",redirect:"follow",headers:{"Content-Type":"text/plain"},body:JSON.stringify({
+                // CORS FIX: use gsPost which has proxy fallback
+                const _j1=await gsPost({
                   action:"checkout",
-                  apiKey:getApiKey(),
                   username:SESSION.username,
                   data:{
                     attendance:{...rec_out,lat:loc.lat,lng:loc.lng,outLat:loc.lat,outLng:loc.lng},
                     survey:sur
                   }
-                }),signal:_c1.signal});
-                clearTimeout(_t1);
-                const _tx1=await _r1.text();
-                try{const _j1=JSON.parse(_tx1);_checkoutOk=!!_j1.ok;}catch(_){_checkoutOk=true;}
+                });
+                _checkoutOk=!!(_j1&&_j1.ok);
               }catch(e){_checkoutOk=false;}
               // Fallback: if server does not support combined checkout action yet,
               // retry with two separate calls (backwards compatible)
               if(!_checkoutOk){
+                // Fallback: two separate calls (backwards compat) — both use CORS proxy
                 let _surOk=false,_outOk=false;
                 try{
-                  const _c2=new AbortController();const _t2=setTimeout(()=>_c2.abort(),10000);
-                  const _r2=await fetch(_gsUrl2,{method:"POST",redirect:"follow",headers:{"Content-Type":"text/plain"},body:JSON.stringify({action:"addSurvey",data:sur,apiKey:getApiKey(),username:SESSION.username}),signal:_c2.signal});
-                  clearTimeout(_t2);
-                  try{const _j2=JSON.parse(await _r2.text());_surOk=!!_j2.ok;}catch(_){_surOk=true;}
+                  const _j2=await gsPost({action:"addSurvey",data:sur,username:SESSION.username});
+                  _surOk=!!(_j2&&_j2.ok);
                 }catch(e){_surOk=false;}
                 try{
-                  const _c3=new AbortController();const _t3=setTimeout(()=>_c3.abort(),10000);
-                  const _r3=await fetch(_gsUrl2,{method:"POST",redirect:"follow",headers:{"Content-Type":"text/plain"},body:JSON.stringify({action:"addAttendance",data:{...rec_out,lat:loc.lat,lng:loc.lng,outLat:loc.lat,outLng:loc.lng},apiKey:getApiKey(),username:SESSION.username}),signal:_c3.signal});
-                  clearTimeout(_t3);
-                  try{const _j3=JSON.parse(await _r3.text());_outOk=!!_j3.ok;}catch(_){_outOk=true;}
+                  const _j3=await gsPost({action:"addAttendance",data:{...rec_out,lat:loc.lat,lng:loc.lng,outLat:loc.lat,outLng:loc.lng},username:SESSION.username});
+                  _outOk=!!(_j3&&_j3.ok);
                 }catch(e){_outOk=false;}
                 _checkoutOk=_surOk&&_outOk;
               }
@@ -1695,22 +1890,24 @@ function renderUser(){
               delete window._geoWarn;
               const prevEb=document.querySelector(".loc-err-banner");if(prevEb)prevEb.remove();
               _checkoutInProgress=false;
+              _checkOutInProgress=false;
               refresh();
             } catch(_unexpectedErr){
-              // Bug 5: always reset state on any unexpected error
+              // always reset state on any unexpected error
               console.error("Checkout unexpected error:", _unexpectedErr);
-              _checkoutInProgress=false; _lastCheckOut=0;
+              _checkoutInProgress=false; _checkOutInProgress=false; _lastCheckOut=0;
               mainBtn.disabled=false; mainBtn.textContent="⏹ Check Out";
               showToast("Something went wrong. Please try again.", "error", 4000);
             }
             })(); // end async IIFE
           }, ()=>{
             _checkoutInProgress=false;
+            _checkOutInProgress=false;
             mainBtn.disabled=false;mainBtn.textContent="⏹ Check Out";
           });
         } else {
-          // Bug 3 fix: use live currentlyIn not stale checkedIn
-          if(currentlyIn){ refresh(); return; }
+          // use live isIn() check, not stale checkedIn closure
+          if(isIn()){ refresh(); return; }
           if(!canCheckIn()){ return; }
           if(!navigator.onLine){
             const oldEb=content.querySelector(".loc-err-banner");if(oldEb)oldEb.remove();
@@ -1742,8 +1939,8 @@ function renderUser(){
               mainBtn.disabled=false;mainBtn.textContent="▶ Check In";
               const oldEbCi2=content.querySelector(".loc-err-banner");if(oldEbCi2)oldEbCi2.remove();
               const ebCi2=h("div",{className:"loc-err-banner geo-banner geo-fail",style:{marginTop:".75rem"}});
-              const deviceTimeCi=new Date().toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});
-              const serverTimeCi=new Date(_serverTimeResult.serverMs).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});
+              const deviceTimeCi=new Date().toLocaleTimeString("en-IN",{timeZone:"Asia/Kolkata",hour:"2-digit",minute:"2-digit",hour12:true});
+              const serverTimeCi=new Date(_serverTimeResult.serverMs).toLocaleTimeString("en-IN",{timeZone:"Asia/Kolkata",hour:"2-digit",minute:"2-digit",hour12:true});
               ebCi2.innerHTML=`<span class='geo-icon'>⏰</span><div><strong>❌ Check In Blocked — Phone Clock is Wrong</strong><br>Your phone shows <strong>${deviceTimeCi}</strong> but actual time is <strong>${serverTimeCi}</strong>.<br><span style='font-size:.85em'>Go to Settings → Date & Time → enable <strong>Auto date & time</strong>, then try again.</span></div>`;
               mainBtn.insertAdjacentElement("afterend",ebCi2);
               return;
@@ -1806,15 +2003,11 @@ function renderUser(){
               gpsDriftMs:_gpsDriftMs                      // GPS hardware ts vs server ts (ms)
             };
             mainBtn.innerHTML='<span class="spinner"></span>Syncing…';
-            const _gsUrl=getScriptUrl();
             let _postOk=false;
             try{
-              const _ctrl=new AbortController();
-              const _tmr=setTimeout(()=>_ctrl.abort(),10000);
-              const _res=await fetch(_gsUrl,{method:"POST",redirect:"follow",headers:{"Content-Type":"text/plain"},body:JSON.stringify({action:"addAttendance",data:{...rec_in,lat:loc.lat,lng:loc.lng,workLocation:userWorkLoc},apiKey:getApiKey(),username:SESSION.username}),signal:_ctrl.signal});
-              clearTimeout(_tmr);
-              const _txt=await _res.text();
-              try{const _j=JSON.parse(_txt);_postOk=!!_j.ok;}catch(_){_postOk=true;}
+              // CORS FIX: use gsPost which has proxy fallback
+              const _j=await gsPost({action:"addAttendance",data:{...rec_in,lat:loc.lat,lng:loc.lng,workLocation:userWorkLoc},username:SESSION.username});
+              _postOk=!!(_j&&_j.ok);
             }catch(e){_postOk=false;}
             if(!_postOk){
               _lastCheckIn=0;
@@ -1832,6 +2025,11 @@ function renderUser(){
             const prevEb=document.querySelector(".loc-err-banner");if(prevEb)prevEb.remove();
             refresh();
           });
+        }
+        } finally {
+          // Reset check-IN debounce flag here (check-in is fully awaited in this async handler)
+          // Check-OUT flag is reset inside the showSurvey callback and its cancel handler
+          if(!checkedIn) _checkInInProgress = false;
         }
       });
       content.appendChild(mainBtn);
@@ -1879,8 +2077,8 @@ function renderUser(){
           cell.appendChild(h("div",{style:{fontFamily:"var(--mono)",fontSize:"1.1rem",fontWeight:"700",color:color||"var(--text)"}},value));
           return cell;
         }
-        sGrid.appendChild(summaryCell("▶","Check In", todayDayMap.in?new Date(todayDayMap.in).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"}):"—", "var(--accent2)", true));
-        sGrid.appendChild(summaryCell("⏹","Check Out", todayDayMap.out?new Date(todayDayMap.out).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"}):"—", "var(--danger)", false));
+        sGrid.appendChild(summaryCell("▶","Check In", todayDayMap.in?fmtIST(todayDayMap.in):"—", "var(--accent2)", true));
+        sGrid.appendChild(summaryCell("⏹","Check Out", todayDayMap.out?fmtIST(todayDayMap.out):"—", "var(--danger)", false));
 
         const arrVal=arr?arr.label:"—";
         const arrColor=arr?.type==="ontime"?"var(--gpa)":arr?.type==="halfday"?"var(--warn)":"var(--danger)";
@@ -1965,7 +2163,7 @@ function renderUser(){
               info.appendChild(distEl);
             }
           }
-          const time=el("div","rec-time",new Date(r.timestamp).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"}));
+          const time=el("div","rec-time",fmtIST(r.timestamp));
           rc.appendChild(dot);rc.appendChild(info);rc.appendChild(time);content.appendChild(rc);
         });
       }
@@ -2065,7 +2263,7 @@ function renderUser(){
               distBadge=_dBadgeU(d, d>radius);
             }
             return `<div style="display:flex;flex-direction:column;gap:3px">
-              ${name?`<span style="font-size:.75rem;font-weight:700;color:${textColor}">🏢 ${name}</span>`:""}
+              ${name?`<span style="font-size:.75rem;font-weight:700;color:${textColor}">🏢 ${escapeHtml(name)}</span>`:""}
               <a href="https://maps.google.com/?q=${loc.lat},${loc.lng}" target="_blank"
                 style="font-size:.7rem;font-family:var(--mono);color:var(--muted);text-decoration:none;opacity:.8">📍 ${coords}</a>
               ${distBadge}
@@ -2077,8 +2275,8 @@ function renderUser(){
           let outGeoName=_geoLabel(d.outRec, _profileOfficeName);
           const outGeoCell=_locCell(outLoc, d.outRec, "var(--danger)");
           tr2.innerHTML=`<td style="font-family:var(--mono);font-size:.8rem">${d.date.toLocaleDateString("en-GB",{weekday:"short",day:"2-digit",month:"short"})}</td>
-            <td style="color:var(--accent2);font-family:var(--mono);font-size:.82rem">${d.in?new Date(d.in).toLocaleTimeString([],({"hour":"2-digit","minute":"2-digit"})):"—"}</td>
-            <td style="color:var(--danger);font-family:var(--mono);font-size:.82rem">${d.out?new Date(d.out).toLocaleTimeString([],({"hour":"2-digit","minute":"2-digit"})):"—"}</td>
+            <td style="color:var(--accent2);font-family:var(--mono);font-size:.82rem">${d.in?fmtIST(d.in):"—"}</td>
+            <td style="color:var(--danger);font-family:var(--mono);font-size:.82rem">${d.out?fmtIST(d.out):"—"}</td>
             <td>${arrCell}</td>
             <td>${depCell}</td>
             <td>${inGeoCell}</td>
@@ -2146,7 +2344,7 @@ function renderUser(){
       // DB.absences only gets written if admin was logged in after 10:30 AM — unreliable.
       const calAbsent=(()=>{
         const s=new Set();
-        const todayStr=localDateStr(new Date());
+        const todayStr=serverTodayStr(); // SERVER TIME FIX
         const calParts=(window._calMonth||"").split("-");
         if(calParts.length<2)return s;
         const cy=parseInt(calParts[0]),cm=parseInt(calParts[1])-1;
@@ -2168,7 +2366,7 @@ function renderUser(){
       if (isNaN(calYear) || isNaN(calMonthIdx)) return;
       const firstDay=new Date(calYear,calMonthIdx,1).getDay();
       const daysInMonth=new Date(calYear,calMonthIdx+1,0).getDate();
-      const todayDateStr=localDateStr(new Date());
+      const todayDateStr=serverTodayStr(); // SERVER TIME FIX
 
       const calWrap=h("div",{style:{background:"var(--card)",borderRadius:"14px",border:"1px solid var(--border)",padding:"1rem"}});
       const dayHeaders=h("div",{style:{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:"2px",marginBottom:"4px"}});
@@ -2203,7 +2401,7 @@ function renderUser(){
         }},String(day));
 
         if(dayData?.in){
-          const timeStr=new Date(dayData.in).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});
+          const timeStr=fmtIST(dayData.in);
           cell.appendChild(h("div",{style:{fontSize:".55rem",color:"var(--accent2)",fontFamily:"var(--mono)",marginTop:"1px"}},timeStr));
         }
 
@@ -2221,8 +2419,8 @@ function renderUser(){
               box.appendChild(h("div",{style:{color:"var(--danger)",fontWeight:"700",fontSize:".9rem"}},"🔴 Absent"));
             } else {
               const rows=[
-                ["Check In", dayData?.in?new Date(dayData.in).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"}):"—","var(--accent2)"],
-                ["Check Out", dayData?.out?new Date(dayData.out).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"}):"—","var(--danger)"],
+                ["Check In", dayData?.in?fmtIST(dayData.in):"—","var(--accent2)"],
+                ["Check Out", dayData?.out?fmtIST(dayData.out):"—","var(--danger)"],
               ];
               rows.forEach(([lbl,val,col])=>{
                 const row=h("div",{style:{display:"flex",justifyContent:"space-between",padding:".5rem 0",borderBottom:"1px solid var(--border)"}});
@@ -2414,7 +2612,7 @@ function openUserDataModal(u, allAttend, allSurveys){
         const coordStr=`${parseFloat(lat).toFixed(4)}, ${parseFloat(lng).toFixed(4)}`;
         const mapsUrl=`https://maps.google.com/?q=${lat},${lng}`;
         const officeName=rec?.geoName&&rec.geoName!=="No office location set"&&rec.geoName!==""?rec.geoName:(u.officeName||u.location||"");
-        const offBadge=officeName?`<div style="font-size:.72rem;font-weight:700;color:${color};margin-bottom:2px">🏢 ${officeName}</div>`:"";
+        const offBadge=officeName?`<div style="font-size:.72rem;font-weight:700;color:${color};margin-bottom:2px">🏢 ${escapeHtml(officeName)}</div>`:"";
         // Distance
         let distHtml="";
         const _rd=rec?.geoDist; const _hd=_rd!=null&&_rd!==""&&String(_rd).trim()!=="";
@@ -2444,8 +2642,8 @@ function openUserDataModal(u, allAttend, allSurveys){
         const tr=h("tr",{});
         tr.innerHTML=`
           <td class='attend-td'>${date.toLocaleDateString("en-GB",{weekday:"short",day:"2-digit",month:"short"})}</td>
-          <td class='attend-td' style='color:var(--accent2);font-family:var(--mono)'>${inTs?new Date(inTs).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"}):"—"}</td>
-          <td class='attend-td' style='color:var(--danger);font-family:var(--mono)'>${outTs?new Date(outTs).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"}):"—"}</td>
+          <td class='attend-td' style='color:var(--accent2);font-family:var(--mono)'>${inTs?fmtIST(inTs):"—"}</td>
+          <td class='attend-td' style='color:var(--danger);font-family:var(--mono)'>${outTs?fmtIST(outTs):"—"}</td>
           <td class='attend-td'><span style='color:${arrColor};font-weight:700;font-size:.78rem'>${arr?arr.label:"—"}</span></td>
           <td class='attend-td'><span style='color:${depColor};font-weight:700;font-size:.78rem'>${dep?dep.label:"—"}</span></td>
           <td class='attend-td'>${_modalLocCell(inRec, inLoc, "var(--accent2)")}</td>
@@ -2479,11 +2677,13 @@ function openUserDataModal(u, allAttend, allSurveys){
     } else if(modalTab==="absences"){
       // FIXED: Compute absent date list from attendance — same logic as monthAbsences count
       const computedAbsentDates=(()=>{
-        const today=new Date();
+        // SERVER TIME FIX: use server time and IST for all date logic
+        const todayStr=serverTodayStr();
+        const todayISTDay=parseInt(todayStr.split("-")[2]);
         const year=parseInt(curMon.split("-")[0]);
         const month=parseInt(curMon.split("-")[1])-1;
         const daysInMonth=new Date(year,month+1,0).getDate();
-        const lastDay=Math.min(daysInMonth,today.getDate());
+        const lastDay=Math.min(daysInMonth,todayISTDay);
         const presentDates=new Set([
           ...userAttend.filter(r=>r.type==="in").map(r=>localDateStr(new Date(r.timestamp))),
           ...userSurveys.map(s=>s.date)
@@ -2491,9 +2691,9 @@ function openUserDataModal(u, allAttend, allSurveys){
         const dates=[];
         for(let d=1;d<=lastDay;d++){
           const dateStr=curMon+"-"+String(d).padStart(2,"0");
-          const dow=new Date(year,month,d).getDay();
+          const dow=new Date(dateStr+"T00:00:00+05:30").getDay(); // IST day-of-week
           if(dow===0)continue;
-          if(dateStr===localDateStr(today))continue;
+          if(dateStr===todayStr)continue; // skip today
           if(!presentDates.has(dateStr))dates.push(dateStr);
         }
         return dates.reverse(); // most recent first
@@ -2671,13 +2871,14 @@ function renderAdmin(){
         .filter(r=>(r.type==="in"||r.type==="out") && localDateStr(new Date(r.timestamp))===todayLocalStr)
         .map(r=>r.username)
     )];
-    const todayIsWeekend=new Date().getDay()===0;
+    // SERVER TIME FIX: use server IST day-of-week
+const todayIsWeekend=new Date(serverTodayStr()+"T00:00:00+05:30").getDay()===0;
     const todaySurveyUsernames=new Set(todaySurveys.map(s=>s.username));
     const todayAbsent=todayIsWeekend?[]:regularUsers.filter(u=>
       !todayInUsers.includes(u.username) &&
       !todaySurveyUsernames.has(u.username)
     );
-    const curMon=localMonthStr(new Date());
+    const curMon=localMonthStr(new Date(getServerNow())); // SERVER TIME FIX
     const thisMonthSurveys=allSurveys.filter(s=>(s.date||"").startsWith(curMon));
     const totalPolicy=thisMonthSurveys.reduce((s,r)=>s+(parseInt(r.policy)||0),0);
     const todayPolicy=todaySurveys.reduce((s,r)=>s+(parseInt(r.policy)||0),0);
@@ -2951,11 +3152,14 @@ function renderAdmin(){
         const uidClean=uid.toLowerCase().replace(/\s+/g,"");
         if(!uidClean){errB.textContent="User ID cannot be only spaces.";errB.classList.remove("hidden");return}
         if(DB.users.find(x=>x.username===uidClean)){errB.textContent="User ID already exists. Choose a different one.";errB.classList.remove("hidden");return}
-        DB.users.push({username:uidClean,password:pw,fullName:name,userId:uidClean,designation:des,location:loc2,role:"user",geoLat:"",geoLng:"",geoRadius:200,officeName:offName2||""});
-        save(DB);syncUsersToSheet();
-        sucB.textContent=`✅ User "${name}" (ID: ${uid}) created successfully.`;sucB.classList.remove("hidden");
-        iName.value="";iUID.value="";iPW.value="";iDS.value="";iLoc.value="";iOffName.value="";
-        refresh();
+        (async()=>{
+          const hashedPw=await hashPassword(pw);
+          DB.users.push({username:uidClean,password:hashedPw,fullName:name,userId:uidClean,designation:des,location:loc2,role:"user",geoLat:"",geoLng:"",geoRadius:200,officeName:offName2||""});
+          save(DB);syncUsersToSheet();
+          sucB.textContent=`✅ User "${name}" (ID: ${uid}) created successfully.`;sucB.classList.remove("hidden");
+          iName.value="";iUID.value="";iPW.value="";iDS.value="";iLoc.value="";iOffName.value="";
+          refresh();
+        })();
       });
 
       [fg1,fg2,fg3,optToggle,optFields,addBtn].forEach(x=>fc.appendChild(x));
@@ -3098,8 +3302,10 @@ function renderAdmin(){
     }
 
     if(curTab==="records"){
-      const now2=new Date();
-      const curMK=`${now2.getFullYear()}-${String(now2.getMonth()+1).padStart(2,"0")}`;
+      // SERVER TIME FIX: use server time for all date range calculations
+      const now2=new Date(getServerNow());
+      const _now2IstStr=now2.toLocaleDateString("en-CA",{timeZone:"Asia/Kolkata"});
+      const curMK=_now2IstStr.slice(0,7);
       const months=[...new Set(allAttend.map(r=>{const d=new Date(r.timestamp);return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`}))].sort().reverse();
       if(!months.includes(curMK))months.unshift(curMK);
       if(!window._recMonth)window._recMonth=curMK;
@@ -3151,15 +3357,22 @@ function renderAdmin(){
       content.appendChild(uRow);
       content.appendChild(bar);
 
-      const todayStart=new Date(now2.getFullYear(),now2.getMonth(),now2.getDate()).getTime();
+      // SERVER TIME FIX: all ranges based on IST midnight from server time
+      const _istToday=_now2IstStr; // YYYY-MM-DD in IST
+      const todayStart=new Date(_istToday+"T00:00:00+05:30").getTime();
       const todayEnd=todayStart+86400000-1;
       const ystStart=todayStart-86400000;
       const ystEnd=todayStart-1;
       const weekStart=todayStart-6*86400000;
-      const monthStart=new Date(now2.getFullYear(),now2.getMonth(),1).getTime();
-      const monthEnd=new Date(now2.getFullYear(),now2.getMonth()+1,0,23,59,59,999).getTime();
-      const lastMonthStart=new Date(now2.getFullYear(),now2.getMonth()-1,1).getTime();
-      const lastMonthEnd=new Date(now2.getFullYear(),now2.getMonth(),0,23,59,59,999).getTime();
+      const _istMonth=_now2IstStr.slice(0,7);
+      const _istYear=parseInt(_istMonth.split("-")[0]);
+      const _istMonthIdx=parseInt(_istMonth.split("-")[1])-1;
+      const monthStart=new Date(_istYear+"-"+String(_istMonthIdx+1).padStart(2,"0")+"-01T00:00:00+05:30").getTime();
+      const monthEnd=new Date(_istYear+"-"+String(_istMonthIdx+1).padStart(2,"0")+"-"+String(new Date(_istYear,_istMonthIdx+1,0).getDate()).padStart(2,"0")+"T23:59:59+05:30").getTime();
+      const _lastMIdx=_istMonthIdx===0?11:_istMonthIdx-1;
+      const _lastMYear=_istMonthIdx===0?_istYear-1:_istYear;
+      const lastMonthStart=new Date(_lastMYear+"-"+String(_lastMIdx+1).padStart(2,"0")+"-01T00:00:00+05:30").getTime();
+      const lastMonthEnd=monthStart-1;
 
       function inQuickRange(ts){
         if(window._recQuick==="today")     return ts>=todayStart&&ts<=todayEnd;
@@ -3223,7 +3436,7 @@ function renderAdmin(){
       });
       const rows=Object.values(dayMap2).sort((a,b)=>b.date-a.date);
 
-      const periodLabel=window._recQuick==="today"?"Today":window._recQuick==="yesterday"?"Yesterday":window._recQuick==="week"?"Last 7 Days":window._recQuick==="month"?now2.toLocaleString("default",{month:"long",year:"numeric"}):window._recQuick==="lastmonth"?new Date(now2.getFullYear(),now2.getMonth()-1,1).toLocaleString("default",{month:"long",year:"numeric"}):new Date(window._recMonth+"-01").toLocaleString("default",{month:"long",year:"numeric"});
+      const periodLabel=window._recQuick==="today"?"Today":window._recQuick==="yesterday"?"Yesterday":window._recQuick==="week"?"Last 7 Days":window._recQuick==="month"?now2.toLocaleString("en-IN",{timeZone:"Asia/Kolkata",month:"long",year:"numeric"}):window._recQuick==="lastmonth"?new Date(lastMonthStart).toLocaleString("en-IN",{timeZone:"Asia/Kolkata",month:"long",year:"numeric"}):new Date(window._recMonth+"-01T00:00:00+05:30").toLocaleString("en-IN",{timeZone:"Asia/Kolkata",month:"long",year:"numeric"});
 
       const sg=el("div","grid3",null,{marginBottom:"1.2rem"});
       const present=rows.filter(r=>r.in).length;
@@ -3236,9 +3449,10 @@ function renderAdmin(){
       content.appendChild(sg);
 
       const absentRecs=(DB.absences||[]).filter(a=>{
-        const aDate=new Date(a.date+"T12:00:00");
+        // SERVER TIME FIX: parse absent date as IST noon (not device local)
+        const aDate=new Date(a.date+"T12:00:00+05:30");
         const aTs=aDate.getTime();
-        const isWeekend=aDate.getDay()===0;
+        const isWeekend=new Date(a.date+"T00:00:00+05:30").getDay()===0;
         const userExists=regularUsers.find(u=>u.username===a.username);
         return userExists&&!isWeekend&&inQuickRange(aTs)&&(window._recUser==="all"||a.username===window._recUser);
       });
@@ -3253,8 +3467,8 @@ function renderAdmin(){
           const tr2=document.createElement("tr");if(i%2)tr2.style.background="#ffffff05";
           const uInfo=regularUsers.find(u=>u.username===a.username);
           const displayN=(uInfo&&uInfo.fullName&&uInfo.fullName.trim())?uInfo.fullName.trim():(a.username.charAt(0).toUpperCase()+a.username.slice(1).toLowerCase());
-          tr2.innerHTML=`<td class="attend-td" style="font-family:var(--mono);font-size:.8rem">${a.date}</td>
-            <td class="attend-td" style="font-weight:700;color:var(--accent)">${displayN}${uInfo?.designation?`<div style="font-size:.7rem;color:var(--muted)">${uInfo.designation}</div>`:""}</td>
+          tr2.innerHTML=`<td class="attend-td" style="font-family:var(--mono);font-size:.8rem">${escapeHtml(a.date)}</td>
+            <td class="attend-td" style="font-weight:700;color:var(--accent)">${escapeHtml(displayN)}${uInfo?.designation?`<div style="font-size:.7rem;color:var(--muted)">${escapeHtml(uInfo.designation)}</div>`:""}</td>
             <td class="attend-td"><span style="padding:.2rem .6rem;border-radius:20px;font-size:.75rem;font-weight:700;background:#ff5f6d22;color:var(--danger);border:1px solid #ff5f6d44">🔴 Absent</span></td>`;
           abBody.appendChild(tr2);
         });
@@ -3307,7 +3521,7 @@ function renderAdmin(){
               const _lookupUser=String(rec?.username||r.username||"").toLowerCase().trim();
               const uRec2=regularUsers.find(u=>u.username===_lookupUser);
               if(!officeName) officeName=(uRec2?.officeName&&uRec2.officeName.trim())?uRec2.officeName.trim():(uRec2?.location&&uRec2.location.trim()?uRec2.location.trim():"");
-              const officeBadge=officeName?`<div style="font-size:.75rem;font-weight:700;color:${accentColor};margin-bottom:2px">🏢 ${officeName}</div>`:"";
+              const officeBadge=officeName?`<div style="font-size:.75rem;font-weight:700;color:${accentColor};margin-bottom:2px">🏢 ${escapeHtml(officeName)}</div>`:"";
               // Distance: use geoDist from record if available, else calculate from user's configured office coords
               let distBadge="";
               // Helper: build distance badge HTML
@@ -3365,9 +3579,9 @@ function renderAdmin(){
 
             const cells=[
               `<td class="attend-td" style="font-family:var(--mono);font-size:.8rem;white-space:nowrap">${r.date.toLocaleDateString("en-GB",{weekday:"short",day:"2-digit",month:"short",year:"numeric"})}</td>`,
-              `<td class="attend-td"><span style="font-weight:700;color:var(--accent)">${displayN}</span><div style="font-size:.7rem;color:var(--muted);font-family:var(--mono)">${r.username}${uInfo?.designation?" · "+uInfo.designation:""}</div></td>`,
-              `<td class="attend-td" style="font-family:var(--mono);font-size:.82rem;color:var(--accent2)">${r.in?new Date(r.in).toLocaleTimeString([],({"hour":"2-digit","minute":"2-digit"})):"—"}</td>`,
-              `<td class="attend-td"><span style="font-family:var(--mono);font-size:.82rem;color:var(--danger)">${r.out?new Date(r.out).toLocaleTimeString([],({"hour":"2-digit","minute":"2-digit"})):"—"}</span>${mins?`<br><span style="font-size:.68rem;padding:.1rem .35rem;border-radius:6px;background:${hrsBg};color:${hrsColor};border:1px solid ${hrsBorder}">${hrs}</span>`:""}` +`</td>`,
+              `<td class="attend-td"><span style="font-weight:700;color:var(--accent)">${escapeHtml(displayN)}</span><div style="font-size:.7rem;color:var(--muted);font-family:var(--mono)">${escapeHtml(r.username)}${uInfo?.designation?" · "+escapeHtml(uInfo.designation):""}</div></td>`,
+              `<td class="attend-td" style="font-family:var(--mono);font-size:.82rem;color:var(--accent2)">${r.in?fmtIST(r.in):"—"}</td>`,
+              `<td class="attend-td"><span style="font-family:var(--mono);font-size:.82rem;color:var(--danger)">${r.out?fmtIST(r.out):"—"}</span>${mins?`<br><span style="font-size:.68rem;padding:.1rem .35rem;border-radius:6px;background:${hrsBg};color:${hrsColor};border:1px solid ${hrsBorder}">${hrs}</span>`:""}` +`</td>`,
               `<td class="attend-td">${arrCell}</td>`,
               `<td class="attend-td">${depCell}</td>`,
               `<td class="attend-td">${locCell(inRec, inLoc, "var(--accent2)")}</td>`,
@@ -3436,7 +3650,7 @@ function renderAdmin(){
     if(curTab==="export"){
       const todayFull=new Date().toLocaleDateString("en-GB",{weekday:"long",day:"2-digit",month:"long",year:"numeric"});
       content.appendChild(el("div","section-title","Today's Counts — "+todayFull));
-      const todayAttendCount=allAttend.filter(r=>localDateStr(new Date(r.timestamp))===localDateStr(new Date())).length;
+      const todayAttendCount=allAttend.filter(r=>localDateStr(new Date(r.timestamp))===serverTodayStr()).length; // SERVER TIME FIX
       const cg=h("div",{style:{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:".8rem",marginBottom:".8rem"}});
       cg.style.cssText+="";
       if(window.innerWidth<600) cg.style.gridTemplateColumns="repeat(2,1fr)";
@@ -3876,6 +4090,13 @@ const iRad=h("input",{type:"number",min:"50",max:"5000",value:_cleanRadius,place
     mo.appendChild(grid);
 
     // ── SAVE ──────────────────────────────────────────────────────────────────
+    // ✅ FIX #9: Cleanup function for map iframe (prevent memory leak)
+    const cleanupMap = () => {
+      if(mapIframe && mapIframe.parentNode) {
+        mapIframe.remove();
+      }
+    };
+    
     const sb=h("button",{className:"btn btn-primary",style:{marginTop:".25rem"}},"💾 Save Changes");
     sb.addEventListener("click",()=>{
       const name=iName.value.trim(),uid=iUID.value.trim().toLowerCase().replace(/\s+/g,""),pw=iPW.value.trim();
@@ -3885,26 +4106,50 @@ const iRad=h("input",{type:"number",min:"50",max:"5000",value:_cleanRadius,place
       if(!name){showModalErr("Full name is required.");return;}
       if(!uid||!pw){showModalErr("User ID and password are required.");return;}
       if(pw.length<4){showModalErr("Password must be at least 4 characters.");return;}
+      // ✅ FIX #5: Validate username format (alphanumeric + underscore only)
+      if(!/^[a-z0-9_]{3,}$/.test(uid)){showModalErr("User ID must be 3+ characters, lowercase letters/numbers/underscore only.");return;}
       if(uid!==u.username&&DB.users.find(x=>x.username===uid)){showModalErr("User ID already exists.");return;}
       if(lat&&(isNaN(parseFloat(lat))||parseFloat(lat)<-90||parseFloat(lat)>90)){showModalErr("Invalid latitude (must be -90 to 90).");return;}
       if(lng&&(isNaN(parseFloat(lng))||parseFloat(lng)<-180||parseFloat(lng)>180)){showModalErr("Invalid longitude (must be -180 to 180).");return;}
       const idx=DB.users.findIndex(x=>x.username===u.username);
-      DB.users[idx]={
-        ...DB.users[idx],
-        username:uid,password:pw,fullName:name,userId:uid,
-        designation:des,location:loc,officeName:offName,
-        geoLat:lat||"",geoLng:lng||"",geoRadius:rad,
-      };
-      if(uid!==u.username){
-        DB.attendance=DB.attendance.map(r=>r.username===u.username?{...r,username:uid}:r);
-        DB.surveys=(DB.surveys||[]).map(s=>s.username===u.username?{...s,username:uid}:s);
-        DB.absences=(DB.absences||[]).map(a=>a.username===u.username?{...a,username:uid}:a);
-      }
-      save(DB);syncSingleUserToSheet(DB.users[idx]);ov.remove();refresh();
-      showToast(`✅ ${name} updated — geofence ${lat&&lng?"set to "+rad+"m":"disabled"}.`,"success",4000);
+      // Hash the new password, but preserve existing hash if admin typed the same value back
+      (async()=>{
+        const existingPw=DB.users[idx]?.password||"";
+        let finalPw;
+        if(existingPw.startsWith("sha256:")){
+          // Admin may have left the field showing a hash — re-hash only if it looks like plaintext
+          finalPw = pw.startsWith("sha256:") ? pw : await hashPassword(pw);
+        } else {
+          finalPw = await hashPassword(pw);
+        }
+        DB.users[idx]={
+          ...DB.users[idx],
+          username:uid,password:finalPw,fullName:name,userId:uid,
+          designation:des,location:loc,officeName:offName,
+          geoLat:lat||"",geoLng:lng||"",geoRadius:rad,
+        };
+        if(uid!==u.username){
+          DB.attendance=DB.attendance.map(r=>r.username===u.username?{...r,username:uid}:r);
+          DB.surveys=(DB.surveys||[]).map(s=>s.username===u.username?{...s,username:uid}:s);
+          DB.absences=(DB.absences||[]).map(a=>a.username===u.username?{...a,username:uid}:a);
+        }
+        save(DB);
+        try{
+          await syncSingleUserToSheet(DB.users[idx]);
+          showToast(`✅ ${escapeHtml(name)} updated — geofence ${lat&&lng?"set to "+rad+"m":"disabled"}.`,"success",4000);
+        }catch(e){
+          console.error("Sync failed:",e);
+          showToast(`⚠️ ${escapeHtml(name)} saved locally but sync failed. Check connection.`,"warn",5000);
+        }
+        cleanupMap();
+        ov.remove();refresh();
+      })();
     });
     const cb=h("button",{className:"btn btn-ghost",style:{marginTop:".5rem"}},"Cancel");
-    cb.addEventListener("click",()=>ov.remove());
+    cb.addEventListener("click",()=>{
+      cleanupMap();  // ✅ FIX #9: Remove map iframe
+      ov.remove();
+    });
     mo.appendChild(sb);mo.appendChild(cb);
     ov.appendChild(mo);document.body.appendChild(ov);
   }
@@ -3918,7 +4163,9 @@ const iRad=h("input",{type:"number",min:"50",max:"5000",value:_cleanRadius,place
   const now = new Date();
   if (now.getDay() === 0) return;
   if (!DB || !DB.users || !DB.users.length) return;
-  const nowMin = now.getHours() * 60 + now.getMinutes();
+  // IST FIX: compute current time in IST
+  const _istNowMin=Math.floor((now.getTime()/60000)+(5*60+30));
+  const nowMin=(((_istNowMin%1440)+1440)%1440);
   const startMin = WORK_START_H * 60 + WORK_START_M;
   if (nowMin < startMin) {
     const todayStr = localDateStr(now);
@@ -3981,14 +4228,9 @@ function safeRoute(){
 }
 
 // ── SW FIX v20260321 — Fully disable ServiceWorker (broken on GitHub Pages) ──
-// Root cause: sw.js on GitHub Pages has a script evaluation error AND intercepts
-// fetch() calls to Google Sheets, causing CORS/AbortErrors.
-// Fix: unregister ALL existing SWs immediately and never re-register.
 if('serviceWorker' in navigator){
   navigator.serviceWorker.getRegistrations().then(regs=>{
-    regs.forEach(reg=>{
-      reg.unregister().then(ok=>{ if(ok) console.log('VIBE: SW unregistered (cleanup)'); }).catch(()=>{});
-    });
+    regs.forEach(reg=>reg.unregister().catch(()=>{}));
   }).catch(()=>{});
   console.log('VIBE: ServiceWorker disabled — Google Sheets fetch will work normally.');
 }
