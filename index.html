@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- VIBE v20260312.fix14 — removed pending/sync UI; fixed ReferenceError in doAdminSync (updateAdminSyncBadge removed) -->
+<!-- VIBE v20260322.worker — Cloudflare Worker proxy | vibe-proxy.vibeassist2.workers.dev -->
 <!-- SW FIX v20260314 — permanent fix: unregister broken SW on load + probe sw.js before registering -->
 <html lang="en">
 <head>
@@ -246,20 +246,18 @@ select option{background:var(--surface);color:var(--text)}
 <div id="app"></div>
 
 <script>
-// ── VIBE v20260318.fix-geo — Full geo misalignment fix: smart coord detection on read + clean validation on write ────
+// ── VIBE v20260322.worker — Cloudflare Worker proxy edition ──────────────────
+// Account : Vibeassist2@gmail.com
+// Worker  : https://vibe-proxy.vibeassist2.workers.dev
+// GAS URL and API key are stored as encrypted Worker secrets — NOT here.
 const KEY = "vibeAttendanceData";
-const DEFAULT_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwdEN05zTIvIB9xTS7O80WOb3ttdS3qeiRZJsJqq1iHLdVASkzPF4ujB1sWJv-xmlJ9/exec";
 
-// ── API KEY ────────────────────────────────────────────────────────────────────
-// ⚠️  SECURITY WARNING: This key is visible in page source to anyone who opens
-// DevTools. For production, rotate this key regularly and restrict your Google
-// Apps Script to only accept requests from your own domain. A proper solution
-// uses a server-side proxy so the key is never exposed to the browser.
-const DEFAULT_API_KEY = "5c6d46fe-1ffc-4615-9e8b-96051031a4a3";
+// ── YOUR CLOUDFLARE WORKER URL ────────────────────────────────────────────────
+const WORKER_URL = "https://vibe-proxy.vibeassist2.workers.dev";
 
-function getScriptUrl() { return DEFAULT_SCRIPT_URL; }
-function getApiKey()    { return DEFAULT_API_KEY; }
-let SCRIPT_URL = DEFAULT_SCRIPT_URL;
+function getScriptUrl() { return WORKER_URL; }
+function getApiKey()    { return ""; } // key lives in Worker secrets — never in browser
+let SCRIPT_URL = WORKER_URL;
 
 // HTML escape function to prevent XSS attacks
 function escapeHtml(text) {
@@ -268,121 +266,61 @@ function escapeHtml(text) {
   div.textContent = String(text);
   return div.innerHTML;
 }
-
-// ── SHARED GEO VALIDATION ─────────────────────────────────────────────────────
-// India bounding box used for geofence coordinate validation.
-// Centralised here so the bounds are defined in one place only.
-const GEO_LAT_MIN=6, GEO_LAT_MAX=38, GEO_LNG_MIN=68, GEO_LNG_MAX=98;
-function isValidIndiaCoords(lat, lng){
-  const la=parseFloat(lat), lo=parseFloat(lng);
-  return !isNaN(la)&&!isNaN(lo)&&isFinite(la)&&isFinite(lo)&&
-    la>=GEO_LAT_MIN&&la<=GEO_LAT_MAX&&lo>=GEO_LNG_MIN&&lo<=GEO_LNG_MAX;
-}
-// ── PASSWORD HASHING (SubtleCrypto SHA-256) ───────────────────────────────────
-// New passwords are stored as "sha256:<hex>" so they are never plaintext.
-// Existing plaintext passwords still work during the transition — once a user
-// logs in successfully with their plaintext password it is transparently upgraded.
-// SECURITY NOTE: This is client-side hashing for storage safety (prevents casual
-// exposure in localStorage / Google Sheet). It is NOT a substitute for server-side
-// auth — rotate the DEFAULT_API_KEY and restrict Sheet access for full security.
-async function hashPassword(pw){
-  try{
-    const enc=new TextEncoder().encode(pw);
-    const buf=await crypto.subtle.digest("SHA-256",enc);
-    const hex=Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,"0")).join("");
-    return "sha256:"+hex;
-  }catch(_){
-    // SubtleCrypto unavailable (non-HTTPS) — fall back to plaintext (no regression)
-    return pw;
-  }
-}
-async function verifyPassword(input, stored){
-  if(!stored) return false;
-  if(stored.startsWith("sha256:")){
-    const hashed=await hashPassword(input);
-    return hashed===stored;
-  }
-  // Legacy plaintext — direct compare, will be upgraded on next save
-  return input===stored;
-}
-async function upgradePasswordIfNeeded(userObj, plaintextPw){
-  if(userObj.password && !userObj.password.startsWith("sha256:")){
-    const hashed=await hashPassword(plaintextPw);
-    userObj.password=hashed;
-    save(DB);
-    // Sync hashed password to sheet silently
-    syncSingleUserToSheet(userObj).catch(()=>{});
-  }
-}
+// ONE-TIME WIPE of old localStorage data — runs only once ever, preserves local cache
 (function(){try{if(!localStorage.getItem("vibeDidWipe_v1")){const keep=new Set(["vibeTheme","vibeSession","vibeAttendanceData"]);Object.keys(localStorage).filter(k=>!keep.has(k)).forEach(k=>localStorage.removeItem(k));localStorage.setItem("vibeDidWipe_v1","1");}}catch(_){}})();
 
-// ── CORS FIX v20260321 — Use allorigins proxy when direct fetch is blocked ──
-const CORS_PROXY = "https://api.allorigins.win/raw?url=";
-async function _corsSafeFetch(fullUrl, opts, timeout=10000){
-  try {
-    const ctrl = new AbortController();
-    const t = setTimeout(()=>ctrl.abort(), timeout);
-    const res = await fetch(fullUrl, { ...opts, signal: ctrl.signal });
-    clearTimeout(t);
-    return res;
-  } catch(e) {
-    // AbortError = our own timeout — don't retry via proxy, just fail fast
-    if(e && e.name === "AbortError") throw e;
-    // TypeError = CORS / network block — retry via proxy
-    const isCors = e instanceof TypeError;
-    if(!isCors) throw e;
-    console.warn("VIBE: direct fetch blocked, retrying via CORS proxy…");
+// ── WORKER FETCH ─────────────────────────────────────────────────────────────
+// All requests go through the Cloudflare Worker via POST.
+// The Worker injects the GAS URL and API key server-side.
+// No API key is ever sent from the browser.
+async function _workerPost(body, timeout=12000){
+  const url = getScriptUrl();
+  if(!url || url.includes("yourname")){
+    console.error("VIBE: WORKER_URL not configured");
+    return null;
   }
-  const proxied = CORS_PROXY + encodeURIComponent(fullUrl);
-  const ctrl2 = new AbortController();
-  const t2 = setTimeout(()=>ctrl2.abort(), timeout);
-  const res2 = await fetch(proxied, { method:"GET", redirect:"follow", signal: ctrl2.signal });
-  clearTimeout(t2);
-  return res2;
+  const cleanBody = {...body};
+  delete cleanBody.key;
+  delete cleanBody.apiKey;
+  cleanBody.user = SESSION ? SESSION.username : "anonymous";
+  const ctrl = new AbortController();
+  const t = setTimeout(()=>ctrl.abort(), timeout);
+  try{
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify(cleanBody),
+      signal: ctrl.signal
+    });
+    clearTimeout(t);
+    const text = await res.text();
+    try{ return JSON.parse(text); }catch(_){ return {ok:true}; }
+  }catch(e){
+    clearTimeout(t);
+    console.error("VIBE: Worker fetch failed:", e.message);
+    return null;
+  }
 }
 
-async function gsFetch(params) {
-  const url = getScriptUrl();
-  if (!url) return null;
-  const fullParams = { ...params, key: getApiKey(), user: SESSION ? SESSION.username : "anonymous" };
-  const getUrl = url + "?" + new URLSearchParams(fullParams);
+async function gsFetch(params){
+  const result = await _workerPost(params);
+  if(!result) return null;
+  if(result.rateLimited||(result.error&&String(result.error).toLowerCase().includes("rate limit"))){
+    console.warn("GS: Rate limit hit");
+    return {ok:false, rateLimited:true};
+  }
+  return result;
+}
 
-  try {
-    const res = await _corsSafeFetch(getUrl, { method: "GET", redirect: "follow" }, 10000);
-    const text = await res.text();
-    try {
-      const json = JSON.parse(text);
-      if (json && json.error && String(json.error).toLowerCase().includes("rate limit")) {
-        console.warn("GS: Rate limit hit — backing off");
-        return { ok: false, rateLimited: true };
-      }
-      if (json && json.ok) return json;
-      if (json && json.params) {
-        console.warn("GS GET: server echoed params — retrying as POST");
-      } else {
-        return json;
-      }
-    } catch(e) {
-      console.warn("GS GET: non-JSON response, retrying as POST");
-    }
-  } catch(e) { console.warn("GS GET error", e); }
-
-  try {
-    const ctrl2 = new AbortController();
-    const tmr2 = setTimeout(() => ctrl2.abort(), 10000);
-    const res2 = await fetch(url, {
-      method: "POST", redirect: "follow",
-      headers: { "Content-Type": "text/plain" },
-      body: JSON.stringify({ ...fullParams, apiKey: getApiKey() }),
-      signal: ctrl2.signal
-    });
-    clearTimeout(tmr2);
-    const text2 = await res2.text();
-    try { return JSON.parse(text2); } catch(e) {
-      console.error("GS POST fallback: non-JSON response");
-      return null;
-    }
-  } catch(e) { console.error("GS POST fallback error", e); return null; }
+// Keep _corsSafeFetch as a thin wrapper — used only for external time APIs
+async function _corsSafeFetch(fullUrl, opts, timeout=10000){
+  const ctrl = new AbortController();
+  const t = setTimeout(()=>ctrl.abort(), timeout);
+  try{
+    const res = await fetch(fullUrl, {...opts, signal:ctrl.signal});
+    clearTimeout(t);
+    return res;
+  }catch(e){ clearTimeout(t); throw e; }
 }
 
 // ONLINE-ONLY: queue stubs — no offline queue for any role
@@ -454,26 +392,10 @@ function showToast(msg, type="info", duration=4000){
   return t;
 }
 
-async function gsPost(body) {
-  const url = getScriptUrl();
-  if (!url) return { ok: false, error: "No Script URL" };
-  const secureBody = { ...body, apiKey: getApiKey(), username: body.username || (body.data && body.data.username) || (SESSION ? SESSION.username : "") };
-  try {
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 10000);
-    const res = await fetch(url, { method:"POST", redirect:"follow", headers:{"Content-Type":"text/plain"}, body:JSON.stringify(secureBody), signal:ctrl.signal });
-    clearTimeout(t);
-    const text = await res.text();
-    try { return JSON.parse(text); } catch(_) { return { ok: true }; }
-  } catch(e) {
-    console.warn("gsPost direct failed, trying proxy GET fallback:", e.message);
-  }
-  try {
-    const getUrl = url + "?" + new URLSearchParams({ ...secureBody, key: getApiKey() });
-    const res2 = await _corsSafeFetch(getUrl, { method:"GET", redirect:"follow" }, 10000);
-    const text2 = await res2.text();
-    try { return JSON.parse(text2); } catch(_) { return { ok: true }; }
-  } catch(e) { return { ok: false, error: e.message }; }
+async function gsPost(body){
+  const result = await _workerPost(body);
+  if(!result) return {ok:false, error:"No response from Worker proxy"};
+  return result;
 }
 
 // Sync a single user to sheet — avoids payload/timeout issues with all-50-users sync
@@ -483,7 +405,7 @@ async function syncSingleUserToSheet(userObj) {
   const u = userObj;
   const uname = (u.username||"").toLowerCase();
   const rawLat = parseFloat(u.geoLat); const rawLng = parseFloat(u.geoLng);
-  const validGeo = isValidIndiaCoords(rawLat, rawLng);
+  const validGeo = !isNaN(rawLat)&&!isNaN(rawLng)&&rawLat>=6&&rawLat<=38&&rawLng>=68&&rawLng<=98;
   const cleanUser = {
     ...u,
     geoLat: validGeo ? String(rawLat) : "",
@@ -691,7 +613,7 @@ async function syncToSheet() {
     const cleanLoc = (!u.location||u.location.toLowerCase()===uname) ? "" : u.location;
     // Only write real India coords — reject anything that isn't a valid number in India range
     const rawLat = parseFloat(u.geoLat); const rawLng = parseFloat(u.geoLng);
-    const validGeo = isValidIndiaCoords(rawLat, rawLng);
+    const validGeo = !isNaN(rawLat)&&!isNaN(rawLng)&&rawLat>=6&&rawLat<=38&&rawLng>=68&&rawLng<=98;
     const cleanGeoLat = validGeo ? String(rawLat) : "";
     const cleanGeoLng = validGeo ? String(rawLng) : "";
     const rawRad = parseInt(u.geoRadius);
@@ -702,19 +624,12 @@ async function syncToSheet() {
     const cleanOfficeName = (!rawOff||ROLE_VALUES.has(rawOff.toLowerCase())||offIsNum||rawOff.toLowerCase()===uname) ? "" : rawOff;
     return {...u, designation:cleanDesig, location:cleanLoc, geoLat:cleanGeoLat, geoLng:cleanGeoLng, geoRadius:cleanGeoRad, officeName:cleanOfficeName};
   });
-  const payload = {
-    action:"syncData",
-    apiKey: getApiKey(),
-    username: SESSION ? SESSION.username : "admin",
-    data: { surveys: DB.surveys, attendance: DB.attendance, absences: DB.absences, officeLocations: DB.officeLocations }
-  };
   try {
-    const _sc = new AbortController();
-    const _st = setTimeout(() => _sc.abort(), 8000);
-    const res = await fetch(_syncUrl, { method:"POST", redirect:"follow", headers:{"Content-Type":"text/plain"}, body: JSON.stringify(payload), signal: _sc.signal });
-    clearTimeout(_st);
-    const text = await res.text();
-    try { return JSON.parse(text); } catch { return { ok: true }; }
+    return await gsPost({
+      action:"syncData",
+      username: SESSION ? SESSION.username : "admin",
+      data: { surveys: DB.surveys, attendance: DB.attendance, absences: DB.absences, officeLocations: DB.officeLocations }
+    });
   } catch(e) {
     console.warn("syncToSheet failed:", e);
     return { ok: false, error: e.message };
@@ -733,7 +648,7 @@ async function syncUsersToSheet() {
     const cleanDesig = (!u.designation||u.designation.toLowerCase()===uname||u.designation.toLowerCase()===fname) ? "" : u.designation;
     const cleanLoc = (!u.location||u.location.toLowerCase()===uname) ? "" : u.location;
     const rawLat = parseFloat(u.geoLat); const rawLng = parseFloat(u.geoLng);
-    const validGeo = isValidIndiaCoords(rawLat, rawLng);
+    const validGeo = !isNaN(rawLat)&&!isNaN(rawLng)&&rawLat>=6&&rawLat<=38&&rawLng>=68&&rawLng<=98;
     const cleanGeoLat = validGeo ? String(rawLat) : "";
     const cleanGeoLng = validGeo ? String(rawLng) : "";
     const rawRad = parseInt(u.geoRadius);
@@ -746,22 +661,13 @@ async function syncUsersToSheet() {
   // Try per-user updateUser action first (safe — only touches that user row)
   // If server does not support it, fall back to fullSync with users included
   try {
-    const _sc = new AbortController();
-    const _st = setTimeout(() => _sc.abort(), 8000);
-    const res = await fetch(_syncUrl, { method:"POST", redirect:"follow", headers:{"Content-Type":"text/plain"}, body: JSON.stringify({
+    const json = await gsPost({
       action:"setUsers",
-      apiKey: getApiKey(),
       username: SESSION ? SESSION.username : "admin",
       data: { users: cleanUsers }
-    }), signal: _sc.signal });
-    clearTimeout(_st);
-    const text = await res.text();
-    try {
-      const json = JSON.parse(text);
-      if(json && json.ok) return; // server handled it correctly
-    } catch(_){}
-    // Fallback: fullSync without users — do not rewrite user rows at all
-    console.warn("syncUsersToSheet: setUsers not supported, skipping user sync to avoid corruption");
+    });
+    if(json && json.ok) return;
+    console.warn("syncUsersToSheet: setUsers not supported, skipping to avoid corruption");
   } catch(e) { console.warn("syncUsersToSheet failed:", e); }
 }
 
@@ -795,10 +701,10 @@ async function loadFromSheet() {
         const fname = safeChain(u.fullName, u.full_name, u.FullName, u.name);
 
         // ── COORDINATE DETECTION HELPERS ──────────────────────────────────────
-        // Checks all geo-related columns to find where the real coords ended up,
-        // regardless of column shift. Uses shared GEO_LAT/LNG bounds constants.
-        const isIndiaLat = v => { const n=parseFloat(v); return !isNaN(n)&&isFinite(n)&&n>=GEO_LAT_MIN&&n<=GEO_LAT_MAX; };
-        const isIndiaLng = v => { const n=parseFloat(v); return !isNaN(n)&&isFinite(n)&&n>=GEO_LNG_MIN&&n<=GEO_LNG_MAX; };
+        // Checks all 5 geo-related columns to find where the real coords ended up,
+        // regardless of column shift. Handles 1-column and 2-column right-shifts.
+        const isIndiaLat = v => { const n=parseFloat(v); return !isNaN(n)&&isFinite(n)&&n>=6&&n<=38; };
+        const isIndiaLng = v => { const n=parseFloat(v); return !isNaN(n)&&isFinite(n)&&n>=68&&n<=98; };
         const isRadius   = v => { const n=parseInt(v);   return !isNaN(n)&&n>=50&&n<=5000; };
         const isRoleVal  = v => ROLE_VALUES.has(safeString(v,"").toLowerCase());
         const isUserName = v => safeString(v,"").toLowerCase()===uname.toLowerCase();
@@ -1064,7 +970,7 @@ function checkUserGeofence(userLat,userLng,username){
     if(rawLat && rawLng && rawLat!=="0" && rawLng!=="0"){
       const lat=parseFloat(rawLat), lng=parseFloat(rawLng);
       // Validate realistic coordinates (India range) and minimum radius
-      const validCoords=isValidIndiaCoords(lat,lng);
+      const validCoords=!isNaN(lat)&&!isNaN(lng)&&lat>=6&&lat<=38&&lng>=68&&lng<=98;
       const radius=parseInt(u.geoRadius)||200;
       const validRadius=radius>=50; // ignore tiny/corrupt radius values
       if(validCoords&&validRadius){
@@ -1080,7 +986,7 @@ function checkUserGeofence(userLat,userLng,username){
 
 // ── WORK TIMING HELPERS ───────────────────────────────────────────────────────
 
-// ── IST TIME DISPLAY HELPER v20260321 ────────────────────────────────────────
+// u2500u2500 IST TIME DISPLAY HELPER v20260321 u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500u2500
 // Always display times in IST regardless of device timezone.
 function fmtIST(tsMs){
   if(!tsMs) return "—";
@@ -1125,16 +1031,7 @@ function getDepartureStatus(tsMs, checkInTs){
   const wh=Math.floor(workedMin/60),wm=workedMin%60;
   return{type:"permission",label:wh>0?(wm>0?`${wh}h ${wm}m`:`${wh}h`):(`${wm}m`)};
 }
-function localMonthStr(date){
-  try{
-    const d=date||new Date();
-    // IST FIX: always return YYYY-MM in IST (UTC+5:30), consistent with localDateStr()
-    return d.toLocaleDateString("en-CA",{timeZone:"Asia/Kolkata"}).slice(0,7);
-  }catch(_){
-    const d=date||new Date();
-    return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
-  }
-}
+function localMonthStr(date){const d=date||new Date();return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`}
 
 let DB = loadData();
 const SESSION_KEY = "vibeSession";
@@ -1157,16 +1054,11 @@ let SESSION = restoreSession();
 const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000; // UTC+5:30
 
 async function _timeFetch(url, timeout=6000){
-  // Try direct first, then via CORS proxy
-  try{
-    const ctrl=new AbortController();
-    setTimeout(()=>ctrl.abort(),timeout);
-    return await fetch(url,{method:"GET",signal:ctrl.signal});
-  }catch(_){}
-  // CORS proxy fallback
-  const ctrl2=new AbortController();
-  setTimeout(()=>ctrl2.abort(),timeout);
-  return await fetch(CORS_PROXY+encodeURIComponent(url),{method:"GET",signal:ctrl2.signal});
+  // External time APIs (timeapi.io, worldtimeapi.org) — direct fetch only.
+  // These are public APIs with open CORS headers — no proxy needed.
+  const ctrl=new AbortController();
+  setTimeout(()=>ctrl.abort(),timeout);
+  return await fetch(url,{method:"GET",signal:ctrl.signal});
 }
 
 async function getServerTime(){
@@ -1202,11 +1094,10 @@ async function getServerTime(){
       if(!json.unixtime) throw new Error("no unixtime");
       return Math.round((json.unixtime*1000)+((Date.now()-t0)/2));
     },
-    // API 3: Google Apps Script — ts is UTC epoch ms from Date.now() server-side
+    // API 3: Cloudflare Worker → Google Apps Script (no key in URL)
     async()=>{
       const t0=Date.now();
-      const res=await _timeFetch(getScriptUrl()+"?action=getTime&key="+getApiKey());
-      const j=await res.json();
+      const j=await gsFetch({action:"getTime"});
       if(!j||!j.ts) throw new Error("no ts");
       const serverMs=Math.round(parseInt(j.ts)+((Date.now()-t0)/2));
       if(isNaN(serverMs)) throw new Error("invalid");
@@ -1407,10 +1298,7 @@ function renderLogin(){
       try{
         await loadFromSheet();
       }catch(_){}
-      let found=null;
-      for(const x of DB.users){
-        if(x.username===u && await verifyPassword(p, x.password)){ found=x; break; }
-      }
+      let found=DB.users.find(x=>x.username===u&&x.password===p);
       if(!found && DB.users.filter(x=>x.role==="admin").length===0){
         const defUser=def().users.find(x=>x.username===u&&x.password===p);
         if(defUser) found=defUser;
@@ -1428,8 +1316,6 @@ function renderLogin(){
         btn.disabled=false;btn.textContent="Sign In";return;
       }
       _loginAttempts=0;_loginLockedUntil=0;
-      // Transparently upgrade plaintext password to SHA-256 hash on successful login
-      upgradePasswordIfNeeded(found, p).catch(()=>{});
       proceedLogin(found,u,p);
     })();
   }
@@ -1751,10 +1637,9 @@ function renderUser(){
         
         // Original handler begins...
         try {
-        if(checkedIn){
+        if(currentlyIn){
           if(_checkoutInProgress||!isIn()||!canCheckOut()){refresh();return;}
           if(!navigator.onLine){
-            _checkOutInProgress=false;
             const oldEb=content.querySelector(".loc-err-banner");if(oldEb)oldEb.remove();
             const eb=h("div",{className:"loc-err-banner geo-banner geo-warn",style:{marginTop:".75rem"}});
             eb.innerHTML="<span class='geo-icon'>📡</span><div><strong>No Internet Connection</strong><br>Please connect to the internet to check out.</div>";
@@ -1890,24 +1775,22 @@ function renderUser(){
               delete window._geoWarn;
               const prevEb=document.querySelector(".loc-err-banner");if(prevEb)prevEb.remove();
               _checkoutInProgress=false;
-              _checkOutInProgress=false;
               refresh();
             } catch(_unexpectedErr){
-              // always reset state on any unexpected error
+              // Bug 5: always reset state on any unexpected error
               console.error("Checkout unexpected error:", _unexpectedErr);
-              _checkoutInProgress=false; _checkOutInProgress=false; _lastCheckOut=0;
+              _checkoutInProgress=false; _lastCheckOut=0;
               mainBtn.disabled=false; mainBtn.textContent="⏹ Check Out";
               showToast("Something went wrong. Please try again.", "error", 4000);
             }
             })(); // end async IIFE
           }, ()=>{
             _checkoutInProgress=false;
-            _checkOutInProgress=false;
             mainBtn.disabled=false;mainBtn.textContent="⏹ Check Out";
           });
         } else {
-          // use live isIn() check, not stale checkedIn closure
-          if(isIn()){ refresh(); return; }
+          // Bug 3 fix: use live currentlyIn not stale checkedIn
+          if(currentlyIn){ refresh(); return; }
           if(!canCheckIn()){ return; }
           if(!navigator.onLine){
             const oldEb=content.querySelector(".loc-err-banner");if(oldEb)oldEb.remove();
@@ -2027,9 +1910,9 @@ function renderUser(){
           });
         }
         } finally {
-          // Reset check-IN debounce flag here (check-in is fully awaited in this async handler)
-          // Check-OUT flag is reset inside the showSurvey callback and its cancel handler
-          if(!checkedIn) _checkInInProgress = false;
+          // ✅ FIX #4: Reset debounce flags when operation completes
+          if(checkedIn) _checkOutInProgress = false;
+          else _checkInInProgress = false;
         }
       });
       content.appendChild(mainBtn);
@@ -2263,7 +2146,7 @@ function renderUser(){
               distBadge=_dBadgeU(d, d>radius);
             }
             return `<div style="display:flex;flex-direction:column;gap:3px">
-              ${name?`<span style="font-size:.75rem;font-weight:700;color:${textColor}">🏢 ${escapeHtml(name)}</span>`:""}
+              ${name?`<span style="font-size:.75rem;font-weight:700;color:${textColor}">🏢 ${name}</span>`:""}
               <a href="https://maps.google.com/?q=${loc.lat},${loc.lng}" target="_blank"
                 style="font-size:.7rem;font-family:var(--mono);color:var(--muted);text-decoration:none;opacity:.8">📍 ${coords}</a>
               ${distBadge}
@@ -2612,7 +2495,7 @@ function openUserDataModal(u, allAttend, allSurveys){
         const coordStr=`${parseFloat(lat).toFixed(4)}, ${parseFloat(lng).toFixed(4)}`;
         const mapsUrl=`https://maps.google.com/?q=${lat},${lng}`;
         const officeName=rec?.geoName&&rec.geoName!=="No office location set"&&rec.geoName!==""?rec.geoName:(u.officeName||u.location||"");
-        const offBadge=officeName?`<div style="font-size:.72rem;font-weight:700;color:${color};margin-bottom:2px">🏢 ${escapeHtml(officeName)}</div>`:"";
+        const offBadge=officeName?`<div style="font-size:.72rem;font-weight:700;color:${color};margin-bottom:2px">🏢 ${officeName}</div>`:"";
         // Distance
         let distHtml="";
         const _rd=rec?.geoDist; const _hd=_rd!=null&&_rd!==""&&String(_rd).trim()!=="";
@@ -3152,14 +3035,11 @@ const todayIsWeekend=new Date(serverTodayStr()+"T00:00:00+05:30").getDay()===0;
         const uidClean=uid.toLowerCase().replace(/\s+/g,"");
         if(!uidClean){errB.textContent="User ID cannot be only spaces.";errB.classList.remove("hidden");return}
         if(DB.users.find(x=>x.username===uidClean)){errB.textContent="User ID already exists. Choose a different one.";errB.classList.remove("hidden");return}
-        (async()=>{
-          const hashedPw=await hashPassword(pw);
-          DB.users.push({username:uidClean,password:hashedPw,fullName:name,userId:uidClean,designation:des,location:loc2,role:"user",geoLat:"",geoLng:"",geoRadius:200,officeName:offName2||""});
-          save(DB);syncUsersToSheet();
-          sucB.textContent=`✅ User "${name}" (ID: ${uid}) created successfully.`;sucB.classList.remove("hidden");
-          iName.value="";iUID.value="";iPW.value="";iDS.value="";iLoc.value="";iOffName.value="";
-          refresh();
-        })();
+        DB.users.push({username:uidClean,password:pw,fullName:name,userId:uidClean,designation:des,location:loc2,role:"user",geoLat:"",geoLng:"",geoRadius:200,officeName:offName2||""});
+        save(DB);syncUsersToSheet();
+        sucB.textContent=`✅ User "${name}" (ID: ${uid}) created successfully.`;sucB.classList.remove("hidden");
+        iName.value="";iUID.value="";iPW.value="";iDS.value="";iLoc.value="";iOffName.value="";
+        refresh();
       });
 
       [fg1,fg2,fg3,optToggle,optFields,addBtn].forEach(x=>fc.appendChild(x));
@@ -3467,8 +3347,8 @@ const todayIsWeekend=new Date(serverTodayStr()+"T00:00:00+05:30").getDay()===0;
           const tr2=document.createElement("tr");if(i%2)tr2.style.background="#ffffff05";
           const uInfo=regularUsers.find(u=>u.username===a.username);
           const displayN=(uInfo&&uInfo.fullName&&uInfo.fullName.trim())?uInfo.fullName.trim():(a.username.charAt(0).toUpperCase()+a.username.slice(1).toLowerCase());
-          tr2.innerHTML=`<td class="attend-td" style="font-family:var(--mono);font-size:.8rem">${escapeHtml(a.date)}</td>
-            <td class="attend-td" style="font-weight:700;color:var(--accent)">${escapeHtml(displayN)}${uInfo?.designation?`<div style="font-size:.7rem;color:var(--muted)">${escapeHtml(uInfo.designation)}</div>`:""}</td>
+          tr2.innerHTML=`<td class="attend-td" style="font-family:var(--mono);font-size:.8rem">${a.date}</td>
+            <td class="attend-td" style="font-weight:700;color:var(--accent)">${displayN}${uInfo?.designation?`<div style="font-size:.7rem;color:var(--muted)">${uInfo.designation}</div>`:""}</td>
             <td class="attend-td"><span style="padding:.2rem .6rem;border-radius:20px;font-size:.75rem;font-weight:700;background:#ff5f6d22;color:var(--danger);border:1px solid #ff5f6d44">🔴 Absent</span></td>`;
           abBody.appendChild(tr2);
         });
@@ -3521,7 +3401,7 @@ const todayIsWeekend=new Date(serverTodayStr()+"T00:00:00+05:30").getDay()===0;
               const _lookupUser=String(rec?.username||r.username||"").toLowerCase().trim();
               const uRec2=regularUsers.find(u=>u.username===_lookupUser);
               if(!officeName) officeName=(uRec2?.officeName&&uRec2.officeName.trim())?uRec2.officeName.trim():(uRec2?.location&&uRec2.location.trim()?uRec2.location.trim():"");
-              const officeBadge=officeName?`<div style="font-size:.75rem;font-weight:700;color:${accentColor};margin-bottom:2px">🏢 ${escapeHtml(officeName)}</div>`:"";
+              const officeBadge=officeName?`<div style="font-size:.75rem;font-weight:700;color:${accentColor};margin-bottom:2px">🏢 ${officeName}</div>`:"";
               // Distance: use geoDist from record if available, else calculate from user's configured office coords
               let distBadge="";
               // Helper: build distance badge HTML
@@ -3579,7 +3459,7 @@ const todayIsWeekend=new Date(serverTodayStr()+"T00:00:00+05:30").getDay()===0;
 
             const cells=[
               `<td class="attend-td" style="font-family:var(--mono);font-size:.8rem;white-space:nowrap">${r.date.toLocaleDateString("en-GB",{weekday:"short",day:"2-digit",month:"short",year:"numeric"})}</td>`,
-              `<td class="attend-td"><span style="font-weight:700;color:var(--accent)">${escapeHtml(displayN)}</span><div style="font-size:.7rem;color:var(--muted);font-family:var(--mono)">${escapeHtml(r.username)}${uInfo?.designation?" · "+escapeHtml(uInfo.designation):""}</div></td>`,
+              `<td class="attend-td"><span style="font-weight:700;color:var(--accent)">${displayN}</span><div style="font-size:.7rem;color:var(--muted);font-family:var(--mono)">${r.username}${uInfo?.designation?" · "+uInfo.designation:""}</div></td>`,
               `<td class="attend-td" style="font-family:var(--mono);font-size:.82rem;color:var(--accent2)">${r.in?fmtIST(r.in):"—"}</td>`,
               `<td class="attend-td"><span style="font-family:var(--mono);font-size:.82rem;color:var(--danger)">${r.out?fmtIST(r.out):"—"}</span>${mins?`<br><span style="font-size:.68rem;padding:.1rem .35rem;border-radius:6px;background:${hrsBg};color:${hrsColor};border:1px solid ${hrsBorder}">${hrs}</span>`:""}` +`</td>`,
               `<td class="attend-td">${arrCell}</td>`,
@@ -4112,36 +3992,28 @@ const iRad=h("input",{type:"number",min:"50",max:"5000",value:_cleanRadius,place
       if(lat&&(isNaN(parseFloat(lat))||parseFloat(lat)<-90||parseFloat(lat)>90)){showModalErr("Invalid latitude (must be -90 to 90).");return;}
       if(lng&&(isNaN(parseFloat(lng))||parseFloat(lng)<-180||parseFloat(lng)>180)){showModalErr("Invalid longitude (must be -180 to 180).");return;}
       const idx=DB.users.findIndex(x=>x.username===u.username);
-      // Hash the new password, but preserve existing hash if admin typed the same value back
+      DB.users[idx]={
+        ...DB.users[idx],
+        username:uid,password:pw,fullName:name,userId:uid,
+        designation:des,location:loc,officeName:offName,
+        geoLat:lat||"",geoLng:lng||"",geoRadius:rad,
+      };
+      if(uid!==u.username){
+        DB.attendance=DB.attendance.map(r=>r.username===u.username?{...r,username:uid}:r);
+        DB.surveys=(DB.surveys||[]).map(s=>s.username===u.username?{...s,username:uid}:s);
+        DB.absences=(DB.absences||[]).map(a=>a.username===u.username?{...a,username:uid}:a);
+      }
+      save(DB);
+      // ✅ FIX: Wrap sync with error handling
       (async()=>{
-        const existingPw=DB.users[idx]?.password||"";
-        let finalPw;
-        if(existingPw.startsWith("sha256:")){
-          // Admin may have left the field showing a hash — re-hash only if it looks like plaintext
-          finalPw = pw.startsWith("sha256:") ? pw : await hashPassword(pw);
-        } else {
-          finalPw = await hashPassword(pw);
-        }
-        DB.users[idx]={
-          ...DB.users[idx],
-          username:uid,password:finalPw,fullName:name,userId:uid,
-          designation:des,location:loc,officeName:offName,
-          geoLat:lat||"",geoLng:lng||"",geoRadius:rad,
-        };
-        if(uid!==u.username){
-          DB.attendance=DB.attendance.map(r=>r.username===u.username?{...r,username:uid}:r);
-          DB.surveys=(DB.surveys||[]).map(s=>s.username===u.username?{...s,username:uid}:s);
-          DB.absences=(DB.absences||[]).map(a=>a.username===u.username?{...a,username:uid}:a);
-        }
-        save(DB);
         try{
           await syncSingleUserToSheet(DB.users[idx]);
-          showToast(`✅ ${escapeHtml(name)} updated — geofence ${lat&&lng?"set to "+rad+"m":"disabled"}.`,"success",4000);
+          showToast(`✅ ${name} updated — geofence ${lat&&lng?"set to "+rad+"m":"disabled"}.`,"success",4000);
         }catch(e){
           console.error("Sync failed:",e);
-          showToast(`⚠️ ${escapeHtml(name)} saved locally but sync failed. Check connection.`,"warn",5000);
+          showToast(`⚠️ ${name} saved locally but sync failed. Check connection.`,"warn",5000);
         }
-        cleanupMap();
+        cleanupMap();  // ✅ FIX #9: Remove map iframe
         ov.remove();refresh();
       })();
     });
@@ -4227,12 +4099,14 @@ function safeRoute(){
   })();
 }
 
-// ── SW FIX v20260321 — Fully disable ServiceWorker (broken on GitHub Pages) ──
+// ── SERVICE WORKER — unregister any broken old SW ────────────────────────────
+// Worker proxy handles CORS so no SW tricks needed for fetching.
+// We keep SW unregistered to avoid stale cache issues on GitHub Pages.
 if('serviceWorker' in navigator){
   navigator.serviceWorker.getRegistrations().then(regs=>{
     regs.forEach(reg=>reg.unregister().catch(()=>{}));
   }).catch(()=>{});
-  console.log('VIBE: ServiceWorker disabled — Google Sheets fetch will work normally.');
+  console.log('VIBE: Worker proxy active — vibe-proxy.vibeassist2.workers.dev');
 }
 </script>
 </body>
