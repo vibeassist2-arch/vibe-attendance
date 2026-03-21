@@ -273,7 +273,7 @@ function escapeHtml(text) {
 // All requests go through the Cloudflare Worker via POST.
 // The Worker injects the GAS URL and API key server-side.
 // No API key is ever sent from the browser.
-async function _workerPost(body, timeout=12000){
+async function _workerPost(body, timeout=25000){
   const url = getScriptUrl();
   if(!url || url.includes("yourname")){
     console.error("VIBE: WORKER_URL not configured");
@@ -855,19 +855,12 @@ async function loadFromSheet() {
     // DEBUG: log raw counts from sheet to help diagnose empty data
     console.log("VIBE loadFromSheet: raw counts — users:", (result.users||[]).length, "attendance:", (result.attendance||[]).length, "surveys:", (result.surveys||[]).length, "absences:", (result.absences||[]).length);
 
-    // Normalize any date string to YYYY-MM-DD (handles DD/MM/YYYY, MM/DD/YYYY, DD-MM-YYYY, etc.)
     function normalizeDateStr(raw){
       if(!raw) return "";
       const s = String(raw).trim().slice(0,10);
       if(/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
       const dmy = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
-      if(dmy){
-        const [,d,m,y]=dmy;
-        const di=parseInt(d),mi=parseInt(m);
-        if(di>12) return`${y}-${m.padStart(2,"0")}-${d.padStart(2,"0")}`;
-        if(mi>12) return`${y}-${d.padStart(2,"0")}-${m.padStart(2,"0")}`;
-        return`${y}-${m.padStart(2,"0")}-${d.padStart(2,"0")}`;
-      }
+      if(dmy){const [,d,m,y]=dmy;const di=parseInt(d),mi=parseInt(m);if(di>12)return`${y}-${m.padStart(2,"0")}-${d.padStart(2,"0")}`;if(mi>12)return`${y}-${d.padStart(2,"0")}-${m.padStart(2,"0")}`;return`${y}-${m.padStart(2,"0")}-${d.padStart(2,"0")}`;}
       return s;
     }
     const sheetSurveys = (result.surveys||[]).map(s => {
@@ -2746,7 +2739,11 @@ function renderAdmin(){
       const syncBanner=h("div",{style:{background:"#fee2e2",border:"1.5px solid #fca5a5",borderRadius:"12px",padding:".75rem 1.1rem",marginBottom:"1rem",display:"flex",alignItems:"center",justifyContent:"space-between",gap:"1rem",flexWrap:"wrap"}});
       const syncMsg=h("span",{style:{fontSize:".85rem",color:"#991b1b",fontWeight:"600"}},"\u26a0\ufe0f Could not load data from Google Sheets. Showing last known data.");
       const retryBtn=h("button",{style:{padding:".35rem .9rem",borderRadius:"8px",border:"1.5px solid #f87171",background:"#fff",color:"#dc2626",fontFamily:"var(--font)",fontSize:".8rem",fontWeight:"700",cursor:"pointer",whiteSpace:"nowrap"}},"\ud83d\udd04 Retry");
-      retryBtn.addEventListener("click",async()=>{retryBtn.disabled=true;retryBtn.textContent="Syncing...";await doAdminSync(true);});
+      retryBtn.addEventListener("click",async()=>{
+        retryBtn.disabled=true;retryBtn.textContent="⏳ Syncing...";
+        await doAdminSync(true);
+        refresh(); // ✅ FIX: re-render so banner disappears and data shows on success
+      });
       syncBanner.appendChild(syncMsg);syncBanner.appendChild(retryBtn);
       content.appendChild(syncBanner);
     } else if(_lastSyncTime){
