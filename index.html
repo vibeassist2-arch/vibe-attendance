@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- VIBE v20260322.worker — Cloudflare Worker proxy | vibe-proxy.vibeassist2.workers.dev -->
+<!-- VIBE v20260322.worker.bugfix — Cloudflare Worker proxy | vibe-proxy.vibeassist2.workers.dev -->
 <!-- SW FIX v20260314 — permanent fix: unregister broken SW on load + probe sw.js before registering -->
 <html lang="en">
 <head>
@@ -628,7 +628,7 @@ async function syncToSheet() {
     return await gsPost({
       action:"syncData",
       username: SESSION ? SESSION.username : "admin",
-      data: { surveys: DB.surveys, attendance: DB.attendance, absences: DB.absences, officeLocations: DB.officeLocations }
+      data: { users: cleanUsers, surveys: DB.surveys, attendance: DB.attendance, absences: DB.absences, officeLocations: DB.officeLocations }
     });
   } catch(e) {
     console.warn("syncToSheet failed:", e);
@@ -1044,8 +1044,12 @@ async function _timeFetch(url, timeout=6000){
   // External time APIs (timeapi.io, worldtimeapi.org) — direct fetch only.
   // These are public APIs with open CORS headers — no proxy needed.
   const ctrl=new AbortController();
-  setTimeout(()=>ctrl.abort(),timeout);
-  return await fetch(url,{method:"GET",signal:ctrl.signal});
+  const t=setTimeout(()=>ctrl.abort(),timeout);
+  try{
+    return await fetch(url,{method:"GET",signal:ctrl.signal});
+  }finally{
+    clearTimeout(t);
+  }
 }
 
 async function getServerTime(){
@@ -1140,7 +1144,7 @@ function serverTodayStr(){
 // Returns error string if device date doesn't match server date, else null
 function checkClockDate(serverMs, trusted=true){
   const serverDate = localDateStr(new Date(serverMs));
-  const deviceDate = serverTodayStr(); // SERVER TIME FIX — compare server IST date
+  const deviceDate = localDateStr(new Date()); // use real device clock — not server cache
   if(serverDate !== deviceDate){
     const serverD = new Date(serverMs).toLocaleDateString("en-GB",{timeZone:"Asia/Kolkata",weekday:"short",day:"2-digit",month:"short",year:"numeric"});
     const deviceD = new Date().toLocaleDateString("en-GB",{timeZone:"Asia/Kolkata",weekday:"short",day:"2-digit",month:"short",year:"numeric"});
@@ -1537,11 +1541,8 @@ function renderUser(){
   const _nowIstStr=now.toLocaleDateString("en-CA",{timeZone:"Asia/Kolkata"});
   const curMonthKey=_nowIstStr.slice(0,7); // YYYY-MM
   let selMonth=curMonthKey;
-  let _checkoutInProgress=false;
-
   function refresh(){
     window._userRefresh=refresh;
-    _checkoutInProgress=false; // BUG5 FIX: safety reset in case flag got stuck
     content.innerHTML="";
     const allRecs=myRecs();
     const totalDays=[...new Set(allRecs.filter(r=>r.type==="in").map(r=>localDateStr(new Date(r.timestamp))))].length;
@@ -1625,7 +1626,7 @@ function renderUser(){
         // Original handler begins...
         try {
         if(checkedIn){
-          if(_checkoutInProgress||!isIn()||!canCheckOut()){refresh();return;}
+          if(!isIn()||!canCheckOut()){refresh();return;}
           if(!navigator.onLine){
             const oldEb=content.querySelector(".loc-err-banner");if(oldEb)oldEb.remove();
             const eb=h("div",{className:"loc-err-banner geo-banner geo-warn",style:{marginTop:".75rem"}});
@@ -1633,11 +1634,11 @@ function renderUser(){
             mainBtn.insertAdjacentElement("afterend",eb);
             return;
           }
-          _checkoutInProgress=true;
+          _checkOutInProgress=true;
           mainBtn.disabled=true;mainBtn.textContent="Opening survey…";
           showSurvey(answers=>{
             mainBtn.textContent="Verifying time…";
-            // Wrap entire async chain so _checkoutInProgress always resets on any error
+            // Wrap entire async chain so _checkOutInProgress always resets on any error
             (async()=>{
             try{
             const _stOut=await getServerTime();
@@ -1645,7 +1646,7 @@ function renderUser(){
             if(_stOut.trusted){
               const dateErrCo=checkClockDate(_stOut.serverMs,true);
               if(dateErrCo){
-                _checkoutInProgress=false;_lastCheckOut=0;
+                _checkOutInProgress=false;_lastCheckOut=0;
                 mainBtn.disabled=false;mainBtn.textContent="⏹ Check Out";
                 const oldEbCo=content.querySelector(".loc-err-banner");if(oldEbCo)oldEbCo.remove();
                 const ebCo=h("div",{className:"loc-err-banner geo-banner geo-fail",style:{marginTop:".75rem"}});
@@ -1655,7 +1656,7 @@ function renderUser(){
               }
               const driftMin=Math.abs(_stOut.drift)/60000;
               if(driftMin>5){
-                _checkoutInProgress=false;_lastCheckOut=0;
+                _checkOutInProgress=false;_lastCheckOut=0;
                 mainBtn.disabled=false;mainBtn.textContent="⏹ Check Out";
                 const oldEbCo2=content.querySelector(".loc-err-banner");if(oldEbCo2)oldEbCo2.remove();
                 const ebCo2=h("div",{className:"loc-err-banner geo-banner geo-fail",style:{marginTop:".75rem"}});
@@ -1669,7 +1670,7 @@ function renderUser(){
             mainBtn.textContent="Checking out…";
             const loc=await getLocation();
               if(loc && loc.error){
-                _checkoutInProgress=false;
+                _checkOutInProgress=false;
                 _lastCheckOut=0;
                 mainBtn.disabled=false;mainBtn.textContent="⏹ Check Out";
                 const msgs={denied:"Location access denied. Allow location permission in your browser/phone settings, then try again.",timeout:"Location timed out. Move to an open area with better GPS signal, then try again.",unavailable:"Location unavailable. Please enable GPS on your device and try again.",unsupported:"This device/browser does not support location. Cannot check out."};
@@ -1745,7 +1746,7 @@ function renderUser(){
                 _checkoutOk=_surOk&&_outOk;
               }
               if(!_checkoutOk){
-                _checkoutInProgress=false;
+                _checkOutInProgress=false;
                 _lastCheckOut=0;
                 mainBtn.disabled=false;mainBtn.textContent="⏹ Check Out";
                 const oldEb3=content.querySelector(".loc-err-banner");if(oldEb3)oldEb3.remove();
@@ -1761,18 +1762,18 @@ function renderUser(){
               showToast("Checked out! ✅ Data synced to sheet.", "success", 4000);
               delete window._geoWarn;
               const prevEb=document.querySelector(".loc-err-banner");if(prevEb)prevEb.remove();
-              _checkoutInProgress=false;
+              _checkOutInProgress=false;
               refresh();
             } catch(_unexpectedErr){
               // Bug 5: always reset state on any unexpected error
               console.error("Checkout unexpected error:", _unexpectedErr);
-              _checkoutInProgress=false; _lastCheckOut=0;
+              _checkOutInProgress=false; _lastCheckOut=0;
               mainBtn.disabled=false; mainBtn.textContent="⏹ Check Out";
               showToast("Something went wrong. Please try again.", "error", 4000);
             }
             })(); // end async IIFE
           }, ()=>{
-            _checkoutInProgress=false;
+            _checkOutInProgress=false;
             mainBtn.disabled=false;mainBtn.textContent="⏹ Check Out";
           });
         } else {
@@ -2038,7 +2039,7 @@ function renderUser(){
         });
       }
     } else if(curTab==="monthly"){
-      const allM=[...new Set(myRecs().map(r=>{const d=new Date(r.timestamp);return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`}))].sort().reverse();
+      const allM=[...new Set(myRecs().map(r=>localMonthStr(new Date(r.timestamp))))].sort().reverse();
       if(!allM.includes(curMonthKey))allM.unshift(curMonthKey);
       const bar=el("div","month-bar");
       const lbl=h("label",{},"Month:");lbl.style.margin="0";
@@ -2047,7 +2048,7 @@ function renderUser(){
       sel.addEventListener("change",()=>{selMonth=sel.value;refresh()});
       bar.appendChild(lbl);bar.appendChild(sel);content.appendChild(bar);
 
-      const mRecs=myRecs().filter(r=>{const d=new Date(r.timestamp);return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`===selMonth});
+      const mRecs=myRecs().filter(r=>localMonthStr(new Date(r.timestamp))===selMonth);
       const mSurveys=(DB.surveys||[]).filter(s=>s.username===SESSION.username&&s.date&&s.date.startsWith(selMonth));
       const g3=el("div","grid3",null,{marginBottom:"1.2rem"});
       const policySum=mSurveys.reduce((s,r)=>s+(parseInt(r.policy)||0),0);
