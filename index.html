@@ -639,36 +639,12 @@ async function syncToSheet() {
 // Sync users to sheet — sends each user individually using updateUser/addUser actions
 // This avoids fullSync overwriting user rows with wrong column order
 async function syncUsersToSheet() {
-  const _syncUrl = getScriptUrl();
-  if (!_syncUrl) return;
-  const ROLE_VALUES = new Set(["user","admin","team leader","teamleader","manager","staff",""]);
-  const cleanUsers = DB.users.map(u => {
-    const uname = (u.username||"").toLowerCase();
-    const fname = (u.fullName||"").toLowerCase();
-    const cleanDesig = (!u.designation||u.designation.toLowerCase()===uname||u.designation.toLowerCase()===fname) ? "" : u.designation;
-    const cleanLoc = (!u.location||u.location.toLowerCase()===uname) ? "" : u.location;
-    const rawLat = parseFloat(u.geoLat); const rawLng = parseFloat(u.geoLng);
-    const validGeo = !isNaN(rawLat)&&!isNaN(rawLng)&&rawLat>=6&&rawLat<=38&&rawLng>=68&&rawLng<=98;
-    const cleanGeoLat = validGeo ? String(rawLat) : "";
-    const cleanGeoLng = validGeo ? String(rawLng) : "";
-    const rawRad = parseInt(u.geoRadius);
-    const cleanGeoRad = (!isNaN(rawRad)&&rawRad>=50&&rawRad<=5000) ? rawRad : 200;
-    const rawOff = String(u.officeName||"").trim();
-    const offIsNum = !isNaN(parseFloat(rawOff)) && isFinite(rawOff);
-    const cleanOfficeName = (!rawOff||ROLE_VALUES.has(rawOff.toLowerCase())||offIsNum||rawOff.toLowerCase()===uname) ? "" : rawOff;
-    return {...u, designation:cleanDesig, location:cleanLoc, geoLat:cleanGeoLat, geoLng:cleanGeoLng, geoRadius:cleanGeoRad, officeName:cleanOfficeName};
-  });
-  // Try per-user updateUser action first (safe — only touches that user row)
-  // If server does not support it, fall back to fullSync with users included
-  try {
-    const json = await gsPost({
-      action:"setUsers",
-      username: SESSION ? SESSION.username : "admin",
-      data: { users: cleanUsers }
-    });
-    if(json && json.ok) return;
-    console.warn("syncUsersToSheet: setUsers not supported, skipping to avoid corruption");
-  } catch(e) { console.warn("syncUsersToSheet failed:", e); }
+  // FIX: setUsers is rejected by GAS — sync each user individually via syncSingleUserToSheet
+  if (!getScriptUrl()) return;
+  const nonAdmins = DB.users.filter(u => u.role !== "admin");
+  for (const u of nonAdmins) {
+    try { await syncSingleUserToSheet(u); } catch(e) { console.warn("syncUsersToSheet: failed for", u.username, e); }
+  }
 }
 
 let _loadRunning = false;
@@ -857,10 +833,10 @@ async function loadFromSheet() {
 
     function normalizeDateStr(raw){
       if(!raw) return "";
-      const s = String(raw).trim().slice(0,10);
+      const s=String(raw).trim().slice(0,10);
       if(/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
-      const dmy = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
-      if(dmy){const [,d,m,y]=dmy;const di=parseInt(d),mi=parseInt(m);if(di>12)return`${y}-${m.padStart(2,"0")}-${d.padStart(2,"0")}`;if(mi>12)return`${y}-${d.padStart(2,"0")}-${m.padStart(2,"0")}`;return`${y}-${m.padStart(2,"0")}-${d.padStart(2,"0")}`;}
+      const dmy=s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+      if(dmy){const[,d,m,y]=dmy;const di=parseInt(d),mi=parseInt(m);if(di>12)return`${y}-${m.padStart(2,"0")}-${d.padStart(2,"0")}`;if(mi>12)return`${y}-${d.padStart(2,"0")}-${m.padStart(2,"0")}`;return`${y}-${m.padStart(2,"0")}-${d.padStart(2,"0")}`;}
       return s;
     }
     const sheetSurveys = (result.surveys||[]).map(s => {
@@ -1574,7 +1550,7 @@ function renderUser(){
     const _nowSIstStr=nowS.toLocaleDateString("en-CA",{timeZone:"Asia/Kolkata"});
     const curMKS=_nowSIstStr.slice(0,7);
     const mySurveys=(DB.surveys||[]).filter(s=>s.username===SESSION.username);
-    const normD=d=>{if(!d)return"";const s=String(d);return s.includes("T")?s.slice(0,10):s.slice(0,10);}
+    const normD=d=>{if(!d)return"";const s=String(d).trim();if(/^\d{4}-\d{2}-\d{2}/.test(s))return s.slice(0,10);const m=s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);if(m){const[,dd,mm,yy]=m;return yy+"-"+mm.padStart(2,"0")+"-"+dd.padStart(2,"0");}return s.slice(0,10);}
     const monthSurveysU=mySurveys.filter(s=>normD(s.date).startsWith(curMKS));
     const monthPolicyU=monthSurveysU.reduce((s,r)=>s+(parseInt(r.policy)||0),0);
     const monthRsaU=monthSurveysU.reduce((s,r)=>s+(parseInt(r.rsa)||0),0);
@@ -2206,16 +2182,16 @@ function renderUser(){
       const calTitle=h("div",{style:{fontWeight:"700",fontSize:"1rem",color:"var(--text)"}},
         new Date(window._calMonth+"-01").toLocaleString("default",{month:"long",year:"numeric"}));
       prevBtn.addEventListener("click",()=>{
-        const d=new Date(window._calMonth+"-01");d.setMonth(d.getMonth()-1);
-        window._calMonth=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;refresh();});
+        const d=new Date(window._calMonth+"-01T00:00:00+05:30");d.setMonth(d.getMonth()-1);
+        window._calMonth=d.toLocaleDateString("en-CA",{timeZone:"Asia/Kolkata"}).slice(0,7);refresh();});
       nextBtn.addEventListener("click",()=>{
-        const d=new Date(window._calMonth+"-01");d.setMonth(d.getMonth()+1);
-        window._calMonth=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;refresh();});
+        const d=new Date(window._calMonth+"-01T00:00:00+05:30");d.setMonth(d.getMonth()+1);
+        window._calMonth=d.toLocaleDateString("en-CA",{timeZone:"Asia/Kolkata"}).slice(0,7);refresh();});
       if(window._calMonth>=curMKS) nextBtn.disabled=true;
       calNav.appendChild(prevBtn);calNav.appendChild(calTitle);calNav.appendChild(nextBtn);
       content.appendChild(calNav);
 
-      const calRecs=myRecs().filter(r=>{const d=new Date(r.timestamp);return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`===window._calMonth});
+      const calRecs=myRecs().filter(r=>{return localDateStr(new Date(r.timestamp)).slice(0,7)===window._calMonth});
       const calDayMap={};
       calRecs.forEach(r=>{
         const k=localDateStr(new Date(r.timestamp));
@@ -2742,7 +2718,8 @@ function renderAdmin(){
       retryBtn.addEventListener("click",async()=>{
         retryBtn.disabled=true;retryBtn.textContent="⏳ Syncing...";
         await doAdminSync(true);
-        refresh(); // ✅ FIX: re-render so banner disappears and data shows on success
+        if(_lastSyncOk){retryBtn.textContent="✅ Done";setTimeout(()=>refresh(),800);}
+        else{retryBtn.disabled=false;retryBtn.textContent="🔄 Retry";}
       });
       syncBanner.appendChild(syncMsg);syncBanner.appendChild(retryBtn);
       content.appendChild(syncBanner);
@@ -2761,7 +2738,7 @@ function renderAdmin(){
     });
     const allSurveys = [...(DB.surveys||[])];
     const todayStr=localDateStr();
-    function normDate(d){if(!d)return"";const s=String(d);return s.includes("T")?s.slice(0,10):s.slice(0,10);}
+    function normDate(d){if(!d)return"";const s=String(d).trim();if(/^\d{4}-\d{2}-\d{2}/.test(s))return s.slice(0,10);const m=s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);if(m){const[,dd,mm,yy]=m;return yy+"-"+mm.padStart(2,"0")+"-"+dd.padStart(2,"0");}return s.slice(0,10);}
     const todaySurveys=allSurveys.filter(s=>normDate(s.date)===todayStr);
     const todayLocalStr = todayStr;
     const todayInUsers=[...new Set(
