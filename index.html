@@ -1031,7 +1031,21 @@ function getDepartureStatus(tsMs, checkInTs){
   const wh=Math.floor(workedMin/60),wm=workedMin%60;
   return{type:"permission",label:wh>0?(wm>0?`${wh}h ${wm}m`:`${wh}h`):(`${wm}m`)};
 }
-function localMonthStr(date){const d=date||new Date();return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`}
+function localMonthStr(date){
+  try{
+    const d=date||new Date();
+    if(!(d instanceof Date)||isNaN(d.getTime()))return"";
+    // IST FIX: use Asia/Kolkata timezone, consistent with localDateStr
+    const parts=d.toLocaleDateString("en-CA",{timeZone:"Asia/Kolkata"}).split("-");
+    return`${parts[0]}-${parts[1]}`;
+  }catch(e){
+    try{
+      const ms=((date instanceof Date?date.getTime():Date.now()))+(5*60+30)*60*1000;
+      const ist=new Date(ms);
+      return`${ist.getUTCFullYear()}-${String(ist.getUTCMonth()+1).padStart(2,"0")}`;
+    }catch(_){return"";}
+  }
+}
 
 let DB = loadData();
 const SESSION_KEY = "vibeSession";
