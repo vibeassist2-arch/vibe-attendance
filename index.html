@@ -2404,7 +2404,7 @@ function openUserDataModal(u, allAttend, allSurveys){
 
   const now=new Date();
   const curMon=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}`;
-  const presentDays=new Set(userAttend.filter(r=>r.type==="in").map(r=>localDateStr(new Date(r.timestamp)))).size;
+  const presentDays=new Set(userAttend.filter(r=>r.type==="in"&&localDateStr(new Date(r.timestamp)).startsWith(curMon)).map(r=>localDateStr(new Date(r.timestamp)))).size;
   const monthSurveys=userSurveys.filter(s=>(s.date||"").startsWith(curMon));
   const monthPolicy=monthSurveys.reduce((s,r)=>s+(parseInt(r.policy)||0),0);
   const monthRsa=monthSurveys.reduce((s,r)=>s+(parseInt(r.rsa)||0),0);
@@ -2439,7 +2439,7 @@ function openUserDataModal(u, allAttend, allSurveys){
     b.appendChild(h("div",{style:{fontSize:".72rem",color:"var(--muted)",marginTop:".15rem"}},lbl));
     return b;
   }
-  statsGrid.appendChild(statBox(presentDays,"Total Present","var(--accent2)"));
+  statsGrid.appendChild(statBox(presentDays,"Present This Month","var(--accent2)"));
   statsGrid.appendChild(statBox(monthAbsences,"Absent This Month","var(--danger)"));
   statsGrid.appendChild(statBox(monthPolicy,"Policy This Month","var(--policy)"));
   statsGrid.appendChild(statBox(monthRsa+" / "+monthGpa,"RSA / GPA This Month","var(--rsa)"));
@@ -2447,7 +2447,7 @@ function openUserDataModal(u, allAttend, allSurveys){
 
   let modalTab="attendance";
   const tabRow=h("div",{style:{display:"flex",gap:".4rem",marginBottom:"1rem",flexWrap:"wrap"}});
-  const tabDefs=[["attendance","📋 Attendance ("+userAttend.filter(r=>r.type==="in").length+" days)"],["surveys","📜 Surveys ("+userSurveys.length+")"],["absences","❌ Absences ("+monthAbsences+")"]];
+  const monthSurveyCount=userSurveys.filter(s=>(s.date||"").startsWith(curMon)).length; const monthAttendCount=new Set(userAttend.filter(r=>r.type==="in"&&localDateStr(new Date(r.timestamp)).startsWith(curMon)).map(r=>localDateStr(new Date(r.timestamp)))).size; const tabDefs=[["attendance","📋 Attendance ("+monthAttendCount+" days this month)"],["surveys","📜 Surveys ("+monthSurveyCount+" this month)"],["absences","❌ Absences ("+monthAbsences+")"]];
   const tabBody=h("div",{});
   mo.appendChild(tabRow);mo.appendChild(tabBody);
 
