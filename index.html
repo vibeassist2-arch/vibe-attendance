@@ -1545,7 +1545,7 @@ function renderUser(){
     window._userRefresh=refresh;
     content.innerHTML="";
     const allRecs=myRecs();
-    const totalDays=[...new Set(allRecs.filter(r=>r.type==="in").map(r=>localDateStr(new Date(r.timestamp))))].length;
+    const totalDays=[...new Set(allRecs.filter(r=>r.type==="in"&&localDateStr(new Date(r.timestamp)).startsWith(curMKS)).map(r=>localDateStr(new Date(r.timestamp))))].length;
     const nowS=new Date();
     // IST FIX: compute current month in IST
     const _nowSIstStr=nowS.toLocaleDateString("en-CA",{timeZone:"Asia/Kolkata"});
@@ -1587,7 +1587,7 @@ function renderUser(){
     const monthLblU=nowS.toLocaleString("en-IN",{timeZone:"Asia/Kolkata",month:"long",year:"numeric"});
 
     const grid=el("div","grid2",null,{marginBottom:".8rem"});
-    const b1=el("div","stat-box");b1.innerHTML=`<div class="num" style="color:var(--accent2)">${totalDays}</div><div class="lbl">Total Present</div>`;
+    const b1=el("div","stat-box");b1.innerHTML=`<div class="num" style="color:var(--accent2)">${totalDays}</div><div class="lbl">Present (${monthLblU})</div>`;
     const b2=el("div","stat-box");b2.innerHTML=`<div class="num" style="color:var(--danger)">${absentDays}</div><div class="lbl">Absent (${monthLblU})</div>`;
     grid.appendChild(b1);grid.appendChild(b2);content.appendChild(grid);
 
