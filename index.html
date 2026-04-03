@@ -1541,15 +1541,15 @@ function renderUser(){
   const _nowIstStr=now.toLocaleDateString("en-CA",{timeZone:"Asia/Kolkata"});
   const curMonthKey=_nowIstStr.slice(0,7); // YYYY-MM
   let selMonth=curMonthKey;
-  function refresh(){
+ function refresh(){
     window._userRefresh=refresh;
     content.innerHTML="";
     const allRecs=myRecs();
-    const totalDays=[...new Set(allRecs.filter(r=>r.type==="in"&&localDateStr(new Date(r.timestamp)).startsWith(curMKS)).map(r=>localDateStr(new Date(r.timestamp))))].length;
     const nowS=new Date();
     // IST FIX: compute current month in IST
     const _nowSIstStr=nowS.toLocaleDateString("en-CA",{timeZone:"Asia/Kolkata"});
     const curMKS=_nowSIstStr.slice(0,7);
+    const totalDays=[...new Set(allRecs.filter(r=>r.type==="in"&&localDateStr(new Date(r.timestamp)).startsWith(curMKS)).map(r=>localDateStr(new Date(r.timestamp))))].length;
     const mySurveys=(DB.surveys||[]).filter(s=>s.username===SESSION.username);
     const normD=d=>{if(!d)return"";const s=String(d).trim();if(/^\d{4}-\d{2}-\d{2}/.test(s))return s.slice(0,10);const m=s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);if(m){const[,dd,mm,yy]=m;return yy+"-"+mm.padStart(2,"0")+"-"+dd.padStart(2,"0");}return s.slice(0,10);}
     const monthSurveysU=mySurveys.filter(s=>normD(s.date).startsWith(curMKS));
