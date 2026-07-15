@@ -1343,9 +1343,9 @@ function renderLogin(){
           btn.disabled=false;btn.textContent="Sign In";
           return;
         }
-        // Check time mismatch (device clock >5 min off)
+        // Check time mismatch (device clock >10 min off)
         const driftMin=Math.abs(st.drift)/60000;
-        if(driftMin>5){
+        if(driftMin>10){
           const deviceTime=new Date().toLocaleTimeString("en-IN",{timeZone:"Asia/Kolkata",hour:"2-digit",minute:"2-digit",hour12:true});
           const serverTime=new Date(st.serverMs).toLocaleTimeString("en-IN",{timeZone:"Asia/Kolkata",hour:"2-digit",minute:"2-digit",hour12:true});
           errBox.innerHTML=`⏰ <strong>Device clock is wrong.</strong><br>Your device shows <strong>${deviceTime}</strong> but the actual time is <strong>${serverTime}</strong>.<br><span style="font-size:.85em">Please fix your device clock and try again.</span>`;
@@ -1655,7 +1655,7 @@ function renderUser(){
                 return;
               }
               const driftMin=Math.abs(_stOut.drift)/60000;
-              if(driftMin>5){
+              if(driftMin>10){
                 _checkOutInProgress=false;_lastCheckOut=0;
                 mainBtn.disabled=false;mainBtn.textContent="⏹ Check Out";
                 const oldEbCo2=content.querySelector(".loc-err-banner");if(oldEbCo2)oldEbCo2.remove();
@@ -1805,7 +1805,7 @@ function renderUser(){
               return;
             }
             const driftMin=Math.abs(_serverTimeResult.drift)/60000;
-            if(driftMin>5){
+            if(driftMin>10){
               _lastCheckIn=0;
               mainBtn.disabled=false;mainBtn.textContent="▶ Check In";
               const oldEbCi2=content.querySelector(".loc-err-banner");if(oldEbCi2)oldEbCi2.remove();
