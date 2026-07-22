@@ -1344,7 +1344,9 @@ function renderLogin(){
           return;
         }
         // Check time mismatch (device clock >10 min off)
-        const driftMin=Math.abs(st.drift)/60000;
+        // ROUNDING FIX: round to nearest minute so it matches the HH:MM shown to the user —
+        // otherwise a device showing exactly "10 min" off (but 10.4-10.9 min underneath) still blocks.
+        const driftMin=Math.round(Math.abs(st.drift)/60000);
         if(driftMin>10){
           const deviceTime=new Date().toLocaleTimeString("en-IN",{timeZone:"Asia/Kolkata",hour:"2-digit",minute:"2-digit",hour12:true});
           const serverTime=new Date(st.serverMs).toLocaleTimeString("en-IN",{timeZone:"Asia/Kolkata",hour:"2-digit",minute:"2-digit",hour12:true});
@@ -1624,10 +1626,10 @@ function renderUser(){
         else _checkInInProgress=true;
         
         // Original handler begins...
-        try {
         if(checkedIn){
-          if(!isIn()||!canCheckOut()){refresh();return;}
+          if(!isIn()||!canCheckOut()){_checkOutInProgress=false;refresh();return;}
           if(!navigator.onLine){
+            _checkOutInProgress=false;
             const oldEb=content.querySelector(".loc-err-banner");if(oldEb)oldEb.remove();
             const eb=h("div",{className:"loc-err-banner geo-banner geo-warn",style:{marginTop:".75rem"}});
             eb.innerHTML="<span class='geo-icon'>📡</span><div><strong>No Internet Connection</strong><br>Please connect to the internet to check out.</div>";
@@ -1654,7 +1656,8 @@ function renderUser(){
                 mainBtn.insertAdjacentElement("afterend",ebCo);
                 return;
               }
-              const driftMin=Math.abs(_stOut.drift)/60000;
+              // ROUNDING FIX: round to nearest minute to match displayed HH:MM
+              const driftMin=Math.round(Math.abs(_stOut.drift)/60000);
               if(driftMin>10){
                 _checkOutInProgress=false;_lastCheckOut=0;
                 mainBtn.disabled=false;mainBtn.textContent="⏹ Check Out";
@@ -1778,9 +1781,10 @@ function renderUser(){
           });
         } else {
           // Bug 3 fix: use live currentlyIn not stale checkedIn
-          if(checkedIn){ refresh(); return; }
-          if(!canCheckIn()){ return; }
+          if(checkedIn){ _checkInInProgress=false; refresh(); return; }
+          if(!canCheckIn()){ _checkInInProgress=false; return; }
           if(!navigator.onLine){
+            _checkInInProgress=false;
             const oldEb=content.querySelector(".loc-err-banner");if(oldEb)oldEb.remove();
             const eb=h("div",{className:"loc-err-banner geo-banner geo-warn",style:{marginTop:".75rem"}});
             eb.innerHTML="<span class='geo-icon'>📡</span><div><strong>No Internet Connection</strong><br>Please connect to the internet to check in.</div>";
@@ -1797,6 +1801,7 @@ function renderUser(){
             const dateErrCi=checkClockDate(_serverTimeResult.serverMs);
             if(dateErrCi){
               _lastCheckIn=0;
+              _checkInInProgress=false;
               mainBtn.disabled=false;mainBtn.textContent="▶ Check In";
               const oldEbCi=content.querySelector(".loc-err-banner");if(oldEbCi)oldEbCi.remove();
               const ebCi=h("div",{className:"loc-err-banner geo-banner geo-fail",style:{marginTop:".75rem"}});
@@ -1804,9 +1809,11 @@ function renderUser(){
               mainBtn.insertAdjacentElement("afterend",ebCi);
               return;
             }
-            const driftMin=Math.abs(_serverTimeResult.drift)/60000;
+            // ROUNDING FIX: round to nearest minute to match displayed HH:MM
+            const driftMin=Math.round(Math.abs(_serverTimeResult.drift)/60000);
             if(driftMin>10){
               _lastCheckIn=0;
+              _checkInInProgress=false;
               mainBtn.disabled=false;mainBtn.textContent="▶ Check In";
               const oldEbCi2=content.querySelector(".loc-err-banner");if(oldEbCi2)oldEbCi2.remove();
               const ebCi2=h("div",{className:"loc-err-banner geo-banner geo-fail",style:{marginTop:".75rem"}});
@@ -1821,6 +1828,7 @@ function renderUser(){
             const sanityCi=checkDeviceDateSanity();
             if(sanityCi){
               _lastCheckIn=0;
+              _checkInInProgress=false;
               mainBtn.disabled=false;mainBtn.textContent="▶ Check In";
               const oldEbSan=content.querySelector(".loc-err-banner");if(oldEbSan)oldEbSan.remove();
               const ebSan=h("div",{className:"loc-err-banner geo-banner geo-warn",style:{marginTop:".75rem"}});
@@ -1835,6 +1843,7 @@ function renderUser(){
           getLocation().then(async loc=>{
             if(loc && loc.error){
               _lastCheckIn=0;
+              _checkInInProgress=false;
               mainBtn.disabled=false;mainBtn.textContent="▶ Check In";
               const msgs={denied:"Location access denied. Allow location permission in your browser/phone settings, then try again.",timeout:"Location timed out. Move to an open area with better GPS signal, then try again.",unavailable:"Location unavailable. Please enable GPS on your device and try again.",unsupported:"This device/browser does not support location. Cannot check in."};
               const msg=msgs[loc.error]||"Could not get your location. Please try again.";
@@ -1882,6 +1891,7 @@ function renderUser(){
             }catch(e){_postOk=false;}
             if(!_postOk){
               _lastCheckIn=0;
+              _checkInInProgress=false;
               mainBtn.disabled=false;mainBtn.textContent="▶ Check In";
               const oldEb2=content.querySelector(".loc-err-banner");if(oldEb2)oldEb2.remove();
               const eb2=h("div",{className:"loc-err-banner geo-banner geo-fail",style:{marginTop:".75rem"}});
@@ -1894,14 +1904,15 @@ function renderUser(){
             showToast("Checked in! ✅ Synced to sheet.", "success", 4000);
             delete window._geoWarn;
             const prevEb=document.querySelector(".loc-err-banner");if(prevEb)prevEb.remove();
+            _checkInInProgress=false;
             refresh();
           });
         }
-        } finally {
-          // ✅ FIX #4: Reset debounce flags when operation completes
-          if(checkedIn) _checkOutInProgress = false;
-          else _checkInInProgress = false;
-        }
+        // NOTE: the outer finally block that used to live here was REMOVED —
+        // it fired synchronously right after showSurvey()/getLocation().then() were
+        // *called* (not after they finished), resetting the debounce flag while the
+        // real checkout/check-in work was still in progress. Both branches now reset
+        // their own flag explicitly at every exit/completion point above instead.
       });
       content.appendChild(mainBtn);
 
