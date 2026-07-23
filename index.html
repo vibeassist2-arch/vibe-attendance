@@ -420,10 +420,14 @@ async function syncSingleUserToSheet(userObj) {
       data: cleanUser
     });
     if (json && json.ok) return;
-    console.warn("syncSingleUserToSheet: updateUser not supported, falling back to setUsers");
+    console.warn("syncSingleUserToSheet: updateUser failed for", uname);
   } catch(e) { console.warn("syncSingleUserToSheet failed:", e); }
-  // Fallback: send all users
-  syncUsersToSheet();
+  // RECURSION FIX: previously this called syncUsersToSheet() as a "fallback", but
+  // syncUsersToSheet() loops over every user and calls syncSingleUserToSheet() on
+  // each one — so if updateUser is broadly failing (not just for this one user),
+  // every one of those calls would ALSO fail and trigger another full-user resync,
+  // causing an exponential storm of API calls. The caller (openEditModal, etc.)
+  // already handles and reports this failure — no fallback resync needed here.
 }
 
 // ONLINE-ONLY: verifyAndPurgeQueue is a no-op stub
@@ -3666,14 +3670,19 @@ const todayIsWeekend=new Date(serverTodayStr()+"T00:00:00+05:30").getDay()===0;
       const dlTotalGpa=fS.reduce((s,r)=>s+(parseInt(r.gpa)||0),0);
 
       [
-        ["#a78bfa44","var(--policy)","📜 Policy Data",dlTotalPolicy,"Policy",()=>exportCSV(fS.map(s=>({Name:getFullName(s.username),UserID:s.username,Date:s.date,Time:new Date(s.timestamp).toLocaleTimeString(),Policy_Count:s.policy||""})),`Policy_${dlMonth||"All"}.csv`),"btn-policy"],
-        ["#fb923c44","var(--rsa)","🔐 RSA Data",dlTotalRsa,"RSA",()=>exportCSV(fS.map(s=>({Name:getFullName(s.username),UserID:s.username,Date:s.date,Time:new Date(s.timestamp).toLocaleTimeString(),RSA_Count:s.rsa||""})),`RSA_${dlMonth||"All"}.csv`),"btn-rsa"],
-        ["#34d39944","var(--gpa)","🎓 GPA Data",dlTotalGpa,"GPA",()=>exportCSV(fS.map(s=>({Name:getFullName(s.username),UserID:s.username,Date:s.date,Time:new Date(s.timestamp).toLocaleTimeString(),GPA_Count:s.gpa||""})),`GPA_${dlMonth||"All"}.csv`),"btn-gpa"],
+        // TIMEZONE FIX: use fmtIST() instead of raw toLocaleTimeString() so exported
+        // times match what's shown in the app, regardless of the admin's device timezone.
+        ["#a78bfa44","var(--policy)","📜 Policy Data",dlTotalPolicy,"Policy",()=>exportCSV(fS.map(s=>({Name:getFullName(s.username),UserID:s.username,Date:s.date,Time:fmtIST(s.timestamp),Policy_Count:s.policy||""})),`Policy_${dlMonth||"All"}.csv`),"btn-policy"],
+        ["#fb923c44","var(--rsa)","🔐 RSA Data",dlTotalRsa,"RSA",()=>exportCSV(fS.map(s=>({Name:getFullName(s.username),UserID:s.username,Date:s.date,Time:fmtIST(s.timestamp),RSA_Count:s.rsa||""})),`RSA_${dlMonth||"All"}.csv`),"btn-rsa"],
+        ["#34d39944","var(--gpa)","🎓 GPA Data",dlTotalGpa,"GPA",()=>exportCSV(fS.map(s=>({Name:getFullName(s.username),UserID:s.username,Date:s.date,Time:fmtIST(s.timestamp),GPA_Count:s.gpa||""})),`GPA_${dlMonth||"All"}.csv`),"btn-gpa"],
         ["var(--border)","var(--accent)","📋 Attendance",fA.length,"records",()=>{
           const dm={};
-          fA.forEach(r=>{const k=r.username+"__"+localDateStr(new Date(r.timestamp));if(!dm[k])dm[k]={Name:getFullName(r.username),UserID:r.username,Date:new Date(r.timestamp).toLocaleDateString(),CheckIn:"",CheckOut:"",Hours:"",InLat:"",InLng:"",OutLat:"",OutLng:""};
-            if(r.type==="in"&&(!dm[k]._inTs||r.timestamp<dm[k]._inTs)){dm[k]._inTs=r.timestamp;dm[k].CheckIn=new Date(r.timestamp).toLocaleTimeString();dm[k].InLat=r.location?.lat||"";dm[k].InLng=r.location?.lng||"";}
-            if(r.type==="out"&&(!dm[k]._outTs||r.timestamp>dm[k]._outTs)){dm[k]._outTs=r.timestamp;dm[k].CheckOut=new Date(r.timestamp).toLocaleTimeString();dm[k].OutLat=r.location?.lat||"";dm[k].OutLng=r.location?.lng||"";}
+          // TIMEZONE FIX: use localDateStr()/fmtIST() instead of raw toLocaleDateString()/
+          // toLocaleTimeString() so exported dates/times match the app (IST), not the
+          // admin's device locale/timezone. This also makes Date sortable as ISO text.
+          fA.forEach(r=>{const k=r.username+"__"+localDateStr(new Date(r.timestamp));if(!dm[k])dm[k]={Name:getFullName(r.username),UserID:r.username,Date:localDateStr(new Date(r.timestamp)),CheckIn:"",CheckOut:"",Hours:"",InLat:"",InLng:"",OutLat:"",OutLng:""};
+            if(r.type==="in"&&(!dm[k]._inTs||r.timestamp<dm[k]._inTs)){dm[k]._inTs=r.timestamp;dm[k].CheckIn=fmtIST(r.timestamp);dm[k].InLat=r.location?.lat||"";dm[k].InLng=r.location?.lng||"";}
+            if(r.type==="out"&&(!dm[k]._outTs||r.timestamp>dm[k]._outTs)){dm[k]._outTs=r.timestamp;dm[k].CheckOut=fmtIST(r.timestamp);dm[k].OutLat=r.location?.lat||"";dm[k].OutLng=r.location?.lng||"";}
           });
           Object.values(dm).forEach(d=>{
             if(d._inTs&&d._outTs){const m=Math.round((d._outTs-d._inTs)/60000);d.Hours=`${Math.floor(m/60)}h ${m%60}m`;}
@@ -3683,7 +3692,7 @@ const todayIsWeekend=new Date(serverTodayStr()+"T00:00:00+05:30").getDay()===0;
             d.Departure=dep?dep.label:"";
             delete d._inTs;delete d._outTs;
           });
-          exportCSV(Object.values(dm).sort((a,b)=>new Date(b.Date)-new Date(a.Date)),`Attendance_${dlMonth||"All"}.csv`);
+          exportCSV(Object.values(dm).sort((a,b)=>b.Date.localeCompare(a.Date)),`Attendance_${dlMonth||"All"}.csv`);
         },"btn-primary"],
       ].forEach(([bc,nc,name,cnt,unit,fn,btnCls])=>{
         const dc=el("div","dl-card",null,{borderColor:bc});
