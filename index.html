@@ -1353,11 +1353,14 @@ function renderLogin(){
           btn.disabled=false;btn.textContent="Sign In";
           return;
         }
-        // Check time mismatch (device clock >10 min off)
-        // ROUNDING FIX: round to nearest minute so it matches the HH:MM shown to the user —
-        // otherwise a device showing exactly "10 min" off (but 10.4-10.9 min underneath) still blocks.
+        // Check time mismatch (device clock >15 min off)
+        // ROUNDING FIX + TOLERANCE WIDENED: round to nearest minute so it roughly matches
+        // the HH:MM shown to the user. The error message displays times truncated to the
+        // minute (no seconds), so the true gap can be up to ~1 minute more than it visually
+        // appears — 15 min gives enough headroom to absorb that display ambiguity while still
+        // catching genuinely wrong clocks (wrong hour/day, not just a few minutes of drift).
         const driftMin=Math.round(Math.abs(st.drift)/60000);
-        if(driftMin>10){
+        if(driftMin>15){
           const deviceTime=new Date().toLocaleTimeString("en-IN",{timeZone:"Asia/Kolkata",hour:"2-digit",minute:"2-digit",hour12:true});
           const serverTime=new Date(st.serverMs).toLocaleTimeString("en-IN",{timeZone:"Asia/Kolkata",hour:"2-digit",minute:"2-digit",hour12:true});
           errBox.innerHTML=`⏰ <strong>Device clock is wrong.</strong><br>Your device shows <strong>${deviceTime}</strong> but the actual time is <strong>${serverTime}</strong>.<br><span style="font-size:.85em">Please fix your device clock and try again.</span>`;
@@ -1668,7 +1671,7 @@ function renderUser(){
               }
               // ROUNDING FIX: round to nearest minute to match displayed HH:MM
               const driftMin=Math.round(Math.abs(_stOut.drift)/60000);
-              if(driftMin>10){
+              if(driftMin>15){
                 _checkOutInProgress=false;_lastCheckOut=0;
                 mainBtn.disabled=false;mainBtn.textContent="⏹ Check Out";
                 const oldEbCo2=content.querySelector(".loc-err-banner");if(oldEbCo2)oldEbCo2.remove();
@@ -1821,7 +1824,7 @@ function renderUser(){
             }
             // ROUNDING FIX: round to nearest minute to match displayed HH:MM
             const driftMin=Math.round(Math.abs(_serverTimeResult.drift)/60000);
-            if(driftMin>10){
+            if(driftMin>15){
               _lastCheckIn=0;
               _checkInInProgress=false;
               mainBtn.disabled=false;mainBtn.textContent="▶ Check In";
