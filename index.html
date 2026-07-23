@@ -1043,10 +1043,14 @@ const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000; // UTC+5:30
 async function _timeFetch(url, timeout=6000){
   // External time APIs (timeapi.io, worldtimeapi.org) — direct fetch only.
   // These are public APIs with open CORS headers — no proxy needed.
+  // CACHE FIX: force a real network hit every time. Without this, a mobile
+  // carrier proxy, corporate wifi, or the browser's own HTTP cache can silently
+  // return a stale response for these identical URLs — causing the app to think
+  // the device clock is wrong by a few minutes when it's actually fine.
   const ctrl=new AbortController();
   const t=setTimeout(()=>ctrl.abort(),timeout);
   try{
-    return await fetch(url,{method:"GET",signal:ctrl.signal});
+    return await fetch(url,{method:"GET",signal:ctrl.signal,cache:"no-store"});
   }finally{
     clearTimeout(t);
   }
@@ -1065,7 +1069,8 @@ async function getServerTime(){
     // API 1: timeapi.io — request IST zone, parse dateTime as IST string
     async()=>{
       const t0=Date.now();
-      const res=await _timeFetch("https://timeapi.io/api/Time/current/zone?timeZone=Asia%2FKolkata");
+      // CACHE FIX: unique query param so proxies/CDNs can't serve a stale cached response
+      const res=await _timeFetch("https://timeapi.io/api/Time/current/zone?timeZone=Asia%2FKolkata&_cb="+Date.now());
       const json=await res.json();
       // ✅ FIX #7: Validate response type and structure
       if(!json || typeof json.dateTime !== 'string') throw new Error("Invalid dateTime response");
@@ -1080,7 +1085,8 @@ async function getServerTime(){
     // API 2: worldtimeapi — unixtime is always UTC epoch, no parsing ambiguity
     async()=>{
       const t0=Date.now();
-      const res=await _timeFetch("https://worldtimeapi.org/api/timezone/Asia/Kolkata");
+      // CACHE FIX: unique query param so proxies/CDNs can't serve a stale cached response
+      const res=await _timeFetch("https://worldtimeapi.org/api/timezone/Asia/Kolkata?_cb="+Date.now());
       const json=await res.json();
       if(!json.unixtime) throw new Error("no unixtime");
       return Math.round((json.unixtime*1000)+((Date.now()-t0)/2));
