@@ -2419,8 +2419,12 @@ function openUserDataModal(u, allAttend, allSurveys){
   const userSurveys=(allSurveys||[]).filter(s=>s.username===u.username).sort((a,b)=>(b.date||"").localeCompare(a.date||""));
   const userAbsences=(DB.absences||[]).filter(a=>a.username===u.username).sort((a,b)=>(b.date||"").localeCompare(a.date||""));
 
-  const now=new Date();
-  const curMon=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}`;
+  // TIMEZONE FIX: use server IST time, not device local time, for "current month" —
+  // the rest of the app deliberately avoids the device clock for date math (device
+  // clocks have repeatedly been shown to drift or use the wrong timezone), so the
+  // admin's per-user detail modal should follow the same rule instead of using new Date().
+  const now=new Date(getServerNow());
+  const curMon=serverTodayStr().slice(0,7);
   const presentDays=new Set(userAttend.filter(r=>r.type==="in"&&localDateStr(new Date(r.timestamp)).startsWith(curMon)).map(r=>localDateStr(new Date(r.timestamp)))).size;
   const monthSurveys=userSurveys.filter(s=>(s.date||"").startsWith(curMon));
   const monthPolicy=monthSurveys.reduce((s,r)=>s+(parseInt(r.policy)||0),0);
@@ -2429,11 +2433,12 @@ function openUserDataModal(u, allAttend, allSurveys){
   // FIXED: Compute absent days from attendance data — do NOT rely on DB.absences
   // (only written if admin was logged in after 10:30 AM — unreliable)
   const monthAbsences=(()=>{
-    const today=now;
+    const todayIST=serverTodayStr();
+    const todayISTDay=parseInt(todayIST.split("-")[2]);
     const year=parseInt(curMon.split("-")[0]);
     const month=parseInt(curMon.split("-")[1])-1;
     const daysInMonth=new Date(year,month+1,0).getDate();
-    const lastDay=Math.min(daysInMonth,today.getDate());
+    const lastDay=Math.min(daysInMonth,todayISTDay);
     const presentDates=new Set([
       ...userAttend.filter(r=>r.type==="in").map(r=>localDateStr(new Date(r.timestamp))),
       ...userSurveys.map(s=>s.date)
@@ -2441,9 +2446,9 @@ function openUserDataModal(u, allAttend, allSurveys){
     let count=0;
     for(let d=1;d<=lastDay;d++){
       const dateStr=curMon+"-"+String(d).padStart(2,"0");
-      const dow=new Date(year,month,d).getDay();
+      const dow=new Date(dateStr+"T00:00:00+05:30").getDay(); // IST day-of-week
       if(dow===0)continue; // skip Sunday
-      if(dateStr===localDateStr(today))continue; // skip today
+      if(dateStr===todayIST)continue; // skip today
       if(!presentDates.has(dateStr))count++;
     }
     return count;
@@ -3549,7 +3554,10 @@ const todayIsWeekend=new Date(serverTodayStr()+"T00:00:00+05:30").getDay()===0;
         b.innerHTML=`<div class="num" style="font-size:1.5rem">${v}</div><div class="lbl">${l}</div>`;cg.appendChild(b);
       });
       content.appendChild(cg);
-      const nowM=new Date();const curMK2=`${nowM.getFullYear()}-${String(nowM.getMonth()+1).padStart(2,"0")}`;
+      // TIMEZONE FIX: use server IST time instead of device local time, consistent
+      // with the rest of the app (avoids showing the wrong month if the admin's
+      // device clock/timezone is off).
+      const nowM=new Date(getServerNow());const curMK2=serverTodayStr().slice(0,7);
       const monthSurveys=allSurveys.filter(s=>normDate(s.date).startsWith(curMK2));
       const monthPolicy=monthSurveys.reduce((s,r)=>s+(parseInt(r.policy)||0),0);
       const monthRsa=monthSurveys.reduce((s,r)=>s+(parseInt(r.rsa)||0),0);
@@ -3606,7 +3614,8 @@ const todayIsWeekend=new Date(serverTodayStr()+"T00:00:00+05:30").getDay()===0;
         tw.appendChild(cardList);content.appendChild(tw);
       }
 
-      const now2x=new Date();const curMKx=`${now2x.getFullYear()}-${String(now2x.getMonth()+1).padStart(2,"0")}`;
+      // TIMEZONE FIX: use server IST time instead of device local time for the default month
+      const now2x=new Date(getServerNow());const curMKx=serverTodayStr().slice(0,7);
       const selMx=dlMonth||curMKx;
       const allMonthsX=[...new Set([...allSurveys.map(s=>s.date?.slice(0,7)).filter(Boolean),...allAttend.map(r=>{const d=new Date(r.timestamp);return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`})])].sort().reverse();
       if(!allMonthsX.includes(curMKx))allMonthsX.unshift(curMKx);
