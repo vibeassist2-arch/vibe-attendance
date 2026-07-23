@@ -1066,56 +1066,105 @@ async function getServerTime(){
     const drift=_serverNow-Date.now();
     return{serverMs:_serverNow,drift,trusted:true};
   }
-  
+
   // All APIs return true UTC milliseconds (unix epoch).
   // localDateStr() and fmtIST() then convert to IST for display/comparison.
-  const apis=[
-    // API 1: timeapi.io — request IST zone, parse dateTime as IST string
-    async()=>{
-      const t0=Date.now();
-      // CACHE FIX: unique query param so proxies/CDNs can't serve a stale cached response
-      const res=await _timeFetch("https://timeapi.io/api/Time/current/zone?timeZone=Asia%2FKolkata&_cb="+Date.now());
-      const json=await res.json();
-      // ✅ FIX #7: Validate response type and structure
-      if(!json || typeof json.dateTime !== 'string') throw new Error("Invalid dateTime response");
-      if(json.dateTime.length < 19) throw new Error("dateTime too short");
-      // dateTime is "2026-03-21T12:29:00.000" — this is IST local time with NO offset suffix.
-      // We MUST append +05:30 so JS parses it as IST, not as device-local or UTC.
-      const istStr=json.dateTime.replace(/(\.\d+)?$/, "+05:30");
-      const serverMs=Math.round(new Date(istStr).getTime()+((Date.now()-t0)/2));
-      if(isNaN(serverMs)) throw new Error("invalid");
-      return serverMs;
-    },
-    // API 2: worldtimeapi — unixtime is always UTC epoch, no parsing ambiguity
-    async()=>{
-      const t0=Date.now();
-      // CACHE FIX: unique query param so proxies/CDNs can't serve a stale cached response
-      const res=await _timeFetch("https://worldtimeapi.org/api/timezone/Asia/Kolkata?_cb="+Date.now());
-      const json=await res.json();
-      if(!json.unixtime) throw new Error("no unixtime");
-      return Math.round((json.unixtime*1000)+((Date.now()-t0)/2));
-    },
-    // API 3: Cloudflare Worker → Google Apps Script (no key in URL)
-    async()=>{
-      const t0=Date.now();
-      const j=await gsFetch({action:"getTime"});
-      if(!j||!j.ts) throw new Error("no ts");
-      const serverMs=Math.round(parseInt(j.ts)+((Date.now()-t0)/2));
-      if(isNaN(serverMs)) throw new Error("invalid");
-      return serverMs;
-    }
-  ];
-  for(const api of apis){
-    try{
-      const serverMs=await api();
-      const drift=Math.round(serverMs-Date.now());
-      cacheServerTime(serverMs); // update global server time cache
-      const istTime=new Date(serverMs).toLocaleTimeString("en-IN",{timeZone:"Asia/Kolkata",hour:"2-digit",minute:"2-digit",hour12:true});
-      const istDate=new Date(serverMs).toLocaleDateString("en-IN",{timeZone:"Asia/Kolkata"});
-      console.log("VIBE: server time OK — IST: "+istDate+" "+istTime+", drift="+Math.round(drift/1000)+"s");
-      return{serverMs,drift,trusted:true};
-    }catch(e){ console.warn("VIBE time API failed:",e.message); }
+  async function apiTimeApiIo(){
+    const t0=Date.now();
+    // CACHE FIX: unique query param so proxies/CDNs can't serve a stale cached response
+    const res=await _timeFetch("https://timeapi.io/api/Time/current/zone?timeZone=Asia%2FKolkata&_cb="+Date.now());
+    const json=await res.json();
+    // ✅ FIX #7: Validate response type and structure
+    if(!json || typeof json.dateTime !== 'string') throw new Error("Invalid dateTime response");
+    if(json.dateTime.length < 19) throw new Error("dateTime too short");
+    // dateTime is "2026-03-21T12:29:00.000" — this is IST local time with NO offset suffix.
+    // We MUST append +05:30 so JS parses it as IST, not as device-local or UTC.
+    const istStr=json.dateTime.replace(/(\.\d+)?$/, "+05:30");
+    const serverMs=Math.round(new Date(istStr).getTime()+((Date.now()-t0)/2));
+    if(isNaN(serverMs)) throw new Error("invalid");
+    return serverMs;
   }
+  async function apiWorldTime(){
+    const t0=Date.now();
+    // CACHE FIX: unique query param so proxies/CDNs can't serve a stale cached response
+    const res=await _timeFetch("https://worldtimeapi.org/api/timezone/Asia/Kolkata?_cb="+Date.now());
+    const json=await res.json();
+    if(!json.unixtime) throw new Error("no unixtime");
+    return Math.round((json.unixtime*1000)+((Date.now()-t0)/2));
+  }
+  async function apiWorker(){
+    const t0=Date.now();
+    const j=await gsFetch({action:"getTime"});
+    if(!j||!j.ts) throw new Error("no ts");
+    const serverMs=Math.round(parseInt(j.ts)+((Date.now()-t0)/2));
+    if(isNaN(serverMs)) throw new Error("invalid");
+    return serverMs;
+  }
+
+  // CROSS-CHECK FIX: a single time source can return a wrong value WITHOUT throwing
+  // an error — e.g. a stale response served from its own backend/CDN cache, or a
+  // temporary outage that still returns a 200 with old data. Trusting whichever API
+  // answers first (the old behavior) is fragile: this is what caused a check-in to be
+  // stamped ~11 minutes behind the user's real login time even though nothing was
+  // wrong with her device. Now we query the two independent public APIs concurrently
+  // and only trust a result once two sources agree closely; if they disagree, our own
+  // Worker/GAS endpoint is used as a tiebreaker rather than guessing.
+  const AGREE_TOLERANCE_MS = 5000; // two sources must agree within 5s to be trusted together
+
+  function accept(serverMs, label){
+    const drift=Math.round(serverMs-Date.now());
+    cacheServerTime(serverMs); // update global server time cache
+    const istTime=new Date(serverMs).toLocaleTimeString("en-IN",{timeZone:"Asia/Kolkata",hour:"2-digit",minute:"2-digit",hour12:true});
+    const istDate=new Date(serverMs).toLocaleDateString("en-IN",{timeZone:"Asia/Kolkata"});
+    console.log("VIBE: server time OK ("+label+") — IST: "+istDate+" "+istTime+", drift="+Math.round(drift/1000)+"s");
+    return{serverMs,drift,trusted:true};
+  }
+
+  const [r1,r2]=await Promise.allSettled([apiTimeApiIo(), apiWorldTime()]);
+  const v1 = r1.status==="fulfilled" ? r1.value : null;
+  const v2 = r2.status==="fulfilled" ? r2.value : null;
+  if(r1.status==="rejected") console.warn("VIBE time API (timeapi.io) failed:", r1.reason?.message);
+  if(r2.status==="rejected") console.warn("VIBE time API (worldtimeapi) failed:", r2.reason?.message);
+
+  try{
+    if(v1!==null && v2!==null){
+      if(Math.abs(v1-v2)<=AGREE_TOLERANCE_MS){
+        // Both independent public sources agree — high confidence
+        return accept(Math.round((v1+v2)/2), "timeapi.io+worldtimeapi agree");
+      }
+      // They disagree — bring in our own Worker/GAS as a tiebreaker
+      console.warn("VIBE: time sources disagree by", Math.round(Math.abs(v1-v2)/1000)+"s — checking tiebreaker");
+      try{
+        const v3=await apiWorker();
+        const closerToV1=Math.abs(v1-v3)<=Math.abs(v2-v3);
+        return accept(closerToV1 ? v1 : v2, "tiebreak via worker");
+      }catch(e){
+        console.warn("VIBE: tiebreaker unreachable — falling back to timeapi.io alone");
+        return accept(v1, "timeapi.io only, unverified");
+      }
+    }
+    if(v1!==null){
+      // Only one public source answered — cross-check with the worker before trusting it
+      try{
+        const v3=await apiWorker();
+        if(Math.abs(v1-v3)<=AGREE_TOLERANCE_MS) return accept(Math.round((v1+v3)/2), "timeapi.io+worker agree");
+        console.warn("VIBE: timeapi.io and worker disagree by", Math.round(Math.abs(v1-v3)/1000)+"s — trusting worker");
+        return accept(v3, "worker (disagreed with timeapi.io)");
+      }catch(e){ return accept(v1, "timeapi.io only, worker unreachable"); }
+    }
+    if(v2!==null){
+      try{
+        const v3=await apiWorker();
+        if(Math.abs(v2-v3)<=AGREE_TOLERANCE_MS) return accept(Math.round((v2+v3)/2), "worldtimeapi+worker agree");
+        console.warn("VIBE: worldtimeapi and worker disagree by", Math.round(Math.abs(v2-v3)/1000)+"s — trusting worker");
+        return accept(v3, "worker (disagreed with worldtimeapi)");
+      }catch(e){ return accept(v2, "worldtimeapi only, worker unreachable"); }
+    }
+    // Both public APIs failed outright — last resort: our own worker/GAS alone
+    const v3=await apiWorker();
+    return accept(v3, "worker only, public APIs unreachable");
+  }catch(e){ console.warn("VIBE time API failed:",e.message); }
+
   console.error("VIBE: ALL time APIs failed — check-in will be blocked");
   return{serverMs:Date.now(),drift:0,trusted:false};
 }
